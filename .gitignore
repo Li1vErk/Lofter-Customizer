@@ -1,0 +1,31 @@
+# Windows 系统文件 / 资源管理器缩略图缓存
+desktop.ini
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# 依赖与构建产物（本项目无构建步骤，留作兜底）
+node_modules/
+dist/
+build/
+package-lock.json
+
+# 打包产物（商店提交用 zip 不入库）
+*.zip
+*.crx
+*.pem
+!assets/**/*.zip
+
+# 日志与临时文件
+*.log
+*.tmp
+tmp-*
+.workbuddy/

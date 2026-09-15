@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安装与使用问题
+    url: https://github.com/Li1vErk/Lofter-Customizer/blob/main/docs/install.md
+    about: 安装步骤、字体准备、常见报错的解决办法
+  - name: 想先了解实现原理
+    url: https://github.com/OWNER/REPO/blob/main/docs/architecture.md
+    about: 双渲染管线、稳定锚点策略、与 React 的对抗方式

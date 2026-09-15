@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="28y625GXXYN7EDr5TPwvC2">
+
+<head data-page-node-id="SJoZ2GPBYGmEcyXTJtgSsq">
+  <meta charset="UTF-8" data-page-node-id="C6GFIDFFvjlPdCghA4pY0l" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="tGRy2ejSH86hSqnANCCbZQ" />
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 340px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+    }
+
+    .head {
+      padding: 16px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .head h1 {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .head-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      background: rgba(255, 255, 255, 0.3);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: 0.3s;
+    }
+
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      /* 垂直居中 */
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      transition: 0.3s;
+      transform: translateY(-50%);
+      /* 偏移自身高度的一半 */
+    }
+
+    input[type="checkbox"] {
+      display: none;
+    }
+
+    input[type="checkbox"]:checked+.switch {
+      background: #4ade80 !important;
+      /* 开启状态绿色 */
+    }
+
+    input[type="checkbox"]:checked+.switch::after {
+      left: 22px;
+      /* 不需要改 top，因为 top: 50% + transform 已经居中 */
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 8px 16px;
+      background: white;
+      border-bottom: 1px solid #e0e0e0;
+      overflow-x: auto;
+    }
+
+    .tabs button {
+      padding: 6px 12px;
+      border: none;
+      background: transparent;
+      color: #666;
+      font-size: 13px;
+      cursor: pointer;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    .tabs button.on {
+      background: #667eea;
+      color: white;
+    }
+
+    .pane {
+      display: none;
+      padding: 16px;
+    }
+
+    .pane.on {
+      display: block;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .row label {
+      flex: 0 0 90px;
+      font-size: 13px;
+      color: #555;
+      font-weight: 500;
+    }
+
+    .row input[type="color"] {
+      width: 50px;
+      height: 32px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .row input[type="range"] {
+      flex: 1;
+    }
+
+    .row select {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .row input[type="text"] {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .value {
+      min-width: 40px;
+      text-align: right;
+      font-size: 12px;
+      color: #888;
+    }
+
+    .hint {
+      font-size: 11px;
+      color: #999;
+      margin: -8px 0 12px 90px;
+      line-height: 1.4;
+    }
+
+    .toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .toggle span {
+      font-size: 13px;
+      color: #555;
+    }
+
+    .foot {
+      padding: 12px 16px;
+      background: white;
+      border-top: 1px solid #e0e0e0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .btn {
+      padding: 6px 14px;
+      border: 1px solid #ddd;
+      background: white;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      color: #666;
+    }
+
+    .btn:hover {
+      background: #f5f5f5;
+    }
+
+    .saved {
+      font-size: 12px;
+      color: #4caf50;
+      opacity: 0;
+      transition: 0.3s;
+    }
+
+    .saved.show {
+      opacity: 1;
+    }
+
+    hr {
+      border: none;
+      border-top: 1px solid #f0f0f0;
+      margin: 12px 0;
+    }
+
+    .toggle input[type="checkbox"] {
+      display: block !important;
+      appearance: none;
+      -webkit-appearance: none;
+      flex-shrink: 0;
+      width: 44px;
+      height: 24px;
+      background: #ddd;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: 0.3s;
+      position: relative;
+    }
+
+    .toggle input[type="checkbox"]::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      transform: translateY(-50%);
+      transition: 0.3s;
+    }
+
+    .toggle input[type="checkbox"]:checked {
+      background: #4ade80;
+    }
+
+    .toggle input[type="checkbox"]:checked::after {
+      left: 22px;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+
+    /* 音效按钮选中状态 */
+    .lc-sound-btn:hover {
+      border-color: #c8c8c8 !important;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    }
+
+    .lc-sound-btn.selected {
+      border-color: #667eea !important;
+      background: #f0f2ff !important;
+    }
+
+    .lc-sound-btn.selected span:first-child {
+      color: #667eea !important;
+    }
+
+    .lc-sound-btn.selected span:last-child {
+      color: #667eea !important;
+    }
+
+    #lc-sound-upload-area:hover {
+      border-color: #667eea !important;
+      background: #f5f6ff !important;
+    }
+
+    .lc-sound-custom-item {
+      border: 2px solid #e8e8e8 !important;
+      border-radius: 12px;
+      background: #fff;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .lc-sound-custom-item:hover {
+      border-color: #c8c8c8 !important;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    }
+
+    .lc-sound-custom-item.selected {
+      border-color: #667eea !important;
+      background: #f0f2ff !important;
+    }
+
+    .lc-sound-custom-item.selected #lc-sound-filename {
+      color: #667eea !important;
+    }
+  </style>
+</head>
+
+<body data-page-node-id="ox9i3Yq9RCua5CGDEChlwT">
+  <header class="head" data-page-node-id="tYszRPiNOXZPa8v8jZOvzv">
+    <div class="head-top" data-page-node-id="gCjtaTSWtEOflocgY2Ul3L">
+      <h1 data-page-node-id="d61EhYoN7QlQSgcVlTLkqc">LOFTER 自定义</h1>
+      <label title="开启/关闭所有美化效果" style="display: flex; align-items: center; gap: 8px; cursor: pointer;" data-page-node-id="MiFkZCkoGTREFtKPQxxvl6">
+        <span style="font-size: 12px; opacity: 0.9;" data-page-node-id="pOGE08IWDCD4pD2db5QuPK">美化</span>
+        <input type="checkbox" id="enabled" data-page-node-id="Kx9rm5VlNKKFkpwatAesCa" />
+        <span class="switch" data-page-node-id="me8Qqs5QQXeVyXoG47QBkY"></span>
+      </label>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" data-page-node-id="DwhPEDZqEjVsyey5FRY7Vu">
+    <button class="tab active" data-tab="bg" data-page-node-id="ozNtAXXFT1OJYv6zhOGult">背景</button>
+    <button class="tab" data-tab="card" data-page-node-id="1s3GefGYGAOuNiVP7D2kic">卡片</button>
+    <button class="tab" data-tab="font" data-page-node-id="BLEPdWrlIeoCPqTK0Gs7mM">字体</button>
+    <button class="tab" data-tab="nav" data-page-node-id="gEYpeWuSI2HOCOSmxzEZSa">导航</button>
+    <button class="tab" data-tab="shortcuts" data-page-node-id="TB1GrefcSslxwW7gh2DJmw">快捷键</button>
+  </nav>
+
+  <main id="panes" data-page-node-id="PPqUABVODEsgyw6Fx6PbJu">
+    <!-- 背景 -->
+    <section class="pane on" data-pane="bg" data-page-node-id="6pDsHJp4MCiDSEjzf2GTTj">
+      <div class="row" data-page-node-id="70WVrOk81l9JAcQe5qRfBm"><label data-page-node-id="JF7tPvZNKMcaNnymI24W3g">深色模式</label>
+        <select id="dark-mode" data-page-node-id="zKDwKtWE7FhYylHsU12QEu">
+          <option value="off" data-page-node-id="vLGnKdinS5UhyHERDXllu2">关闭</option>
+          <option value="manual" data-page-node-id="8ybG8i37yXeMKmxHUHORqg">手动开启</option>
+          <option value="auto" data-page-node-id="JiFlCIW63mPDkYBN50PcaM">跟随系统</option>
+        </select>
+      </div>
+      <div class="row" id="dark-brightness-row" data-page-node-id="BQa2M6GGnzAfAT1sGZlHvL"><label data-page-node-id="EnfNWXqaVbqlkAQf2BN2BU">卡片亮度 <span class="value"
+            id="dark-brightness-v" data-page-node-id="5zlnM1gBEWlrnRPEUVJftM"></span></label><input type="range" id="dark-brightness" min="60" max="100" data-page-node-id="rgkQy6Ikpwj2Sm5j91tDfy" /></div>
+      <hr  data-page-node-id="2KdxB2pNIc7eUxl7PeGGwG"/>
+      <div class="row" data-page-node-id="bMIh5j7M7Bp1MCTzsfpMiT"><label data-page-node-id="PZMG4soB2k7jNeU8d04B9n">背景类型</label>
+        <select id="bg-mode" data-page-node-id="ZoYFHU7VUq3YBlCbKca6yg">
+          <option value="off" data-page-node-id="MTH1nMeLCxZmq38WvTK5CG">关闭</option>
+          <option value="color" data-page-node-id="0bng9c7WXp3qYg4WvuSecP">纯色</option>
+          <option value="gradient" data-page-node-id="szm4LsOMFHQag5UOQc38dW">渐变</option>
+          <option value="pattern" data-page-node-id="2fBRCY7I5OOgerbI6487Kp">图案</option>
+          <option value="image" data-page-node-id="6LX9H1UfTRVp8iCHDdzpiG">图片</option>
+        </select>
+      </div>
+      <div class="grp" data-when="color" data-page-node-id="Tk9ODtRtAA2cJl5GdZKs9d">
+        <div class="row" data-page-node-id="hmjUq1yBXBYqXcCMuedzOt"><label data-page-node-id="aDNLNxMcKHoxxD6Thss2is">颜色</label><input type="color" id="bg-color" data-page-node-id="uGZRNV6ZBsvxsX4n3kqtwW" /></div>
+      </div>
+      <div class="grp" data-when="gradient" data-page-node-id="N1i1QcmmDQX80r83SDEZLO">
+        <div class="row" data-page-node-id="OXNVyboywPI0nvcQaHSYRl"><label data-page-node-id="nsI9GrBJVAQG38fLlLWy6n">起始色</label><input type="color" id="bg-gfrom" data-page-node-id="DnSmjQhlH8NBZV2DZUJZlw" /></div>
+        <div class="row" data-page-node-id="uaiyyBfe2SVAuE4q1bJ5zA"><label data-page-node-id="N7DBrfo4hIZinbKRFDy9lG">结束色</label><input type="color" id="bg-gto" data-page-node-id="3CeeyABCW97BkPdsQCNauZ" /></div>
+        <div class="row" data-page-node-id="OeMMbuDorDkaNa0TSeQ2Ee"><label data-page-node-id="g3fcG0o5x0OcFBJdEU3loF">角度 <span class="value" id="bg-gangle-v" data-page-node-id="nZfm4laFEd4hveTgQCWNEf"></span></label><input type="range"
+            id="bg-gangle" min="0" max="360" data-page-node-id="2RC3VBJNk5ggmu8jsruv4K" /></div>
+      </div>
+      <div class="grp" data-when="pattern" data-page-node-id="1DtuyLJ9ceBrDueOGJoivm">
+        <div class="row" data-page-node-id="4jEjxr6JwZotnmJG6jpcjh"><label data-page-node-id="ZGTEM1mOTHD0jDs7VO6YmR">图案</label>
+          <select id="bg-ptype" data-page-node-id="fIGzXgs3BTDw64DU3AYKSI">
+            <option value="grid" data-page-node-id="EBlqQtL7DWQR805ArMWnna">网格</option>
+            <option value="dots" data-page-node-id="41LLoGmhSCJjuFlrJMw3aZ">圆点</option>
+            <option value="stripes" data-page-node-id="FH0TUZZYAFjDpVcYyDyIL7">条纹</option>
+          </select>
+        </div>
+        <div class="row" data-page-node-id="TWkKCBtJ1UwXZjKFRZtdk5"><label data-page-node-id="LfAHEGBRNn1HAP4z1hFUPN">图案色</label><input type="color" id="bg-pfg" data-page-node-id="HC4JkHJdM7kmbi3ZWVKFH5" /></div>
+        <div class="row" data-page-node-id="MbDsBXMxaPYmACtD6qrIjN"><label data-page-node-id="dxoiXcmmkY4qrw3C5MZr9G">底色</label><input type="color" id="bg-pbg" data-page-node-id="n6Qwjz70hK0D1C8Lc2TFxD" /></div>
+      </div>
+      <div class="grp" data-when="image" data-page-node-id="lMEbykLHpfT01cQrGSjTN2">
+        <div class="row" data-page-node-id="pH4DnudaGaLqyQx8wDz0FT"><label data-page-node-id="3R52FxaM8pdVHcSEzMiVp4">图片</label><input type="file" id="bg-file" accept="image/*" hidden data-page-node-id="bRbK3l9m5ULEDHF5gG7eel" /><button class="btn"
+            id="bg-file-btn" type="button" data-page-node-id="8OHRDaC0HpGOUyGW1NL5Rp">选择文件</button></div>
+        <p class="hint" data-page-node-id="4OldhgwGt6QiNhF9di4TXW">GIF 建议 6MB 以内；PNG/JPG 会自动压缩</p>
+        <img id="bg-preview" style="max-width:100%;border-radius:8px;margin-top:8px;display:none;" data-page-node-id="5VuQcUZGR1J6LnFyOFF7iN" />
+        <div class="row" data-page-node-id="R7DNJQeEaUFFbUe4EXR3Az"><label data-page-node-id="jWiihg8AxrKLWLQcxicil0">模糊 <span class="value" id="bg-blur-v" data-page-node-id="7m1GgV5qfeLeHXeFqk1afn"></span></label><input type="range" id="bg-blur"
+            min="0" max="20" data-page-node-id="1RXCQigugzgHxOLTfm38gr" /></div>
+      </div>
+      <hr  data-page-node-id="NSL566Uh2B2L72cCbT6UET"/>
+      <div class="row" data-page-node-id="6wlEvysG0OReeUkk5dFB1F"><label data-page-node-id="0A6uZIHYe7nxxDSXBhXYhc">内容透明度 <span class="value" id="bg-alpha-v" data-page-node-id="xIvBMauuMzLDJWcOoW6SSb"></span></label><input type="range" id="bg-alpha"
+          min="20" max="100" data-page-node-id="pzWE10zG7clsjIL0MxLvgP" /></div>
+      <p class="hint" data-page-node-id="GOqzBgBrDXF63Cg9EfSkvm">越低越暗，用于暗色模式下保护眼睛</p>
+
+      <hr  data-page-node-id="DYAUxCZGYjqSnburAuG8jh"/>
+      <div style="margin-bottom:14px;" data-page-node-id="6Opq3YfBNxSe5LVJc3OWJx">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;" data-page-node-id="4cmpVPakBpELYiTUcHLnn6">
+          <div style="font-size:13px;color:#555;font-weight:500;" data-page-node-id="QnscYnrsfjvMU8v1T9tgVC">页面装饰</div>
+          <button id="dec-enter-edit" class="btn" style="display:none;" data-page-node-id="VdkhlYTBZhSOO6L4U2z2D8">编辑位置</button>
+          <button id="dec-toggle-visibility" class="btn" style="display:none;" data-page-node-id="tFAYVW1Iw2FIj4jSs6bwwW">隐藏装饰图</button>
+          <button class="btn" id="dec-exit-edit" type="button"
+            style="padding:2px 10px;font-size:11px;display:none;" data-page-node-id="eWO8CV6uBqM0vgt86RN5cr">退出编辑</button>
+        </div>
+        <p class="hint" style="margin:0 0 10px 0;" data-page-node-id="Hlsp5d52MBW8Vg5Gld1T8F">点击"编辑位置"后，可在网页上直接拖拽移动、拖拽边角缩放</p>
+        <div id="dec-list"
+          style="display:flex;flex-direction:column;gap:10px;max-height:320px;overflow-y:auto;padding-right:4px;" data-page-node-id="Y80QiDwOkvCd1VjTYaaYjm"></div>
+        <div style="margin-top:8px;" data-page-node-id="Yr4IcTTAxHTs333X0PlwBQ">
+          <input type="file" id="dec-file" accept="image/*" hidden multiple data-page-node-id="88bbCXKPyGaTw2H8z6c6bO" />
+          <button class="btn" id="dec-file-btn" type="button" data-page-node-id="xKMGdZmiCbheIEVvNGjyrD">+ 添加装饰图</button>
+        </div>
+        <p class="hint" style="margin-left:0;margin-top:6px;" data-page-node-id="tGZEpdbSAV2vZxMUBVBzR2">支持 PNG/GIF；可添加多张，各自调整位置、大小和图层</p>
+      </div>
+    </section>
+
+    <!-- 卡片 -->
+    <section class="pane" data-pane="card" data-page-node-id="q1Xe0viRplktYy31nJctSb">
+      <label class="toggle" data-page-node-id="b0e2hjYpoVTnLi8Lqj7lbA"><span data-page-node-id="30qEuGLIa5o8gGYt9uvocZ">启用圆角卡片</span><input type="checkbox" id="card-enabled" data-page-node-id="xp1EA8D7XsjHozqpLG8Ukt" /></label>
+      <div class="row" data-page-node-id="9uU7pT12p2Zg2HlAWAxVlw"><label data-page-node-id="28MXyC4DB92ENeZvL51gq2">圆角大小 <span class="value" id="card-radius-v" data-page-node-id="AbillJuN1DpdRXisJoQI79"></span></label><input type="range"
+          id="card-radius" min="0" max="28" data-page-node-id="HnFoUTPy6GAImCYlhRnjv1" /></div>
+      <div class="row" data-page-node-id="exyCZpCMgm5wtywKrs5Xhq"><label data-page-node-id="s0zkfSiqVtlypiPDPaG5BQ">卡片间距 <span class="value" id="card-gap-v" data-page-node-id="6Xo4DLKDX2UeTUkdV6QUZY"></span></label><input type="range" id="card-gap"
+          min="15" max="30" data-page-node-id="8txne18CMaONeHMZb2MrWD" /></div>
+      <label class="toggle" data-page-node-id="qNnHKBilADvhjRm8l5vKFc"><span data-page-node-id="HFxdEGHxOPwNRl9UIAohrl">卡片阴影</span><input type="checkbox" id="card-shadow" data-page-node-id="5Fk3pITBoEtF2twY5ousyT" /></label>
+      <div class="row" data-page-node-id="6I1PmoMiVRpsEAGfoJuzYW"><label data-page-node-id="sKYWV1PHW4VvhMhBdmuqy2">出现动画</label>
+        <select id="card-animation" data-page-node-id="Gbx57X2fVKEG96931XhTbl">
+          <option value="none" data-page-node-id="VuHldYiXRvDl0YyJQwfoTa">无</option>
+          <option value="floatUp" data-page-node-id="Boja8bVqJvJEUuHa64DXC5">上浮</option>
+          <option value="fadeIn" data-page-node-id="Ke8wvhqn8OxABoYEhrHwe7">淡入</option>
+          <option value="scaleIn" data-page-node-id="GRAUpk9oBYz37LHczz3E0f">缩放进入</option>
+          <option value="slideIn" data-page-node-id="lTklk7T8oWuiditkcfPtKQ">侧面滑入</option>
+        </select>
+      </div>
+      <div class="row" data-page-node-id="cJx4Uu2JPfE7KzKm55Wonp"><label data-page-node-id="AmYDuTZu5BtQKmTU72sagH">动画时长 <span class="value" id="card-duration-v" data-page-node-id="5GPY65PqNOuSiRtWnf89kI"></span></label><input type="range" id="card-duration" min="200" max="1200" step="50" data-page-node-id="nnntOM8vKWYKSGrFsEaL2U" /></div>
+      <label class="toggle" data-page-node-id="jHNh4prIcauQrLx9CsixbV"><span data-page-node-id="NPqubcztETblF7i7H5Q9p4">交错延迟（卡片依次出现）</span><input type="checkbox" id="card-stagger" data-page-node-id="ZIyikVMUVeYpGWazVcqrLW" /></label>
+      <div class="row" data-page-node-id="8bERCKWM0rTVKKTjZG26oG"><label data-page-node-id="sGeGfmaG3APppq942Ssa8V">延迟间隔 <span class="value" id="card-stagger-delay-v" data-page-node-id="QKFHhCw9Dz0RyjB7hEBPD0"></span></label><input type="range" id="card-stagger-delay" min="30" max="200" step="10" data-page-node-id="9JVMHT9rXHlVXo9G40IdCq" /></div>
+      <hr  data-page-node-id="QuDz9tuVyA0Fsj2llsDUGg"/>
+      <label class="toggle" data-page-node-id="0qsrQidLTFtLfRatTuzY5X"><span data-page-node-id="diA4qavLYy9L01mikOtVmy">隐藏推广内容（广告、二维码、话题推荐等）</span><input type="checkbox" id="tidy-all" data-page-node-id="6Y3nsmHA3FOvXIHG2prWId" /></label>
+      <label class="toggle" data-page-node-id="4vaYLlAPFXwqFFY3FAfeay"><span data-page-node-id="l1JV3PidyYlsQXdmwdh1RK">隐藏悬停弹窗（用户/标签简介）</span><input type="checkbox" id="tidy-hovercard" data-page-node-id="uZl2oYlqcIbaTPUENOeGOB" /></label>
+      <label class="toggle" data-page-node-id="azhGpLS1Aj2Nxf5HyzBemP"><span data-page-node-id="YmrqR3UAkOQK4CSvg1Kk9H">自动获取图片/视频博文标题（可能触发频率限制）</span><input type="checkbox"
+          id="tidy-inject-titles" data-page-node-id="rrcVYfa9BFXrwiUGsanTbM" /></label>
+    </section>
+
+    <!-- 字体 -->
+    <section class="pane" data-pane="font" data-page-node-id="SAsbrXKxkA2jzqMtgtanqM">
+      <div class="row" data-page-node-id="tiZnWzg2uQ2mPBorrpDqwk"><label data-page-node-id="09fIjlMkV8bwr2vUeID3nm">字体预置</label><select id="font-preset" data-page-node-id="ZXEVt9ilWBxYJ45WgM1bLV"></select></div>
+      <p class="hint" data-page-node-id="09fIjlMkV8bwr2vUeID3nm-h">选择后自动填入下方字体名，需先在系统中安装该字体；未安装则回退到系统默认字体</p>
+      <div class="row" data-page-node-id="tTaWNtqFE14TnKs6L3FQbO"><label data-page-node-id="17CZj2T12Pgvz2btektx7V">文字大小 <span class="value" id="font-scale-v" data-page-node-id="WItEBaoGGgB4hBY5Nj11Yt"></span></label><input type="range"
+          id="font-scale" min="100" max="140" data-page-node-id="up95nFMC0jTlcOJitLMlvo" /></div>
+      <div class="row" data-page-node-id="BGL1lYJuqw5kFN2PYjj7aO"><label data-page-node-id="4PHNb3Pb1iro3GIDVolvrU">字体名</label><input type="text" id="font-family" placeholder="例：PingFang SC, 霞鹜文楷" data-page-node-id="Yu9E3POr3hdVVV25cbWFzU" />
+      </div>
+    </section>
+    
+    <!-- 导航 -->
+    <section class="pane" data-pane="nav" data-page-node-id="RCoxgKQ5V739iASt25aqq2">
+      <label class="toggle" data-page-node-id="DRi2Z3JAH6bdd2yjmwVHkV"><span data-page-node-id="EMUoR44u6tvfIxHGV7Taxl">导航栏透明</span><input type="checkbox" id="nav-transparent" data-page-node-id="SHd9hix9lKmt7GaR6Nrli9" /></label>
+      <label class="toggle" data-page-node-id="YrVF9sw8GyY0AZmYEbfRA1"><span data-page-node-id="yHd59tfyMbPM7MMesCqplK">导航栏毛玻璃</span><input type="checkbox" id="nav-blur" data-page-node-id="C2sXwPE2lp94jDC3fXkmIB" /></label>
+      <div class="row" data-page-node-id="H2ZtLFCSEXUug1ahlEcdEK"><label data-page-node-id="7ciKvUFPTImaCsIfbAEo8R">主题色</label><input type="color" id="th-accent" data-page-node-id="jhl4UyNW5PVF4eDAEomKtG" /></div>
+      <p class="hint" data-page-node-id="zUCFOj21Hy3IsaOz0K2d3Q">影响链接、悬停色等</p>
+<!-- ===== 搜索框提示文字 ===== -->
+<div class="row" data-page-node-id="aASjCHFDJmr7k5wcnPpgeI"><label data-page-node-id="E9Ia53OWrqnPgzwnvxIjJC">搜索提示</label><input type="text" id="search-placeholder" placeholder="搜索用户、标签" data-page-node-id="5ByeJ2SJcbOgaJtVNkWVl2" /></div>
+<p class="hint" data-page-node-id="hjp9UXex4PyYmX4OM7JVoN">自定义顶部搜索框的占位文字</p>
+
+      <hr  data-page-node-id="HTnjcYjfUV7ZGwTpQS2abi"/>
+      <div class="row" data-page-node-id="iAealG2MVhEhFMZceZUXFu"><label data-page-node-id="lctuFOhE5eWzJXHdJzEaz2">回顶按钮图片</label><input type="file" id="gtotop-file" accept="image/*" hidden data-page-node-id="LpkH4UUpxOUJycTGtluk2B" /><button
+          class="btn" id="gtotop-file-btn" type="button" data-page-node-id="M6DgralsohMPeI5R8mGKWS">选择文件</button></div>
+      <p class="hint" data-page-node-id="vEGhZQrdrd2OgtXnESdO1J">GIF 建议 1MB 以内；PNG/JPG 会自动压缩</p>
+      <img id="gtotop-preview" style="max-width:60px;border-radius:8px;margin-top:4px;margin-left:90px;display:none;" data-page-node-id="RRkJ8E0eTQUKLiDxQtRNhC" />
+      <div class="row" data-page-node-id="DUfZqV6lCnF3fBW9cvHpp0"><button class="btn" id="gtotop-clear" type="button" data-page-node-id="AhJTgaw1GzsSrUgfF0U4en">清除图片</button></div>
+      <div class="row" id="gtotop-size-row" data-page-node-id="IhTIMXLPeDakMuBZ5kBmtT"><label data-page-node-id="94I03tdKL4HBePzWe9C7Zr">图片大小 <span class="value" id="gtotop-size-v" data-page-node-id="LCVcwKRdYAYeIf5GnRBhR2"></span></label><input
+          type="range" id="gtotop-size" min="100" max="300" data-page-node-id="cAXClRilk6K88kQFLIvGW3" /></div>
+    </section>
+
+    <section class="pane" data-pane="shortcuts" data-page-node-id="ZHR6vKyIVNU71GiLvGGY2D">
+      <label class="toggle" style="margin-bottom:14px;" data-page-node-id="ATESbGG0VvLW5bMXcBXCtv">
+        <span data-page-node-id="bpGqU1HU1LAOCFIuG4ueIL">启用快捷键</span>
+        <input type="checkbox" id="shortcuts-enabled" data-page-node-id="oXVFjhW2JcuNJbbhpDgcNA" />
+      </label>
+
+      <div id="shortcuts-list" style="margin-top:12px;opacity:0.5;pointer-events:none;transition:opacity 0.2s;" data-page-node-id="8Bxaie2Pm2dCU4VSsvSQts">
+        <div class="row" style="align-items:center;justify-content:space-between;margin-bottom:8px;" data-page-node-id="FO1l5LorUDPmE1S40IawjZ">
+          <span class="label" style="font-size:12px;color:#666;" data-page-node-id="0VN9C6uicxSnTbkhis90uM">显示/隐藏装饰图</span>
+          <span class="hint" id="shortcut-dec-toggle"
+            style="font-family:monospace;background:#f5f5f5;padding:2px 8px;border-radius:4px;font-size:12px;" data-page-node-id="1IIsWj8DToill58VV5nKZJ">Ctrl+Shift+H</span>
+        </div>
+        <div class="row" style="align-items:center;justify-content:space-between;margin-bottom:8px;" data-page-node-id="vYxXHRGp67t1WtCXvUmZBG">
+          <span class="label" style="font-size:12px;color:#666;" data-page-node-id="aQcQh4W1lx2XpVpWXm2Q4T">进入/退出编辑位置</span>
+          <span class="hint" id="shortcut-edit-mode"
+            style="font-family:monospace;background:#f5f5f5;padding:2px 8px;border-radius:4px;font-size:12px;" data-page-node-id="p9TDyJGZyoyBQiuz5ycmMi">Alt+Shift+E</span>
+        </div>
+        <div class="row" style="align-items:center;justify-content:space-between;" data-page-node-id="kLHSFFheM4asKmVMuFcNlz">
+          <span class="label" style="font-size:12px;color:#666;" data-page-node-id="eqkesL4YUo37EY9BTZIbCC">切换深色模式</span>
+          <span class="hint" id="shortcut-dark-mode"
+            style="font-family:monospace;background:#f5f5f5;padding:2px 8px;border-radius:4px;font-size:12px;" data-page-node-id="wETFiZMXj6naoKUxp4TMpd">Ctrl+Shift+K</span>
+        </div>
+        <div style="margin-top:12px;text-align:center;" data-page-node-id="91YPvhaJfb0ea0wDLyMpnX">
+          <button class="btn" id="shortcuts-settings-btn" type="button"
+            style="font-size:12px;padding:4px 12px;" data-page-node-id="lZqOw8lr12MsohOciyJrVU">在浏览器中修改快捷键</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot" data-page-node-id="AVGBO8rOZ4osg1DGBykbl6">
+    <button class="btn" id="reset" data-page-node-id="fJ8hzZMosOxBOqp3DVoudh">全部重置</button>
+    <span class="saved" id="saved" data-page-node-id="AAVkhPyU95X8vkgOP0XXIX">已保存 ✓</span>
+  </footer>
+
+  <!-- 词卡编辑弹窗 -->
+  <div id="dialogue-modal-overlay"
+    style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10000;align-items:center;justify-content:center;" data-page-node-id="vzsspCP3l2xl8jtxJsHlK7">
+    <div id="dialogue-modal"
+      style="background:#fff;border-radius:12px;width:320px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.15);overflow:hidden;" data-page-node-id="3xJeT1qKqAd3TuhgUk7gEC">
+      <div
+        style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #eee;" data-page-node-id="11Atb5avnldluIS4Tp4VfO">
+        <span id="dialogue-modal-title" style="font-size:14px;font-weight:500;color:#333;" data-page-node-id="LKJagwC8HHzfgC4CjC5jxE">词卡编辑</span>
+        <button id="dialogue-modal-close" type="button"
+          style="background:none;border:none;font-size:18px;color:#999;cursor:pointer;line-height:1;" data-page-node-id="7Mp3MofbQUPJUoIq602CRV">&times;</button>
+      </div>
+      <div id="dialogue-modal-list" style="flex:1;overflow-y:auto;padding:12px 16px;min-height:120px;" data-page-node-id="yakAuJiUFEH4e5B7EjXqW4">
+        <!-- 词卡列表动态填充 -->
+      </div>
+      <div style="padding:12px 16px;border-top:1px solid #eee;background:#fafafa;" data-page-node-id="FGDbq0uvQaDBkuASVDY6un">
+        <div style="display:flex;gap:8px;margin-bottom:10px;" data-page-node-id="lBNMJNmsqCcjhHYYlq6F04">
+          <input type="text" id="dialogue-modal-input" placeholder="输入新词卡..." maxlength="250"
+            style="flex:1;padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;" data-page-node-id="djranM3XC5EKCyE0Mf1cXQ" />
+          <button id="dialogue-modal-add" type="button" class="btn" style="padding:6px 12px;font-size:13px;" data-page-node-id="rE9nHnWyEbFrzOCxel575Y">添加</button>
+        </div>
+
+        <div style="display:flex;gap:12px;margin-bottom:10px;" data-page-node-id="ep0mGhlT6STozGxeoJnaDv">
+          <div style="display:flex;align-items:center;gap:6px;flex:1;" data-page-node-id="8bd2EhxSvyNs55ie4NSild">
+            <span style="font-size:11px;color:#666;flex-shrink:0;" data-page-node-id="r4SHUr58OERoICX46J3B97">时长</span>
+            <input type="number" id="dialogue-modal-duration" min="1" max="10" value="3"
+              style="width:45px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px;text-align:center;" data-page-node-id="odWfZIdVCH883ynrLvRv4o" />
+            <span style="font-size:11px;color:#999;" data-page-node-id="NDYmvGL9FmHSUhv5MEiJZE">秒</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;flex:1;" data-page-node-id="Typpc938CpMjaG25mtB8jA">
+            <span style="font-size:11px;color:#666;flex-shrink:0;" data-page-node-id="tgoi2ZiD0TL2kp3jKT9mdg">堆叠</span>
+            <input type="number" id="dialogue-modal-stack" min="1" max="5" value="1"
+              style="width:45px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:13px;text-align:center;" data-page-node-id="8Ek5ajTApXewi3RirnWB1T" />
+            <span style="font-size:11px;color:#999;" data-page-node-id="oukfgizOYiuLT8vNMTFUXI">个</span>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;" data-page-node-id="wvL4EcH5YX3LZfPwul3Ll8">
+          <div style="display:flex;gap:6px;" data-page-node-id="IbDQFv8yLuvLiyuLj9oLRf">
+            <button id="dialogue-modal-import" type="button" class="btn"
+              style="padding:4px 10px;font-size:12px;" data-page-node-id="MWljtHLxeufNVxhWcrm0tp">导入</button>
+            <button id="dialogue-modal-export" type="button" class="btn"
+              style="padding:4px 10px;font-size:12px;" data-page-node-id="RQBi9chF2Ryo1oGD3pJmcB">导出</button>
+          </div>
+          <button id="dialogue-modal-done" type="button" class="btn"
+            style="padding:4px 14px;font-size:12px;background:#667eea;color:#fff;border:none;" data-page-node-id="yrCNme88JTCdcKtVBlyJlz">完成</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 音效设置弹窗 ===== -->
+  <div id="sound-modal-overlay"
+    style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10000;align-items:center;justify-content:center;" data-page-node-id="KvDqUkuicOu2HVfRKkFe0q">
+    <div
+      style="background:#fff;border-radius:12px;width:360px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.15);overflow:hidden;" data-page-node-id="mh0U7XTZg2Hh8zcQxd2jyA">
+      <div
+        style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #eee;" data-page-node-id="caf3QUAGRivqrYdZP2RYcC">
+        <span id="sound-modal-title" style="font-size:14px;font-weight:500;color:#333;" data-page-node-id="qvmRZMYDjtTmedwwPTerXf">音效设置</span>
+        <button id="sound-modal-close" type="button"
+          style="background:none;border:none;font-size:18px;color:#999;cursor:pointer;line-height:1;" data-page-node-id="I4ZFpGnfkhGq1rEpjCoD5U">&times;</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:16px;" data-page-node-id="6LK0FGVYJPqu0WshF8hciE">
+        <!-- 预设音效网格 -->
+        <div style="margin-bottom:16px;" data-page-node-id="2KwV1J0gIzPh3ZwSOUNyeu">
+          <div style="font-size:13px;color:#666;margin-bottom:10px;font-weight:500;" data-page-node-id="yZlfXzF1SrTtN2AC7OhsQ8">预设音效（点击试听并选择）</div>
+          <div id="lc-sound-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;" data-page-node-id="VzqlxrW1z7WJoUq9JWtbI0">
+            <button class="lc-sound-btn" data-preset="pop" type="button"
+              style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 6px;border:2px solid #e8e8e8;border-radius:12px;background:#fff;cursor:pointer;transition:all 0.15s ease;min-height:52px;" data-page-node-id="IrfRSHBqx60dHflOWX5xTN">
+              <span style="font-size:16px;font-weight:600;color:#444;margin-bottom:2px;" data-page-node-id="u1j8ZJzCTaXACPRZWppnE6">啵!</span>
+            </button>
+            <button class="lc-sound-btn" data-preset="ding" type="button"
+              style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 6px;border:2px solid #e8e8e8;border-radius:12px;background:#fff;cursor:pointer;transition:all 0.15s ease;min-height:52px;" data-page-node-id="SFVPi2SUoEf6Ewb9YOIhgZ">
+              <span style="font-size:16px;font-weight:600;color:#444;margin-bottom:2px;" data-page-node-id="FHxv1BW5nykOfce36pJG1S">叮~</span>
+            </button>
+            <button class="lc-sound-btn" data-preset="dong" type="button"
+              style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 6px;border:2px solid #e8e8e8;border-radius:12px;background:#fff;cursor:pointer;transition:all 0.15s ease;min-height:52px;" data-page-node-id="ETGSFAx5itjlnbdt8TOSRo">
+              <span style="font-size:16px;font-weight:600;color:#444;margin-bottom:2px;" data-page-node-id="MyF3NmpLF7nlACF0pSOHzh">咚</span>
+            </button>
+            <button class="lc-sound-btn" data-preset="wobble" type="button"
+              style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 6px;border:2px solid #e8e8e8;border-radius:12px;background:#fff;cursor:pointer;transition:all 0.15s ease;min-height:52px;" data-page-node-id="aKKHedCTR8zmZs9z8AUCre">
+              <span style="font-size:16px;font-weight:600;color:#444;margin-bottom:2px;" data-page-node-id="3Y6OHRFSRtEXmQSNEdnDSv">晃啷</span>
+            </button>
+            <button class="lc-sound-btn" data-preset="swoosh" type="button"
+              style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 6px;border:2px solid #e8e8e8;border-radius:12px;background:#fff;cursor:pointer;transition:all 0.15s ease;min-height:52px;" data-page-node-id="Q5ozacKmYggOrosuZz6ida">
+              <span style="font-size:16px;font-weight:600;color:#444;margin-bottom:2px;" data-page-node-id="jfSrMfPyZopx97TJg0KGXP">咻↗</span>
+            </button>
+            <button class="lc-sound-btn" data-preset="boing" type="button"
+              style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 6px;border:2px solid #e8e8e8;border-radius:12px;background:#fff;cursor:pointer;transition:all 0.15s ease;min-height:52px;" data-page-node-id="3nnC8etiDyX6guP37AX3JO">
+              <span style="font-size:16px;font-weight:600;color:#444;margin-bottom:2px;" data-page-node-id="IEQIPQ7JtjVFEG8MdrwV9i">啵嘤~</span>
+            </button>
+            <button class="lc-sound-btn" data-preset="beep" type="button"
+              style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 6px;border:2px solid #e8e8e8;border-radius:12px;background:#fff;cursor:pointer;transition:all 0.15s ease;min-height:52px;" data-page-node-id="QgY1Fj8bD9IRhTGiwIMGgz">
+              <span style="font-size:16px;font-weight:600;color:#444;margin-bottom:2px;" data-page-node-id="1q6rmBMBaia8oCrg3oGVg6">哔啵!</span>
+            </button>
+            <button class="lc-sound-btn" data-preset="stretch" type="button"
+              style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 6px;border:2px solid #e8e8e8;border-radius:12px;background:#fff;cursor:pointer;transition:all 0.15s ease;min-height:52px;" data-page-node-id="uZOOdakPbcQfNkoXGXaEey">
+              <span style="font-size:16px;font-weight:600;color:#444;margin-bottom:2px;" data-page-node-id="OpI4Y7aT2Q3rud1bu1gRPD">咻→咚</span>
+            </button>
+            <button class="lc-sound-btn" data-preset="bubbles" type="button"
+              style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 6px;border:2px solid #e8e8e8;border-radius:12px;background:#fff;cursor:pointer;transition:all 0.15s ease;min-height:52px;" data-page-node-id="JSvEMBBavWlLTszdfBCfGt">
+              <span style="font-size:16px;font-weight:600;color:#444;margin-bottom:2px;" data-page-node-id="iwFNOl5JU97E8LCfAEMdZb">啵咕啵咕</span>
+            </button>
+          </div>
+          <div id="lc-sound-current" style="font-size:12px;color:#888;margin-top:8px;height:18px;" data-page-node-id="Ul1PzYJ9Ymn0rrd3fbJRBG"></div>
+        </div>
+
+        <!-- 分隔线 -->
+        <div style="height:1px;background:#eee;margin:16px 0;" data-page-node-id="amRNoOVNLu3AhEFFxdys1J"></div>
+
+        <!-- 自定义音频 -->
+        <div data-page-node-id="VWyfqpijEkLuk1yedtbN8V">
+          <div style="font-size:13px;color:#666;margin-bottom:10px;font-weight:500;" data-page-node-id="3NEpfg67mQB2aKbV7Mcr3T">自定义音频</div>
+          <div id="lc-sound-upload-area"
+            style="border:2px dashed #ddd;border-radius:12px;padding:20px;text-align:center;cursor:pointer;transition:all 0.2s ease;background:#fafafa;" data-page-node-id="N9Fz2IUY4xArvBKnEjVwZX">
+            <div style="font-size:24px;margin-bottom:4px;" data-page-node-id="Q5UXTejRfO0XHMcdRaaRGq">📤</div>
+            <div style="font-size:13px;color:#666;" data-page-node-id="KYihVeAaNFlCkkpDVz8BCI">点击上传音频</div>
+            <div style="font-size:11px;color:#aaa;margin-top:2px;" data-page-node-id="79QOUlAZzR1sW1e1xF1y6B">支持 MP3/WAV，≤ 1MB，建议 ≤ 5 秒</div>
+          </div>
+          <input type="file" id="lc-sound-file-input" accept="audio/mpeg,audio/wav,audio/mp3,.mp3,.wav"
+            style="display:none;" data-page-node-id="MbUfnGT5YWKUwJ0qjNsnbg">
+          <div id="lc-sound-custom-info" style="display:none;margin-top:10px;" data-page-node-id="W6rVhwhkDwFYeMgGZgJXUv">
+            <div class="lc-sound-btn lc-sound-custom-item" id="lc-sound-custom-item"
+              style="width:100%;flex-direction:row;justify-content:space-between;padding:10px 14px;min-height:48px;box-sizing:border-box;" data-page-node-id="IDViCCsn4SpZFDgV71w1Ck">
+              <span style="font-size:13px;color:#444;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                id="lc-sound-filename" data-page-node-id="1iuFHUb3IQG2JMdZkk5fAJ"></span>
+              <div style="display:flex;gap:6px;flex-shrink:0;" data-page-node-id="ygnFr2oeeAXmYKGzkjywB4">
+                <button id="lc-sound-play-custom" type="button" class="btn"
+                  style="padding:4px 10px;font-size:12px;background:transparent;border:1px solid #ddd;" data-page-node-id="EBZpuKq3VY26nKm10nJNpu">🔊</button>
+                <button id="lc-sound-delete-custom" type="button" class="btn"
+                  style="padding:4px 10px;font-size:12px;color:#e74c3c;background:transparent;border:1px solid #ddd;" data-page-node-id="1O6UIKSVxE2hzqBUirHFcn">🗑️</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  </div>
+
+  <script src="defaults.js"></script>
+  <script src="popup.js"></script>
+
+</body>
+
+</html>

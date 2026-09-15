@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "Lofter Customizer",
+  "description": "自定义 Lofter 背景、卡片圆角、字体和导航栏样式",
+  "version": "1.0.0",
+  "permissions": ["storage"],
+  "host_permissions": ["https://*.lofter.com/*", "https://lofter.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "toggle-decorations": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+H"
+      },
+      "description": "显示/隐藏装饰图"
+    },
+    "toggle-edit-mode": {
+      "suggested_key": {
+        "default": "Alt+Shift+E"
+      },
+      "description": "进入/退出编辑位置模式"
+    },
+    "toggle-dark-mode": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+K"
+      },
+      "description": "切换深色模式"
+    }
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon48.png",
+    "32": "icons/icon48.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+  {
+    "matches": [
+      "https://*.lofter.com/*",
+      "https://lofter.com/*",
+      "https://lofter.lf127.net/lofter-admin/*"
+    ],
+    "js": ["defaults.js", "content.js"],
+    "run_at": "document_start",
+    "all_frames": true
+  }
+]
+}

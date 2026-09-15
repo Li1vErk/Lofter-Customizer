@@ -1,0 +1,14 @@
+# 统一换行符，避免 Windows 提交 CRLF 造成的全文件 diff
+* text=auto eol=lf
+
+# 二进制资源不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.mp3 binary
+
+# 文档类资源在 diff 中折叠
+assets/** linguist-documentation
