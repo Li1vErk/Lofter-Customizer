@@ -1434,11 +1434,11 @@ html body .g-bd .m-recom {
         }
         aside[aria-label="连载作品筛选"] button[aria-pressed="true"] {
           background: ${s.theme.accent || "#667eea"} !important;
-          color: #333 !important;
+          color: #fff !important;
         }
         #application.lofter-root-container aside[aria-label="连载作品筛选"] button[aria-pressed="true"],
         #application.lofter-root-container aside[aria-label="连载作品筛选"] button[aria-pressed="true"] span {
-          color: #333 !important;
+          color: #fff !important;
         }
         #application.lofter-root-container aside[aria-label="连载作品筛选"] button[aria-pressed="true"] {
           background: ${s.theme.accent || "#667eea"} !important;
@@ -1573,7 +1573,7 @@ html body .g-bd .m-recom {
         #application.lofter-root-container main[class*="IHdchkcjQ8s8u7rxAPOb4w"] button[class*="l8wGBlACyy3nd3eBHk6WiQ"] {
           background: ${s.theme.accent || "#667eea"} !important;
           background-image: none !important;
-          color: #333 !important;
+          color: #fff !important;
           border: none !important;
         }
         /* 右上角"创建连载"：透明底 + 主题色边框和文字 */
@@ -1591,11 +1591,11 @@ html body .g-bd .m-recom {
           color: rgba(255, 255, 255, 0.9) !important;
           border: none !important;
         }
-        /* "编辑连载"（eurwS 修饰）：主题色底 + 深色文字 */
+        /* "编辑连载"（eurwS 修饰）：主题色底 + 纯白文字（深灰 217 在彩底上不清晰） */
         #application.lofter-root-container main[class*="IHdchkcjQ8s8u7rxAPOb4w"] button[class*="_7JA6leoHltWgSxKG3maq4w"][class*="eurwS-3Ul-a4VcnLVRUNCQ"] {
           background: ${s.theme.accent || "#667eea"} !important;
           background-image: none !important;
-          color: #333 !important;
+          color: #fff !important;
           border: 1px solid ${s.theme.accent || "#667eea"} !important;
         }
         /* 管理页连载作品卡片（站点 #fafafa）：深灰卡（比面板 #1F1F19
@@ -1665,20 +1665,22 @@ html body .g-bd .m-recom {
         #application.lofter-root-container [class*="IMB19qOdgHJHb5wAvQfSRw"] button[class*="gaMFcFLrz8MzQMjWztEkNg"] {
           background: ${s.theme.accent || "#667eea"} !important;
           background-image: none !important;
-          color: #333 !important;
+          color: #fff !important;
           border: none !important;
         }
-        /* "审核中"状态徽章：站点本身是橙字浅橙底（#ff7614/#fff1e5），
-           被 boxGray 白字规则刷掉，原样保留橙系 */
-        #application.lofter-root-container [class*="IMB19qOdgHJHb5wAvQfSRw"] span[class*="iMYLV+r7dp1r4frbfD"] {
+        /* "审核中/仅自己可见"状态徽章：站点本身是橙字浅橙底（#ff7614/#fff1e5），
+           被 boxGray 白字规则刷掉，原样保留橙系。⚠️ boxGray 的 span 规则
+           与本规则特异性同为 (1,3,1) 且声明更晚而险胜，追加第二个哈希类
+           抬到 (1,4,1) 稳赢 */
+        #application.lofter-root-container [class*="IMB19qOdgHJHb5wAvQfSRw"] span[class*="iMYLV+r7dp1r4frbfD"][class*="tctZLM5qRWtZJh4OX1pa"] {
           background: #fff1e5 !important;
           color: #ff7614 !important;
         }
-        /* "推荐操作-更多"触发键：主题色底（通用暗色按钮规则染了 #412948，夺回） */
+        /* "推荐操作-更多"触发键：与"发布章节"同款——暗色主题色底 + 主题色文字 */
         #application.lofter-root-container [class*="IMB19qOdgHJHb5wAvQfSRw"] button[class*="GF95OWvkh+6f26hQB49HSA"] {
-          background: ${s.theme.accent || "#667eea"} !important;
+          background: ${s.theme.accent ? computeDarkAccent(s.theme.accent) : "#667eea"} !important;
           background-image: none !important;
-          color: #333 !important;
+          color: ${s.theme.accent || "#667eea"} !important;
           border: none !important;
         }
         /* "更多"下拉面板（站点 #fff + 投影）：深灰卡 */
@@ -1695,11 +1697,11 @@ html body .g-bd .m-recom {
         #application.lofter-root-container [class*="IMB19qOdgHJHb5wAvQfSRw"] button[class*="OycMUiw6b4CnrxWpeGSYeg"]:hover {
           background: rgba(255, 255, 255, 0.08) !important;
         }
-        /* 右上角"更新章节"键（rTJCL2fe，站点 #14c4bc）：主题色底 */
+        /* 右上角"更新章节"键（rTJCL2fe，站点 #14c4bc）：主题色底 + 纯白文字 */
         #application.lofter-root-container [class*="IMB19qOdgHJHb5wAvQfSRw"] button[class*="rTJCL2feQxu8OAlsa5nUCw"] {
           background: ${s.theme.accent || "#667eea"} !important;
           background-image: none !important;
-          color: #333 !important;
+          color: #fff !important;
           border: none !important;
         }
         /* ===== 章节编辑页（发布文字页）===== */
@@ -5959,15 +5961,44 @@ body.p-body10 .m-filecnt h2::after {
         transform: translateY(-4px) !important;
         box-shadow: ${shadow} !important;
       }
-      /* 悬停遮罩：毛玻璃暗色 */
-      body.p-body10 .m-filecnt li.img .info,
-      body.p-body10 .m-filecnt li.text .info,
-      body.p-body10 .m-filecnt li.movie .info {
+      /* 悬停遮罩：毛玻璃暗色 — 挂在 li 自身的 ::after 上。
+         站点 .info 蒙版锚定在内部 <a>（实测 115px 宽）而非 li（125px），
+         width:100% 永远盖不满且偏移缺角；li::after inset:0 从根上铺满。
+         .info 只保留文字层（底色透明化、垫到遮罩之上） */
+      body.p-body10 .m-filecnt li.img,
+      body.p-body10 .m-filecnt li.text,
+      body.p-body10 .m-filecnt li.movie {
+        position: relative !important;
+      }
+      body.p-body10 .m-filecnt li.img::after,
+      body.p-body10 .m-filecnt li.text::after,
+      body.p-body10 .m-filecnt li.movie::after {
+        content: "" !important;
+        position: absolute !important;
+        inset: 0 !important;
         background: rgba(0,0,0,0.45) !important;
         backdrop-filter: blur(4px) !important;
         -webkit-backdrop-filter: blur(4px) !important;
+        opacity: 0 !important;
+        transition: opacity .25s !important;
+        pointer-events: none !important;
+        z-index: 3 !important;
       }
-      /* 遮罩文字白色 */
+      body.p-body10 .m-filecnt li.img:hover::after,
+      body.p-body10 .m-filecnt li.text:hover::after,
+      body.p-body10 .m-filecnt li.movie:hover::after {
+        opacity: 1 !important;
+      }
+      /* 原 .info：去自身底色避免与 ::after 叠加，文字垫到遮罩之上 */
+      body.p-body10 .m-filecnt li.img .info,
+      body.p-body10 .m-filecnt li.text .info,
+      body.p-body10 .m-filecnt li.movie .info {
+        background: transparent !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        z-index: 4 !important;
+      }
+      /* 遮罩文字白色 + 日期不换行（"日"掉到第二行） */
       body.p-body10 .m-filecnt li.img .info em,
       body.p-body10 .m-filecnt li.img .info small,
       body.p-body10 .m-filecnt li.text .info em,
@@ -5975,6 +6006,11 @@ body.p-body10 .m-filecnt h2::after {
       body.p-body10 .m-filecnt li.movie .info em,
       body.p-body10 .m-filecnt li.movie .info small {
         color: #fff !important;
+      }
+      body.p-body10 .m-filecnt li.img .info em,
+      body.p-body10 .m-filecnt li.text .info em,
+      body.p-body10 .m-filecnt li.movie .info em {
+        white-space: nowrap !important;
       }
     `);
 
@@ -7782,6 +7818,16 @@ body.p-body10 .g-bdc a:hover,
 body.p-body10 .g-sd a:hover {
   color: ${computeDarkAccent(s.theme.accent)} !important;
 }
+
+/* 归档页悬停夺回：全局 a:hover 巨型 :not 链（3418 行，特异性约
+   (1,26,7)）会压过上面的预反色规则，把原始主题色写进反色区，
+   经反相显示成脏紫色。这里复制同一条 :not 链并加 body.p-body10
+   前缀抬高特异性（约 (1,28,8)）稳赢；经页面反色滤镜后显示为
+   正常主题色（与浅色模式悬停观感一致） */
+body.p-body10 .g-bdc a:hover:not(.w-sbtn):not(.cashbtn):not(#j-participate-act):not(.cnt):not(.isaym):not(.isayt):not(.isay):not(.apply-btn):not(.sign-btn):not(.m-info .btn):not(.apply-btn):not(.sign-btn):not(.m-templist .name):not(.m-nav3 a):not(.m-temp .w-ftt3 a):not(.m-goodblog1 .ttl):not(.m-goodtag1 a):not(.m-goodblog1 .tag):not(.m-goodblog1 .f2):not(.ztag):not(.xtag):not(.linkinvite):not(.lc-post-title):not(.month a):not(.tit):not([class*="iYtrszmUYaccvUMmBbXQiw"] a),
+body.p-body10 .g-sd a:hover:not(.w-sbtn):not(.cashbtn):not(#j-participate-act):not(.cnt):not(.isaym):not(.isayt):not(.isay):not(.apply-btn):not(.sign-btn):not(.m-info .btn):not(.apply-btn):not(.sign-btn):not(.m-templist .name):not(.m-nav3 a):not(.m-temp .w-ftt3 a):not(.m-goodblog1 .ttl):not(.m-goodtag1 a):not(.m-goodblog1 .tag):not(.m-goodblog1 .f2):not(.ztag):not(.xtag):not(.linkinvite):not(.lc-post-title):not(.month a):not(.tit):not([class*="iYtrszmUYaccvUMmBbXQiw"] a) {
+  color: ${s.theme.accent ? computeDarkAccent(s.theme.accent) : "#667eea"} !important;
+}
 `
     : ""
 }
@@ -8347,6 +8393,16 @@ body:has(.m-vw-nav) .m-post .layer {
   filter: invert(100%) hue-rotate(180deg) brightness(0.85) !important;
 }
 
+/* 达人-寻找好友页"绑定"键（input.w-bbtn.bindbtn.ztag）：自身带 ztag 被
+   区域反色波及，且不在 #main / #inviteearea 两个既有锚点内 →
+   按类名直接补偿反相，恢复正常主题色 */
+.w-bbtn.w-bbtn-0.bindbtn {
+  filter: invert(100%) hue-rotate(180deg) !important;
+}
+.w-bbtn.w-bbtn-0.bindbtn:hover {
+  filter: invert(100%) hue-rotate(180deg) brightness(0.85) !important;
+}
+
 /* ── 发现-趋势页评论弹窗（#j-popup 在 .g-bdc 反色区内，不在 #main，
    上面的 #main 补偿规则覆盖不到）── */
 /* 发布键：通用规则写亮主题色会被反相成暗色 → 写暗色变体显示正常主题色 */
@@ -8355,6 +8411,27 @@ body:has(.m-vw-nav) .g-bdc .w-bbtn.w-bbtn-0 {
   background-image: none !important;
   border-color: ${s.theme.accent ? computeDarkAccent(s.theme.accent) : "#667eea"} !important;
   color: #fff !important;
+}
+/* 达人-寻找好友页"绑定"键夺回：bindbtn 带自有反补偿 filter，
+   区域反相 + 自身反相抵消 → 显示的就是写入原色。上面的预反色规则
+   是给趋势页无补偿发布键的，在此页误伤成暗底，这里写原始主题色。
+   同页"复制链接"（input.stag.w-bbtn.w-bbtn-0，在 #inviteearea 内、
+   带上方 8368 的补偿 filter）同样被预反色规则误伤成暗紫，
+   一并夺回（:has(#inviteearea) 的 id 级特异性稳赢 8389） */
+body:has(.m-vw-nav) .g-bdc .w-bbtn.w-bbtn-0.bindbtn,
+.g-bdc:has(#inviteearea) .w-bbtn.w-bbtn-0 {
+  background-color: ${s.theme.accent || "#667eea"} !important;
+  background-image: none !important;
+  border-color: ${s.theme.accent || "#667eea"} !important;
+  color: #fff !important;
+}
+
+/* 达人-邀请页"新浪微博"悬停文字：全局 a:hover 巨型 :not 链（3418 行，
+   约 (1,26,7)）把原始主题色写进反色区，经反相显示为暗紫。
+   复制同链加 :has(#inviteearea) id 级前缀稳赢，写预反色值，
+   显示为正常主题色（与"链接邀请"悬停同款，底色保持站点原样） */
+.g-bdc:has(#inviteearea) a.sinawb:hover:not(.w-sbtn):not(.cashbtn):not(#j-participate-act):not(.cnt):not(.isaym):not(.isayt):not(.isay):not(.apply-btn):not(.sign-btn):not(.m-info .btn):not(.apply-btn):not(.sign-btn):not(.m-templist .name):not(.m-nav3 a):not(.m-temp .w-ftt3 a):not(.m-goodblog1 .ttl):not(.m-goodtag1 a):not(.m-goodblog1 .tag):not(.m-goodblog1 .f2):not(.ztag):not(.xtag):not(.linkinvite):not(.lc-post-title):not(.month a):not(.tit):not([class*="iYtrszmUYaccvUMmBbXQiw"] a) {
+  color: ${s.theme.accent ? computeDarkAccent(s.theme.accent) : "#667eea"} !important;
 }
 /* 评论/热度弹窗卡片：站点原底为白色系，反色后呈纯黑
    → 写预反色值 rgb(225,225,219)，经反色滤镜显示为 #1F1F19。
@@ -9985,6 +10062,29 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         el.setAttribute("data-lc-cc-text", "1");
       }
     });
+    /* 主题色实心键 / 选中态筛选键：通用映射写出的浅灰 217 在彩色底上
+       不清晰，强制纯白（含内部 span）。旧版本写下的 217 内联因 map
+       幂等跳过不会自愈，这里每次暗色重扫直接覆写；标记同款属性，
+       浅色模式统一摘除 */
+    page
+      .querySelectorAll(
+        'aside[aria-label="连载作品筛选"] button[aria-pressed="true"], button[class*="eurwS-3Ul-a4VcnLVRUNCQ"], button[class*="rTJCL2feQxu8OAlsa5nUCw"], button[class*="gaMFcFLrz8MzQMjWztEkNg"], button[class*="l8wGBlACyy3nd3eBHk6WiQ"]',
+      )
+      .forEach((el) => {
+        el.style.setProperty("color", "rgb(255, 255, 255)", "important");
+        el.setAttribute("data-lc-cc-text", "1");
+        el.querySelectorAll("span").forEach((sp) => {
+          sp.style.setProperty("color", "rgb(255, 255, 255)", "important");
+          sp.setAttribute("data-lc-cc-text", "1");
+        });
+      });
+    /* "推荐操作-更多"键：文字改主题色（同"发布章节"）——
+       摘掉旧版本写下的 217 内联，让上面的 CSS 主题色生效 */
+    page
+      .querySelectorAll('button[class*="GF95OWvkh+6f26hQB49HSA"]')
+      .forEach((el) => {
+        el.style.removeProperty("color");
+      });
     page.dataset.lcCcText = "dark";
   }
 
