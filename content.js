@@ -13934,3 +13934,397 @@ function bindGlobalDecListener() {
     setTimeout(() => obs.disconnect(), 10000);
   }
 })();
+
+/* ============================================================
+ * 悬浮设置面板（UI 批第一步）
+ * Shadow DOM 宿主 + 悬浮按钮（可拖动/记忆位置）+ popup.html iframe
+ * 说明：本文件头部对 iframe（编辑器/评论区）已 throw 提前退出，
+ * 因此执行到这里的一定是主帧。面板数据流与 UI 宿主无关——
+ * popup.js 全量写 lc_settings_v1，主 IIFE 的 storage.onChanged
+ * 监听负责重绘，此处只管 UI 壳。
+ * ============================================================ */
+(function () {
+  const HOST_ID = "lc-fab-host";
+  const FAB = 44;            // 悬浮按钮直径
+  const PANEL_W = 340;       // 与 popup.html body 定宽一致
+  const PANEL_H = 560;       // 面板默认高度（视口不够时收缩）
+  const MIN_PANEL_H = 200;   // 面板压缩下限，低于此值宁可允许覆盖按钮
+  const EDGE = 12;           // 左/上/下：距视口边缘最小间距
+  const RIGHT_EDGE = 18;     // 右侧边界加大：避免压进滚动条区域
+  const FAB_MARGIN_BOTTOM = 96; // 默认位抬高，避开站点右下角 50x50 回顶按钮
+  const MORPH_MS = 260;        // 结构变化（翻边/换展开方向）后位置过渡的保持窗口
+  /* 面板位置过渡：只在「结构变化」时启用。拖动中的连续跟随必须逐帧瞬跟，
+   * 否则面板会滞后按钮约 0.2s，拖起来发黏。 */
+  const PANEL_T =
+    "opacity .18s ease, transform .18s ease, " +
+    "left .2s cubic-bezier(.22,.61,.36,1), " +
+    "top .2s cubic-bezier(.22,.61,.36,1), " +
+    "height .2s cubic-bezier(.22,.61,.36,1)";
+
+  /* 视口宽高必须用 clientWidth/Height（不含滚动条）。
+   * innerWidth 含滚动条（约 15-17px），按它 clamp 会让按钮压进
+   * 滚动条区域，表现为"按钮超出网页右缘一部分"，开 DevTools 时尤甚。 */
+  const vw = () => document.documentElement.clientWidth || window.innerWidth;
+  const vh = () => document.documentElement.clientHeight || window.innerHeight;
+
+  let host = null;
+  let fab = null;
+  let panel = null;
+  let panelIframe = null; // 首次打开才创建，之后复用（保留面板内状态）
+  let isOpen = false;
+  let fabPos = null;      // FAB 停靠信息 {side, y}；null = 默认位
+  let dragMoved = false;
+  let followRaf = null;   // 拖动跟随的 rAF 句柄（节流）
+  let lastPanelSig = "";       // 上次的面板档位签名「停靠侧|展开档」
+  let panelMorphUntil = 0;     // 结构变化过渡的保持截止时间戳
+  let panelMotionOn = false;   // 面板当前是否带位置过渡
+
+  /* ---------- 主题读取（与主 IIFE 的 window.settings 解耦兜底） ---------- */
+  const isDark = () => {
+    const m = window.settings?.darkMode?.mode || "off";
+    return (
+      m === "manual" ||
+      (m === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches)
+    );
+  };
+  const getAccent = () => window.settings?.theme?.accent || "#667eea";
+
+  /* ---------- 注入点 helper：幂等挂载 Shadow DOM 宿主 ----------
+   * 挂在 documentElement（body 之外）：React 重渲染/站点脚本不清洗，
+   * SPA 路由切换不影响。closed shadow root + adoptedStyleSheets，
+   * 站点样式（含本插件自己的 #lc-style / 暗色滤镜）完全隔离。 */
+  function ensureHost() {
+    host = document.getElementById(HOST_ID);
+    if (host) return;
+    host = document.createElement("div");
+    host.id = HOST_ID;
+    host.style.cssText =
+      "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483000;";
+    (document.documentElement || document.body).appendChild(host);
+
+    const shadow = host.attachShadow({ mode: "closed" });
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(`
+      #fab {
+        position: fixed; width: ${FAB}px; height: ${FAB}px;
+        border-radius: 50%; display: flex; align-items: center;
+        justify-content: center; cursor: pointer;
+        box-shadow: 0 4px 16px rgba(0,0,0,.28);
+        /* left/top 过渡专供「松手归岸」时平滑滑回边缘；拖动中 .dragging
+         * 会把 transition 覆盖为 none，保证逐帧跟手不滞后。 */
+        transition: transform .15s ease, box-shadow .15s ease,
+          left .18s ease, top .18s ease;
+        touch-action: none; user-select: none; -webkit-user-select: none;
+      }
+      #fab:hover { transform: scale(1.08); box-shadow: 0 6px 20px rgba(0,0,0,.34); }
+      #fab.dragging { cursor: grabbing; transform: scale(1.05);
+        box-shadow: 0 8px 24px rgba(0,0,0,.4); transition: none; }
+      #fab svg { width: 22px; height: 22px; pointer-events: none; }
+      #panel {
+        position: fixed; width: ${PANEL_W}px; background: #fff;
+        border-radius: 16px; overflow: hidden;
+        box-shadow: 0 12px 40px rgba(0,0,0,.28);
+        opacity: 0; pointer-events: none;
+        transform: translateY(8px) scale(.97);
+        transition: opacity .18s ease, transform .18s ease;
+      }
+      #panel.open { opacity: 1; pointer-events: auto; transform: none; }
+      #panel iframe { width: 100%; height: 100%; border: 0; display: block; background: transparent; }
+    `);
+    shadow.adoptedStyleSheets = [sheet];
+
+    fab = document.createElement("div");
+    fab.id = "fab";
+    fab.title = "Lofter Customizer 设置";
+    fab.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle>' +
+      '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 ' +
+      '0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 ' +
+      '1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 ' +
+      '0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 ' +
+      '2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 ' +
+      '0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 ' +
+      '1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
+    shadow.appendChild(fab);
+
+    panel = document.createElement("div");
+    panel.id = "panel";
+    shadow.appendChild(panel);
+
+    applyFabTheme();
+    bindFabEvents();
+  }
+
+  /* ---------- FAB 主题：跟随主题色 + 深浅模式 ---------- */
+  function applyFabTheme() {
+    fab.style.background = getAccent();
+    fab.style.boxShadow = isDark()
+      ? "0 4px 16px rgba(0,0,0,.5)"
+      : "0 4px 16px rgba(0,0,0,.28)";
+  }
+
+  /* ---------- 定位（停靠式） ----------
+   * 按钮只停靠页面左/右边缘（fabPos = { side, y }），永远悬不到页面中间。
+   * 这样 DevTools 开合等视口变化只会让按钮贴着新边缘，不会出现
+   * "缩窄时被 clamp 进来、拉宽后留在中间"的棘轮效应。 */
+  function clampY(y) {
+    const maxY = Math.max(EDGE, vh() - FAB - EDGE);
+    return Math.min(Math.max(EDGE, y), maxY);
+  }
+
+  const sideX = (side) =>
+    side === "left" ? EDGE : vw() - FAB - RIGHT_EDGE;
+
+  /* 归一化存档：兼容旧版 {x,y} 自由坐标（按 x 落在哪半边判定停靠侧），
+   * 也接受新版 {side,y}；无效或缺省返回 null（用默认位）。 */
+  function normPos(raw) {
+    if (!raw) return null;
+    if (typeof raw.x === "number") {
+      return {
+        side: raw.x >= vw() / 2 ? "right" : "left",
+        y: typeof raw.y === "number" ? raw.y : null,
+      };
+    }
+    if (raw.side === "left" || raw.side === "right") {
+      return {
+        side: raw.side,
+        y: typeof raw.y === "number" ? raw.y : null,
+      };
+    }
+    return null;
+  }
+
+  function placeFab(animate) {
+    const p = normPos(fabPos);
+    fabPos = {
+      side: p ? p.side : "right",
+      y: clampY(p && p.y !== null ? p.y : vh() - FAB - FAB_MARGIN_BOTTOM),
+    };
+    const left = sideX(fabPos.side) + "px";
+    const top = fabPos.y + "px";
+    if (animate === false) {
+      /* 挂载首帧 / 恢复记忆位置：不能带过渡——left/top 从空值过渡到目标值
+       * 会出现"从左上角滑过来"的启动动画。强制结算一次再恢复。 */
+      fab.style.transition = "none";
+      fab.style.left = left;
+      fab.style.top = top;
+      void fab.offsetWidth;
+      fab.style.transition = "";
+    } else {
+      fab.style.left = left;
+      fab.style.top = top;
+    }
+  }
+
+  /* 位置写入 storage（整对象取出、局部更新、整体写回，
+   * 不经主 IIFE 的 merge 回路，避免覆盖用户其他字段） */
+  function saveFabPos() {
+    chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
+      const s = res[LC_STORAGE_KEY] || {};
+      s.panel = Object.assign({}, s.panel, {
+        fabPos: { side: fabPos.side, y: Math.round(fabPos.y) },
+      });
+      chrome.storage.local.set({ [LC_STORAGE_KEY]: s });
+    });
+  }
+
+  /* ---------- 展开/收起 ----------
+   * 展开方向由 positionPanel 按三档判定（上下 / 侧向 / 压缩），
+   * 详见该函数注释。面板打开后会随按钮拖动实时跟随。 */
+  function togglePanel() {
+    isOpen ? closePanel() : openPanel();
+  }
+
+  function openPanel() {
+    if (!panelIframe) {
+      panelIframe = document.createElement("iframe");
+      panelIframe.src = chrome.runtime.getURL("popup.html");
+      panel.appendChild(panelIframe);
+    }
+    positionPanel(true); // 首次展开/重开：位置变化走平滑过渡
+    panel.classList.add("open");
+    isOpen = true;
+  }
+
+  /* 面板位置过渡的开关：
+   *   structural=true → 打开位置过渡，并保持 MORPH_MS。保持窗口是必须的：
+   *   过渡进行中若立刻把 transition 关掉，浏览器会直接跳到终值，动画等于白做。
+   *   structural=false → 恢复"只淡入淡出"，拖动跟随时逐帧瞬跟不滞后。 */
+  function applyPanelMotion(structural) {
+    const now = performance.now();
+    if (structural) panelMorphUntil = now + MORPH_MS;
+    const on = now < panelMorphUntil;
+    if (on === panelMotionOn) return;
+    panelMotionOn = on;
+    panel.style.transition = on ? PANEL_T : "";
+  }
+
+  /* 面板定位（与开关解耦：拖动按钮时需要实时重定位，不能重建 iframe） */
+  function positionPanel(force) {
+    /* 展开方向 + 高度（保证面板永不覆盖按钮——按钮是唯一开关键，被压住就点不到）：
+     * ① 按钮靠上/下部（某一侧装得下整高，含四个角）→ 向该侧上下展开；
+     * ② 按钮在垂直中部（两侧都装不下整高）→ 侧向展开：靠右缘时面板在按钮
+     *    左侧、靠左缘时面板在按钮右侧，整高、与按钮垂直居中；
+     * ③ 窗口太窄侧向也放不下 → 退回压缩垂直（高度下限 MIN_PANEL_H）；
+     * ④ 窗口极矮连下限都放不下 → 允许覆盖，退回视口 clamp（无更优解）。 */
+    const GAP = 16;
+    const fr = fab.getBoundingClientRect();
+    const maxH = Math.min(PANEL_H, vh() - EDGE * 2);
+    const spaceAbove = fr.top - GAP - EDGE;
+    const spaceBelow = vh() - fr.bottom - GAP - EDGE;
+    let left, top, ph, mode;
+    if (spaceBelow >= maxH || spaceAbove >= maxH) {
+      /* ① 角部/靠边场景：上下展开，整高 */
+      const below = spaceBelow >= maxH;
+      mode = below ? "below" : "above";
+      ph = maxH;
+      top = below ? fr.bottom + GAP : fr.top - GAP - ph;
+      left = Math.min(Math.max(EDGE, fr.left), vw() - PANEL_W - RIGHT_EDGE);
+    } else {
+      /* ② 垂直中部：侧向展开（x 方向与按钮区间不相交，天然不覆盖） */
+      const sideSpace =
+        fabPos.side === "right"
+          ? fr.left - GAP - EDGE
+          : vw() - fr.right - GAP - EDGE;
+      if (sideSpace >= PANEL_W) {
+        mode = "side";
+        ph = maxH;
+        left =
+          fabPos.side === "right"
+            ? fr.left - GAP - PANEL_W
+            : fr.right + GAP;
+        top = Math.min(
+          Math.max(EDGE, fr.top + FAB / 2 - ph / 2),
+          Math.max(EDGE, vh() - ph - EDGE),
+        );
+      } else {
+        /* ③ 窗口太窄：压缩垂直 */
+        const below = spaceBelow >= spaceAbove;
+        mode = below ? "squash-below" : "squash-above";
+        ph = Math.max(
+          MIN_PANEL_H,
+          Math.min(maxH, below ? spaceBelow : spaceAbove),
+        );
+        top = below ? fr.bottom + GAP : fr.top - GAP - ph;
+        top = Math.min(Math.max(EDGE, top), Math.max(EDGE, vh() - ph - EDGE));
+        left = Math.min(Math.max(EDGE, fr.left), vw() - PANEL_W - RIGHT_EDGE);
+      }
+    }
+    /* 档位签名 = 停靠侧 + 展开档。只有签名变化（翻边 / 换展开方向 / 换档）
+     * 才走平滑过渡；同档位下的连续跟随瞬跟，否则拖起来面板会滞后。 */
+    const sig = fabPos.side + "|" + mode;
+    applyPanelMotion(!!force || sig !== lastPanelSig);
+    lastPanelSig = sig;
+    panel.style.left = left + "px";
+    panel.style.top = top + "px";
+    panel.style.height = ph + "px";
+  }
+
+  function closePanel() {
+    panel.classList.remove("open");
+    isOpen = false;
+  }
+
+  /* ---------- 交互绑定：拖动 / 点击切换 / 外部点击收起 / Esc / resize ---------- */
+  function bindFabEvents() {
+    placeFab(false); // 首帧免过渡，避免从空值位置滑过来
+
+    let pid = null;
+    let sx = 0, sy = 0, ox = 0, oy = 0;
+    let dragX = 0, dragY = 0; // 拖动中的自由坐标（松手才按半边归岸）
+
+    fab.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      dragMoved = false;
+      sx = e.clientX; sy = e.clientY;
+      ox = sideX(fabPos.side); oy = fabPos.y;
+      dragX = ox; dragY = oy;
+      pid = e.pointerId;
+      try { fab.setPointerCapture(pid); } catch (err) {}
+    });
+
+    fab.addEventListener("pointermove", (e) => {
+      if (pid === null || e.pointerId !== pid) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      if (!dragMoved && Math.hypot(dx, dy) < 4) return; // 位移阈值，区分点击/拖动
+      dragMoved = true;
+      fab.classList.add("dragging");
+      // 拖动中允许在视口内自由移动（可跨越中线），垂直方向 clamp
+      dragX = Math.min(Math.max(EDGE, ox + dx), vw() - FAB - RIGHT_EDGE);
+      dragY = clampY(oy + dy);
+      fab.style.left = dragX + "px";
+      fab.style.top = dragY + "px";
+      // 同步拖动态的停靠侧：侧向展开时面板要跟着翻边，而不是等松手才翻
+      fabPos.side = dragX + FAB / 2 >= vw() / 2 ? "right" : "left";
+      // 面板保持展开并实时跟随（rAF 节流：避免每帧多次 getBoundingClientRect 触发布局抖动；
+      // 同档位瞬跟保手感，翻边/换档由 positionPanel 内部自动走过渡）
+      if (isOpen && followRaf === null) {
+        followRaf = requestAnimationFrame(() => {
+          followRaf = null;
+          positionPanel();
+        });
+      }
+    });
+
+    const finish = (e) => {
+      if (pid === null || e.pointerId !== pid) return;
+      pid = null; // capture 在 pointerup 后由浏览器自动释放
+      fab.classList.remove("dragging");
+      if (dragMoved) {
+        // 停靠定盘：按钮中心落在哪半边就归哪侧边缘，垂直高度保留
+        fabPos = { side: fabPos.side, y: dragY };
+        fab.style.left = sideX(fabPos.side) + "px";
+        fab.style.top = fabPos.y + "px";
+        if (isOpen) positionPanel(true); // 归岸后面板随之平滑校正
+        saveFabPos();
+      } else {
+        togglePanel();
+      }
+      dragMoved = false;
+    };
+    fab.addEventListener("pointerup", finish);
+    fab.addEventListener("pointercancel", finish);
+
+    /* 交互模型（用户确认）：
+     *   单击按钮 → 开/关面板；
+     *   点页面空白 → 面板不收起（调样式时需要边点页面看效果、边继续改设置，
+     *     否则每次预览都要重新开面板）；
+     *   拖动按钮 → 面板保持展开并实时跟随（仅横向吸附归岸）。
+     * 逃生口：Esc 关闭；按钮始终可见可点，随时可关。 */
+    document.addEventListener("keydown", (e) => {
+      if (isOpen && e.key === "Escape") closePanel();
+    });
+
+    window.addEventListener("resize", () => {
+      placeFab(); // 带过渡：视口变化时按钮平滑贴到新边缘
+      if (isOpen) positionPanel(true); // 只重定位，不重建
+    });
+
+    // 主题联动：settings 或系统深浅变化时刷新按钮配色
+    chrome.storage.onChanged.addListener((c, area) => {
+      if (area === "local" && c[LC_STORAGE_KEY]) applyFabTheme();
+    });
+    window
+      .matchMedia("(prefers-color-scheme: dark)")
+      .addEventListener("change", applyFabTheme);
+  }
+
+  /* ---------- 启动：立即挂载（documentElement 已就绪），设置异步补主题与位置 ---------- */
+  ensureHost();
+  chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
+    /* 注意不能判 `if (!window.settings)` 跳过：主 IIFE 在脚本开头就同步
+     * 设了 window.settings = LC_clone(LC_DEFAULTS)（纯默认值，accent 空），
+     * 判空永远为 false，按钮会一直显示兜底蓝色直到首次设置变更。
+     * 这里无条件按存储值 merge（与主 IIFE load() 同一套逻辑），
+     * 顺便让全局 settings 在 DOMContentLoaded 前就提前就绪。 */
+    window.settings = LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {});
+    // 恢复记忆位置（normPos 兼容旧版 {x,y} 存档）
+    const saved = res[LC_STORAGE_KEY]?.panel?.fabPos;
+    if (saved) {
+      fabPos = saved;
+      placeFab(false); // 恢复记忆位置同样免过渡
+    }
+    applyFabTheme();
+  });
+})();

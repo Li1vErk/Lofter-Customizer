@@ -84,6 +84,13 @@ const LC_DEFAULTS = {
     mode: "off",
     brightness: 90,
   },
+
+  /* 悬浮设置面板（UI 批）：按钮为停靠式，只停靠页面左/右边缘。
+   * fabPos = { side: "left"|"right", y: 视口纵坐标 }，null = 默认右侧。
+   * 旧版 {x,y} 自由坐标由 content.js 读取时自动按半边迁移。 */
+  panel: {
+    fabPos: null,
+  },
 };
 
 function LC_merge(base, override) {

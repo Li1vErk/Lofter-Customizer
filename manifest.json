@@ -5,6 +5,16 @@
   "version": "1.0.0",
   "permissions": ["storage"],
   "host_permissions": ["https://*.lofter.com/*", "https://lofter.com/*"],
+  "web_accessible_resources": [
+    {
+      "resources": ["popup.html"],
+      "matches": [
+        "https://*.lofter.com/*",
+        "https://lofter.com/*",
+        "https://lofter.lf127.net/*"
+      ]
+    }
+  ],
   "background": {
     "service_worker": "background.js"
   },
