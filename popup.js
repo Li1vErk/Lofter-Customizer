@@ -10,7 +10,9 @@
     t = setTimeout(() => {
       /* ---------- 存前安全检查 ---------- */
       if (state.font && state.font.family) {
-        state.font.family = String(state.font.family).replace(/[;{}@<>"`\\]/g, '').trim();
+        state.font.family = LC_normalizeFontFamily(
+          String(state.font.family).replace(/[;{}@<>"`\\]/g, '').trim()
+        );
       }
       const isHex6 = (v) => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v);
       if (state.theme) {
@@ -50,14 +52,33 @@
     img.src = dataUrl;
   });
 
-  /* 标签切换 */
-  $("tabs").addEventListener("click", (e) => {
+  /* 标签切换（--i 驱动 .tabs::before 滑动色块平移） */
+  const tabsBar = $("tabs");
+  tabsBar.addEventListener("click", (e) => {
     const b = e.target.closest("button[data-tab]"); if (!b) return;
     document.querySelectorAll(".tabs button").forEach((x) => x.classList.remove("on"));
     document.querySelectorAll(".pane").forEach((x) => x.classList.remove("on"));
     b.classList.add("on");
     document.querySelector(`.pane[data-pane="${b.dataset.tab}"]`).classList.add("on");
+    const btns = [...tabsBar.querySelectorAll("button[data-tab]")];
+    tabsBar.style.setProperty("--i", btns.indexOf(b));
   });
+
+  /* 二级子标签切换（栏内 pill，如背景栏的"背景与显示 / 页面装饰"） */
+  document.querySelectorAll(".subtabs").forEach((bar) => {
+    bar.addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-subtab]"); if (!b) return;
+      bar.querySelectorAll("button").forEach((x) => x.classList.remove("on"));
+      const pane = bar.closest(".pane");
+      pane.querySelectorAll(".subpane").forEach((x) => x.classList.remove("on"));
+      b.classList.add("on");
+      pane.querySelector(`.subpane[data-subpane="${b.dataset.subtab}"]`).classList.add("on");
+    });
+  });
+
+  /* 「其他 → 关于」版本号（读 manifest） */
+  const verEl = $("about-version");
+  if (verEl) verEl.textContent = "v" + chrome.runtime.getManifest().version;
 
   /* 背景组显隐 */
   function syncBgGroups() {
@@ -179,7 +200,7 @@
 
     arr.forEach((dec, idx) => {
       const card = document.createElement("div");
-      card.style.cssText = "border:1px solid #e0e0e0;border-radius:8px;padding:10px;background:#fafafa;";
+      card.style.cssText = "border:1px solid var(--lc-line);border-radius:8px;padding:10px;background:var(--lc-soft);";
       const ia = dec.interactive;
       const isOpen = card.dataset.interactiveOpen === "true";
 
@@ -188,55 +209,55 @@
           <img src="${dec.dataUrl}" style="width:52px;height:52px;object-fit:contain;border-radius:6px;background:#eee;flex-shrink:0;" />
           <div style="flex:1;min-width:0;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-              <span style="font-size:12px;color:#555;font-weight:500;">装饰 #${idx + 1}</span>
+              <span style="font-size:12px;color:var(--lc-text);font-weight:500;">装饰 #${idx + 1}</span>
               <button class="btn" data-del="${idx}" style="padding:2px 8px;font-size:11px;flex-shrink:0;">删除</button>
             </div>
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
               <label class="dec-toggle" style="font-size:11px;cursor:pointer;">
                 <input type="checkbox" data-idx="${idx}" data-key="enabled" ${dec.enabled !== false ? 'checked' : ''} />
-                <span style="color:${dec.enabled !== false ? '#22c55e' : '#666'};font-weight:${dec.enabled !== false ? '500' : 'normal'};transition:color 0.2s;">显示</span>
+                <span style="color:${dec.enabled !== false ? '#22c55e' : 'var(--lc-sub)'};font-weight:${dec.enabled !== false ? '500' : 'normal'};transition:color 0.2s;">显示</span>
               </label>
               <label class="dec-toggle" style="font-size:11px;cursor:pointer;">
                 <input type="checkbox" data-idx="${idx}" data-key="aboveCards" ${dec.aboveCards ? 'checked' : ''} />
-                <span style="color:${dec.aboveCards ? '#22c55e' : '#666'};font-weight:${dec.aboveCards ? '500' : 'normal'};transition:color 0.2s;">覆盖卡片</span>
+                <span style="color:${dec.aboveCards ? '#22c55e' : 'var(--lc-sub)'};font-weight:${dec.aboveCards ? '500' : 'normal'};transition:color 0.2s;">覆盖卡片</span>
               </label>
             </div>
             <div style="display:flex;align-items:center;gap:6px;">
-              <span style="font-size:11px;color:#888;flex-shrink:0;">透明</span>
+              <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">透明</span>
               <input type="range" data-idx="${idx}" data-key="opacity" min="10" max="100" value="${dec.opacity ?? 100}" style="flex:1;min-width:0;height:4px;" />
               <span class="value" style="min-width:28px;font-size:11px;">${dec.opacity ?? 100}</span>
             </div>
           </div>
         </div>
         <!-- 互动效果展开栏 -->
-        <div style="margin-top:8px;border-top:1px solid #eee;padding-top:6px;">
+        <div style="margin-top:8px;border-top:1px solid var(--lc-line);padding-top:6px;">
           <div style="display:flex;align-items:center;gap:8px;">
-            <button class="btn" data-toggle-ia="${idx}" type="button" style="padding:4px 0;font-size:12px;color:#667eea;background:transparent;border:none;text-align:left;display:flex;align-items:center;gap:4px;cursor:pointer;flex:1;">
+            <button class="btn" data-toggle-ia="${idx}" type="button" style="padding:4px 0;font-size:12px;color:var(--lc-accent);background:transparent;border:none;text-align:left;display:flex;align-items:center;gap:4px;cursor:pointer;flex:1;">
               <span data-arrow="${idx}" style="display:inline-block;transition:transform 0.2s;${isOpen ? 'transform:rotate(90deg);' : ''}">▶</span>
               <span>互动效果</span>
             </button>
-            <button class="btn" data-ia-toggle="${idx}" type="button" style="font-size:11px;flex-shrink:0;padding:2px 8px;border-radius:10px;transition:all 0.2s;cursor:pointer;border:none;${ia.enabled ? 'color:#22c55e;background:#f0fdf4;font-weight:500;' : 'color:#999;background:#f5f5f5;'}">${ia.enabled ? '已开启' : '未开启'}</button>
+            <button class="btn" data-ia-toggle="${idx}" type="button" style="font-size:11px;flex-shrink:0;padding:2px 8px;border-radius:10px;transition:all 0.2s;cursor:pointer;border:none;${ia.enabled ? 'color:#22c55e;background:color-mix(in srgb,#22c55e 12%,var(--lc-card));font-weight:500;' : 'color:var(--lc-sub);background:var(--lc-soft);'}">${ia.enabled ? '已开启' : '未开启'}</button>
           </div>
           <div data-ia-panel="${idx}" style="${isOpen ? '' : 'display:none;'}padding-top:8px;">
-            <p class="hint" style="margin:0 0 8px 0;font-size:11px;color:#999;">开启后默认开启覆盖卡片（确保点击能响应）</p>
+            <p class="hint" style="margin:0 0 8px 0;font-size:11px;color:var(--lc-sub);">开启后默认开启覆盖卡片（确保点击能响应）</p>
 
 <div style="margin-bottom:8px;display:flex;align-items:center;gap:6px;">
-  <span style="font-size:11px;color:#666;flex-shrink:0;">呼吸模式</span>
-  <select data-idx="${idx}" data-ia-key="breatheMode" style="flex:1;padding:2px 6px;border:1px solid #ddd;border-radius:6px;font-size:12px;background:#fff;">
+  <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">呼吸模式</span>
+  <select data-idx="${idx}" data-ia-key="breatheMode" style="flex:1;padding:2px 6px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);">
     <option value="float" ${(ia?.breatheMode || 'float') !== 'squish' ? 'selected' : ''}>浮动</option>
     <option value="squish" ${(ia?.breatheMode || 'float') === 'squish' ? 'selected' : ''}>挤压</option>
   </select>
-  <button class="btn" data-breathe-more="${idx}" type="button" style="padding:2px 8px;font-size:11px;background:#f5f5f5;border:none;border-radius:6px;cursor:pointer;color:#666;">更多</button>
+  <button class="btn" data-breathe-more="${idx}" type="button" style="padding:2px 8px;font-size:11px;background:var(--lc-soft);border:none;border-radius:6px;cursor:pointer;color:var(--lc-sub);">更多</button>
 </div>
-<div data-breathe-panel="${idx}" style="display:none;margin-bottom:10px;padding:8px;background:#f9f9f9;border-radius:6px;">
+<div data-breathe-panel="${idx}" style="display:none;margin-bottom:10px;padding:8px;background:var(--lc-soft);border-radius:6px;">
   <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-    <span style="font-size:11px;color:#666;flex-shrink:0;width:48px;">幅度</span>
+    <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;width:48px;">幅度</span>
     <input type="range" data-idx="${idx}" data-ia-key="breatheAmplitude" min="0" max="100" value="${ia.breatheAmplitude ?? 30}" style="flex:1;height:4px;" />
     <span class="value" style="min-width:32px;font-size:11px;">${ia.breatheAmplitude ?? 30}%</span>
   </div>
   <div style="display:flex;align-items:center;gap:6px;">
-    <span style="font-size:11px;color:#666;flex-shrink:0;width:48px;">速度</span>
-    <select data-idx="${idx}" data-ia-key="breatheSpeed" style="flex:1;padding:2px 6px;border:1px solid #ddd;border-radius:6px;font-size:12px;background:#fff;">
+    <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;width:48px;">速度</span>
+    <select data-idx="${idx}" data-ia-key="breatheSpeed" style="flex:1;padding:2px 6px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);">
       <option value="slow" ${(ia.breatheSpeed || 'normal') === 'slow' ? 'selected' : ''}>缓慢</option>
       <option value="normal" ${(ia.breatheSpeed || 'normal') === 'normal' ? 'selected' : ''}>正常</option>
       <option value="fast" ${(ia.breatheSpeed || 'normal') === 'fast' ? 'selected' : ''}>轻快</option>
@@ -245,20 +266,20 @@
 </div>
 
             <div style="margin-bottom:10px;display:flex;align-items:center;gap:6px;">
-  <span style="font-size:11px;color:#666;flex-shrink:0;">点击热区</span>
+  <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">点击热区</span>
   <input type="range" data-idx="${idx}" data-ia-key="hitScale" min="20" max="100" value="${dec.hitScale ?? 100}" style="flex:1;min-width:0;height:4px;" />
   <span class="value" style="min-width:32px;font-size:11px;">${dec.hitScale ?? 100}%</span>
 </div>
-            <div data-ia-options="${idx}" style="${ia.enabled ? '' : 'display:none;'}padding-left:10px;border-left:2px solid #e8e8e8;">
-<div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px dashed #e8e8e8;">
+            <div data-ia-options="${idx}" style="${ia.enabled ? '' : 'display:none;'}padding-left:10px;border-left:2px solid var(--lc-line);">
+<div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px dashed var(--lc-line);">
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-                <span style="font-size:11px;color:#666;flex-shrink:0;">挤压强度</span>
+                <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">挤压强度</span>
                 <input type="range" data-idx="${idx}" data-ia-key="squeezeStrength" min="0" max="50" value="${ia.squeezeStrength ?? 15}" style="flex:1;min-width:0;height:4px;" />
                 <span class="value" style="min-width:32px;font-size:11px;">${ia.squeezeStrength ?? 15}%</span>
               </div>
               <div style="display:flex;align-items:center;gap:6px;">
-                <span style="font-size:11px;color:#666;flex-shrink:0;">回弹风格</span>
-                <select data-idx="${idx}" data-ia-key="bounceStyle" style="flex:1;padding:2px 6px;border:1px solid #ddd;border-radius:6px;font-size:12px;background:#fff;">
+                <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">回弹风格</span>
+                <select data-idx="${idx}" data-ia-key="bounceStyle" style="flex:1;padding:2px 6px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);">
                   <option value="soft" ${ia.bounceStyle === 'soft' ? 'selected' : ''}>柔和</option>
                   <option value="elastic" ${ia.bounceStyle === 'elastic' ? 'selected' : ''}>弹性</option>
                   <option value="crisp" ${ia.bounceStyle === 'crisp' ? 'selected' : ''}>干脆</option>
@@ -268,26 +289,26 @@
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
                 <label class="dec-toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
                   <input type="checkbox" data-idx="${idx}" data-ia-key="particles" ${ia.particles ? 'checked' : ''} />
-                  <span style="color:${ia.particles ? '#22c55e' : '#666'};font-weight:${ia.particles ? '500' : 'normal'};transition:color 0.2s;">弹出emoji粒子</span>
+                  <span style="color:${ia.particles ? '#22c55e' : 'var(--lc-sub)'};font-weight:${ia.particles ? '500' : 'normal'};transition:color 0.2s;">弹出emoji粒子</span>
                 </label>
                 <div style="display:flex;align-items:center;gap:8px;">
-                  <input type="text" data-idx="${idx}" data-ia-key="emojis" value="${(ia.emojis || []).join('')}" placeholder="" maxlength="12" style="width:70px;padding:3px 6px;border:1px solid #ddd;border-radius:6px;font-size:16px;text-align:center;" />
-                  <span class="hint" style="margin:0;font-size:11px;color:#999;">填写1~3个emoji</span>
+                  <input type="text" data-idx="${idx}" data-ia-key="emojis" value="${(ia.emojis || []).join('')}" placeholder="" maxlength="12" style="width:70px;padding:3px 6px;border:1px solid var(--lc-line);border-radius:6px;font-size:16px;text-align:center;" />
+                  <span class="hint" style="margin:0;font-size:11px;color:var(--lc-sub);">填写1~3个emoji</span>
                 </div>
               </div>
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
                 <label class="dec-toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
                   <input type="checkbox" data-idx="${idx}" data-ia-key="sound" ${ia.sound ? 'checked' : ''} />
-                  <span style="color:${ia.sound ? '#22c55e' : '#666'};font-weight:${ia.sound ? '500' : 'normal'};transition:color 0.2s;">音效</span>
+                  <span style="color:${ia.sound ? '#22c55e' : 'var(--lc-sub)'};font-weight:${ia.sound ? '500' : 'normal'};transition:color 0.2s;">音效</span>
                 </label>
-                <button class="btn" data-sound-edit="${idx}" type="button" style="padding:2px 10px;font-size:11px;background:#f5f5f5;border:none;border-radius:6px;cursor:pointer;color:#667eea;display:${ia.sound ? '' : 'none'};">更多设置</button>
+                <button class="btn" data-sound-edit="${idx}" type="button" style="padding:2px 10px;font-size:11px;background:var(--lc-soft);border:none;border-radius:6px;cursor:pointer;color:var(--lc-accent);display:${ia.sound ? '' : 'none'};">更多设置</button>
               </div>
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
                 <label class="dec-toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
                   <input type="checkbox" data-idx="${idx}" data-ia-key="dialogue" ${ia.dialogue ? 'checked' : ''} />
-                  <span style="color:${ia.dialogue ? '#22c55e' : '#666'};font-weight:${ia.dialogue ? '500' : 'normal'};transition:color 0.2s;">词卡弹窗</span>
+                  <span style="color:${ia.dialogue ? '#22c55e' : 'var(--lc-sub)'};font-weight:${ia.dialogue ? '500' : 'normal'};transition:color 0.2s;">词卡弹窗</span>
                 </label>
-                <button class="btn" data-dialogue-edit="${idx}" type="button" style="padding:2px 10px;font-size:11px;background:#f5f5f5;border:none;border-radius:6px;cursor:pointer;color:#667eea;">编辑词卡 (${(ia.dialogues || []).length})</button>
+                <button class="btn" data-dialogue-edit="${idx}" type="button" style="padding:2px 10px;font-size:11px;background:var(--lc-soft);border:none;border-radius:6px;cursor:pointer;color:var(--lc-accent);">编辑词卡 (${(ia.dialogues || []).length})</button>
               </div>
             </div>
           </div>
@@ -295,6 +316,8 @@
       `;
       list.appendChild(card);
     });
+
+    initRanges(); // 动态生成的装饰图滑杆也要上已填充轨道
 
     // 绑定热区滑块事件
     list.querySelectorAll('input[type="range"][data-ia-key="hitScale"]').forEach(input => {
@@ -304,6 +327,18 @@
         let val = +e.target.value;
         state.decorations[idx].hitScale = val;
         e.target.nextElementSibling.textContent = val + "%";
+        save();
+      });
+    });
+
+    // 绑定透明度滑块（此前遗漏绑定，拖动不生效）
+    list.querySelectorAll('input[type="range"][data-key="opacity"]').forEach(input => {
+      input.addEventListener("input", (e) => {
+        const idx = +e.target.dataset.idx;
+        if (!state.decorations[idx]) return;
+        let val = +e.target.value;
+        state.decorations[idx].opacity = val;
+        e.target.nextElementSibling.textContent = val;
         save();
       });
     });
@@ -318,7 +353,7 @@
         // 实时更新文字颜色
         const span = e.target.nextElementSibling;
         if (span) {
-          span.style.color = e.target.checked ? '#22c55e' : '#666';
+          span.style.color = e.target.checked ? '#22c55e' : 'var(--lc-sub)';
           span.style.fontWeight = e.target.checked ? '500' : 'normal';
         }
         save();
@@ -346,10 +381,10 @@
         const btnEl = e.currentTarget;
         if (newVal) {
           btnEl.textContent = "已开启";
-          btnEl.style.cssText = "font-size:11px;flex-shrink:0;padding:2px 8px;border-radius:10px;transition:all 0.2s;cursor:pointer;border:none;color:#22c55e;background:#f0fdf4;font-weight:500;";
+          btnEl.style.cssText = "font-size:11px;flex-shrink:0;padding:2px 8px;border-radius:10px;transition:all 0.2s;cursor:pointer;border:none;color:#22c55e;background:color-mix(in srgb,#22c55e 12%,var(--lc-card));font-weight:500;";
         } else {
           btnEl.textContent = "未开启";
-          btnEl.style.cssText = "font-size:11px;flex-shrink:0;padding:2px 8px;border-radius:10px;transition:all 0.2s;cursor:pointer;border:none;color:#999;background:#f5f5f5;";
+          btnEl.style.cssText = "font-size:11px;flex-shrink:0;padding:2px 8px;border-radius:10px;transition:all 0.2s;cursor:pointer;border:none;color:var(--lc-sub);background:var(--lc-soft);";
         }
 
         // 同步更新"覆盖卡片"开关的显示状态
@@ -358,7 +393,7 @@
           aboveCheckbox.checked = state.decorations[idx].aboveCards;
           const aboveSpan = aboveCheckbox.nextElementSibling;
           if (aboveSpan) {
-            aboveSpan.style.color = aboveCheckbox.checked ? '#22c55e' : '#666';
+            aboveSpan.style.color = aboveCheckbox.checked ? '#22c55e' : 'var(--lc-sub)';
             aboveSpan.style.fontWeight = aboveCheckbox.checked ? '500' : 'normal';
           }
         }
@@ -369,7 +404,7 @@
           particlesCheckbox.checked = state.decorations[idx].interactive.particles;
           const particlesSpan = particlesCheckbox.nextElementSibling;
           if (particlesSpan) {
-            particlesSpan.style.color = particlesCheckbox.checked ? '#22c55e' : '#666';
+            particlesSpan.style.color = particlesCheckbox.checked ? '#22c55e' : 'var(--lc-sub)';
             particlesSpan.style.fontWeight = particlesCheckbox.checked ? '500' : 'normal';
           }
         }
@@ -378,7 +413,7 @@
           soundCheckbox.checked = state.decorations[idx].interactive.sound;
           const soundSpan = soundCheckbox.nextElementSibling;
           if (soundSpan) {
-            soundSpan.style.color = soundCheckbox.checked ? '#22c55e' : '#666';
+            soundSpan.style.color = soundCheckbox.checked ? '#22c55e' : 'var(--lc-sub)';
             soundSpan.style.fontWeight = soundCheckbox.checked ? '500' : 'normal';
           }
         }
@@ -406,7 +441,7 @@
         // 实时更新文字颜色
         const span = e.target.nextElementSibling;
         if (span) {
-          span.style.color = e.target.checked ? '#22c55e' : '#666';
+          span.style.color = e.target.checked ? '#22c55e' : 'var(--lc-sub)';
           span.style.fontWeight = e.target.checked ? '500' : 'normal';
         }
         save();
@@ -647,7 +682,7 @@
         state.decorations[idx].interactive.dialogue = e.target.checked;
         const span = e.target.nextElementSibling;
         if (span) {
-          span.style.color = e.target.checked ? '#22c55e' : '#666';
+          span.style.color = e.target.checked ? '#22c55e' : 'var(--lc-sub)';
           span.style.fontWeight = e.target.checked ? '500' : 'normal';
         }
         save();
@@ -719,13 +754,13 @@
   function renderDialogueList(dialogues) {
     const container = $('dialogue-modal-list');
     if (dialogues.length === 0) {
-      container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;min-height:120px;"><p class="hint" style="text-align:center;color:#bbb;margin:0;">还没有词卡，添加一条吧~</p></div>';
+      container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;min-height:120px;"><p class="hint" style="text-align:center;color:var(--lc-sub);margin:0;">还没有词卡，添加一条吧~</p></div>';
       return;
     }
     container.innerHTML = dialogues.map((text, i) => `
-    <div style="display:flex;align-items:center;gap:8px;padding:8px;background:#f5f5f5;border-radius:8px;margin-bottom:8px;">
-      <span style="flex:1;font-size:13px;color:#555;word-break:break-word;">${text}</span>
-      <button class="btn dialogue-del-btn" data-didx="${i}" type="button" style="padding:2px 8px;font-size:11px;background:#fee2e2;color:#ef4444;border:none;border-radius:4px;cursor:pointer;">删除</button>
+    <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--lc-soft);border-radius:8px;margin-bottom:8px;">
+      <span style="flex:1;font-size:13px;color:var(--lc-text);word-break:break-word;">${text}</span>
+      <button class="btn dialogue-del-btn" data-didx="${i}" type="button" style="padding:2px 8px;font-size:11px;background:color-mix(in srgb,#ef4444 12%,var(--lc-card));color:#ef4444;border:none;border-radius:4px;cursor:pointer;">删除</button>
     </div>
   `).join('');
   }
@@ -867,10 +902,10 @@
         importArea.id = 'dialogue-import-area';
         importArea.style.cssText = 'margin-bottom:10px;';
         importArea.innerHTML = `
-        <textarea id="dialogue-import-text" placeholder="每行一个词卡，空行会自动过滤..." rows="4" style="width:100%;padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;resize:vertical;box-sizing:border-box;margin-bottom:8px;"></textarea>
+        <textarea id="dialogue-import-text" placeholder="每行一个词卡，空行会自动过滤..." rows="4" style="width:100%;padding:6px 10px;border:1px solid var(--lc-line);border-radius:6px;font-size:13px;resize:vertical;box-sizing:border-box;margin-bottom:8px;"></textarea>
         <div style="display:flex;gap:8px;">
-          <button id="dialogue-import-confirm" type="button" class="btn" style="flex:1;padding:6px;font-size:12px;background:#667eea;color:#fff;border:none;border-radius:6px;cursor:pointer;">确认导入</button>
-          <button id="dialogue-import-cancel" type="button" class="btn" style="flex:1;padding:6px;font-size:12px;background:#f5f5f5;border:none;border-radius:6px;cursor:pointer;">取消</button>
+          <button id="dialogue-import-confirm" type="button" class="btn" style="flex:1;padding:6px;font-size:12px;background:var(--lc-accent);color:#fff;border:none;border-radius:6px;cursor:pointer;">确认导入</button>
+          <button id="dialogue-import-cancel" type="button" class="btn" style="flex:1;padding:6px;font-size:12px;background:var(--lc-soft);border:none;border-radius:6px;cursor:pointer;">取消</button>
         </div>
       `;
 
@@ -1026,6 +1061,13 @@
   });
   on("font-scale", "input", (e) => { state.font.scale = +e.target.value; $("font-scale-v").textContent = e.target.value + "%"; save(); });
   on("font-family", "input", (e) => { state.font.family = e.target.value.trim(); save(); });
+  /* 字体名"?"帮助：点击展开/收起详细说明 */
+  on("font-family-help", "click", () => {
+    const dot = $("font-family-help");
+    const hint = $("font-family-hint");
+    const open = hint.classList.toggle("open");
+    dot.classList.toggle("on", open);
+  });
 
   on("dark-mode", "change", (e) => { state.darkMode.mode = e.target.value; syncDarkBrightness(); save(); });
   on("nav-transparent", "change", (e) => {
@@ -1130,6 +1172,8 @@
   chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
     state = LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {});
     render();
+    initRanges();
+    applyDarkFollow(state); // 面板暗色跟随（函数声明提升，定义在 IIFE 尾部）
 
     // 向当前网页查询是否在装饰图编辑模式
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -1557,5 +1601,48 @@
   }
   // 更新快捷键显示
   updateShortcutDisplay();
+
+  /* ---------- 美化批：滑杆已填充轨道（面板配色固定蓝紫，不注入主题色） ---------- */
+  function paintRange(el) {
+    const min = +el.min || 0, max = +el.max || 100, v = +el.value || 0;
+    el.style.setProperty("--p", ((v - min) / (max - min) * 100) + "%");
+  }
+  function initRanges() {
+    document.querySelectorAll('input[type="range"]').forEach((el) => {
+      paintRange(el);
+      if (!el.__lcRangeBound) {
+        el.addEventListener("input", () => paintRange(el));
+        el.__lcRangeBound = true;
+      }
+    });
+  }
+
+  /* ---------- 场景区分：工具栏弹窗（顶层窗口）vs 悬浮按钮 iframe ----------
+   * 弹窗窗口高度按内容自适应，html/body 的 height:100% 无参照会塌成一条；
+   * 顶层窗口时给 html 挂 .lc-standalone，由 CSS 定高（iframe 场景由宿主定高） */
+  try {
+    if (window.self === window.top) {
+      document.documentElement.classList.add("lc-standalone");
+    }
+  } catch (e) {
+    document.documentElement.classList.add("lc-standalone");
+  }
+
+  /* ---------- 面板暗色跟随：判据与 content.js isDarkMode() 一致 ----------
+   * manual（手动开启）或 auto 且系统深色 → 面板切 body.dark（CSS 变量整体换暗） */
+  const darkMq = window.matchMedia("(prefers-color-scheme: dark)");
+  function applyDarkFollow(s) {
+    const mode = (s.darkMode && s.darkMode.mode) || "off";
+    document.body.classList.toggle(
+      "dark",
+      mode === "manual" || (mode === "auto" && darkMq.matches),
+    );
+  }
+  darkMq.addEventListener("change", () => applyDarkFollow(state));
+  /* 面板常驻 iframe：网页里改了深色模式设置也要实时跟上（只重算暗色，不重渲染） */
+  chrome.storage.onChanged.addListener((ch, area) => {
+    if (area !== "local" || !ch[LC_STORAGE_KEY]) return;
+    applyDarkFollow(LC_merge(LC_DEFAULTS, ch[LC_STORAGE_KEY].newValue || {}));
+  });
 
 })();

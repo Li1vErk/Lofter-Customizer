@@ -280,9 +280,9 @@ styleEl.textContent = `
   }
   function sanitizeFont(val) {
     if (!val) return "";
-    return String(val)
-      .replace(/[;{}@<>"`\\]/g, "")
-      .trim();
+    return LC_normalizeFontFamily(
+      String(val).replace(/[;{}@<>"`\\]/g, "").trim()
+    );
   }
   function sanitizeDataUrl(val) {
     if (!val) return "";
@@ -8603,10 +8603,6 @@ div[class*="Orp2pg4PJFzX9iEz-4ZAWg=="] a[class*="AV8Mt74pTEHQXrEBEKFaUg=="] {
 }
 
 
-
-
-
-
         
       /* 归档页按键箭头反色，分割线加深 */
       body.p-body10 .m-showsd .w-arrowt2 {
@@ -8973,7 +8969,6 @@ body:has(.m-vw-nav) .m-info .btn:hover {
   background: rgba(255,255,255,0.08) !important;
   color: ${s.theme.accent ? computeDarkAccent(s.theme.accent) : "#667eea"} !important;
 }
-
 
 
 /* ========== 登录页卡片反色 ========== */
@@ -13405,6 +13400,12 @@ function bindGlobalDecListener() {
       if (typeof decEditMode !== "undefined" && decEditMode) {
         return;
       }
+      /* 点击来自插件自身（悬浮按钮/面板）：Shadow DOM 只隔离样式不隔离
+       * 冒泡到 document 的事件，事件重定向后 e.target 就是 FAB host 本身。
+       * 按钮压在装饰图上方时，若不拦截，按坐标判定会误触发装饰图互动。 */
+      if (e.target && e.target.id === "lc-fab-host") {
+        return;
+      }
       if (window.decorationsGloballyHidden) {
         return;
       }
@@ -13947,7 +13948,7 @@ function bindGlobalDecListener() {
   const HOST_ID = "lc-fab-host";
   const FAB = 44;            // 悬浮按钮直径
   const PANEL_W = 340;       // 与 popup.html body 定宽一致
-  const PANEL_H = 560;       // 面板默认高度（视口不够时收缩）
+  const PANEL_H = 600;       // 面板默认高度（视口不够时收缩；嵌入页比工具栏弹窗宽裕，600 减少滚动）
   const MIN_PANEL_H = 200;   // 面板压缩下限，低于此值宁可允许覆盖按钮
   const EDGE = 12;           // 左/上/下：距视口边缘最小间距
   const RIGHT_EDGE = 18;     // 右侧边界加大：避免压进滚动条区域
@@ -14019,7 +14020,66 @@ function bindGlobalDecListener() {
       #fab:hover { transform: scale(1.08); box-shadow: 0 6px 20px rgba(0,0,0,.34); }
       #fab.dragging { cursor: grabbing; transform: scale(1.05);
         box-shadow: 0 8px 24px rgba(0,0,0,.4); transition: none; }
-      #fab svg { width: 22px; height: 22px; pointer-events: none; }
+      /* FAB 图标：全 CSS 分层绘制（星球 → 星环 → L → 星星）。矢量形状 + CSS 发光：
+       * 星环是完整椭圆，两端伸出按钮圆外（#fab 因此不能设 overflow:hidden）；
+       * L 用矢量 mask 定形状、linear-gradient 供材质，发光交给 CSS drop-shadow——
+       * 它按 CSS 像素作用在 mask 后的轮廓上，可多层叠加，也没有 SVG 滤镜区域的
+       * 裁切问题（feGaussianBlur 在 44px 下既糊不开又被硬切，是之前脏边的根因）。 */
+      #fab {
+        /* FAB 星球配色（固定，不随主题色）：边缘光 / 球心 / 主体 / 暗部 / 光强。
+         * 当前为「泡泡」方案——球心比主体更暗，明度渐变反转后呈透明玻璃球感
+         * （径向渐变中心暗 = 模拟透明球「中心透背景、边缘全反射亮环」）。
+         * 配套 icon-lab.html 调色台可实时预览并复制新的变量值。 */
+        --f-edge: #c2b8ff; --f-core: #040615; --f-mid: #7479b9; --f-deep: #83479e;
+        --f-glow: .8;
+        --f-lmask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cpath d='M37 25V51C37 61 43 66 51 66H62' fill='none' stroke='%23fff' stroke-width='14' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        --f-hmask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cpath d='M34.5 27V51C34.5 59.5 40 63 48 63H58' fill='none' stroke='%23fff' stroke-width='3.5' stroke-linecap='round'/%3E%3C/svg%3E");
+      }
+      /* 各图层不参与命中测试：热区仍是 44px 圆，伸出的星环不会扩大可点击范围 */
+      #fab > i { position: absolute; display: block; pointer-events: none; }
+      #fab .p {
+        inset: 0; border-radius: 50%;
+        background: radial-gradient(circle at 40% 32%,
+          var(--f-core), var(--f-mid) 58%, var(--f-deep) 85%);
+      }
+      /* 边缘光：环形渐变（透明 → edge → 透明，closest-side 对齐圆周），
+       * 光晕向内外晕开、无硬边；强度由 --f-glow 控制 */
+      #fab .p::before {
+        content: ""; position: absolute; inset: 0; border-radius: 50%;
+        opacity: var(--f-glow);
+        background: radial-gradient(circle closest-side,
+          transparent 68%,
+          color-mix(in srgb, var(--f-edge) 55%, transparent) 87%,
+          transparent 100%);
+      }
+      #fab .r {
+        left: -15%; top: 37%; width: 130%; height: 26%; border-radius: 50%;
+        border: 2px solid rgba(232,225,255,.78); transform: rotate(-18deg);
+      }
+      #fab .l {
+        inset: 0;
+        background: linear-gradient(155deg,
+          #fff, #eef1ff 30%, #d8ddff 58%, #c4b5fd 82%, #e8c7ee);
+        -webkit-mask: var(--f-lmask) center/100% 100% no-repeat;
+        mask: var(--f-lmask) center/100% 100% no-repeat;
+        filter: drop-shadow(0 0 1px rgba(255,255,255,.6))
+                drop-shadow(0 0 4px rgba(165,155,255,.5));
+      }
+      #fab .lh {
+        inset: 0; background: #fff; opacity: .72; filter: blur(.4px);
+        -webkit-mask: var(--f-hmask) center/100% 100% no-repeat;
+        mask: var(--f-hmask) center/100% 100% no-repeat;
+      }
+      #fab .s1, #fab .s2 {
+        clip-path: polygon(50% 0, 59% 41%, 100% 50%, 59% 59%, 50% 100%,
+                           41% 59%, 0 50%, 41% 41%);
+      }
+      #fab .s1 { left: 62%; top: 9%; width: 21%; height: 21%;
+        background: linear-gradient(160deg, #fff, #f3a6e0); }
+      #fab .s2 { left: 18%; top: 56%; width: 11%; height: 11%; background: #fff; }
+      #fab .d1, #fab .d2 { border-radius: 50%; background: #fff; }
+      #fab .d1 { left: 30%; top: 28%; width: 3%; height: 3%; opacity: .55; }
+      #fab .d2 { left: 78%; top: 76%; width: 3%; height: 3%; opacity: .45; }
       #panel {
         position: fixed; width: ${PANEL_W}px; background: #fff;
         border-radius: 16px; overflow: hidden;
@@ -14036,16 +14096,11 @@ function bindGlobalDecListener() {
     fab = document.createElement("div");
     fab.id = "fab";
     fab.title = "Lofter Customizer 设置";
+    /* FAB 图标结构（样式见上方 shadow sheet）：
+     * p 星球 / r 星环 / l L 主体 / lh 高光带 / s1,s2 四角星 / d1,d2 微尘 */
     fab.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" ' +
-      'stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle>' +
-      '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 ' +
-      '0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 ' +
-      '1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 ' +
-      '0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 ' +
-      '2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 ' +
-      '0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 ' +
-      '1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
+      '<i class="p"></i><i class="r"></i><i class="l"></i><i class="lh"></i>' +
+      '<i class="s1"></i><i class="s2"></i><i class="d1"></i><i class="d2"></i>';
     shadow.appendChild(fab);
 
     panel = document.createElement("div");
@@ -14056,9 +14111,10 @@ function bindGlobalDecListener() {
     bindFabEvents();
   }
 
-  /* ---------- FAB 主题：跟随主题色 + 深浅模式 ---------- */
+
+  /* ---------- FAB 主题：图标为 CSS 图层自带配色（固定蓝紫），只随深浅模式调投影 ---------- */
   function applyFabTheme() {
-    fab.style.background = getAccent();
+    fab.style.background = "transparent";
     fab.style.boxShadow = isDark()
       ? "0 4px 16px rgba(0,0,0,.5)"
       : "0 4px 16px rgba(0,0,0,.28)";

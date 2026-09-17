@@ -111,10 +111,31 @@ function LC_clone(o) {
   return JSON.parse(JSON.stringify(o));
 }
 
+/* 字体显示名 → 真实注册名 别名表：部分字体（如京華老宋体）name 表只有英文名，
+   用中文名匹配会回退默认字体，这里在存/读两侧统一归一化 */
+const LC_FONT_ALIASES = {
+  "京華老宋体": "KingHwa_OldSong",
+  "京华老宋体": "KingHwa_OldSong",
+};
+function LC_normalizeFontFamily(val) {
+  if (!val) return val;
+  let s = String(val);
+  for (const [alias, real] of Object.entries(LC_FONT_ALIASES)) {
+    /* 整段等值或逗号列表中的单项都替换，避免误伤其它字体 */
+    s = s
+      .split(",")
+      .map((p) => (p.trim() === alias ? real : p))
+      .join(",");
+    if (s.trim() === alias) s = real;
+  }
+  return s;
+}
+
 if (typeof window !== "undefined") {
   window.LC_DEFAULTS = LC_DEFAULTS;
   window.LC_STORAGE_KEY = LC_STORAGE_KEY;
   window.LC_FONT_PRESETS = LC_FONT_PRESETS;
   window.LC_merge = LC_merge;
   window.LC_clone = LC_clone;
+  window.LC_normalizeFontFamily = LC_normalizeFontFamily;
 }
