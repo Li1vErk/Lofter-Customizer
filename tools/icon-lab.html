@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FAB 图标调色台 · Lofter Customizer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #17171c; color: #e7e7ef; display: flex; min-height: 100vh; }
+  aside { width: 270px; flex: 0 0 270px; padding: 22px 20px; background: #1e1e26;
+    border-right: 1px solid #2c2c36; }
+  h1 { font-size: 16px; font-weight: 500; margin: 0 0 6px; }
+  .sub { font-size: 12px; color: #8d8d9a; margin: 0 0 20px; line-height: 1.7; }
+  .ctl { margin-bottom: 14px; }
+  .ctl label { display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; color: #a2a2b0; margin-bottom: 6px; }
+  .ctl label code { color: #9a9ee0; font-family: Consolas, monospace; font-size: 11px; }
+  input[type=color] { width: 100%; height: 30px; border: 1px solid #2c2c36;
+    border-radius: 6px; background: #26262e; padding: 2px; cursor: pointer; }
+  input[type=range] { width: 100%; accent-color: #7c80d2; }
+  .val { font-size: 11px; color: #8d8d9a; }
+  .btns { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
+  button { flex: 1 1 45%; padding: 8px 10px; font-size: 12px; border: 1px solid #3a3a48;
+    border-radius: 8px; background: #26262e; color: #e7e7ef; cursor: pointer; }
+  button:hover { border-color: #7c80d2; }
+  button.primary { background: #7c80d2; border-color: #7c80d2; color: #fff; }
+  .tip { font-size: 11px; color: #6d6d7a; margin-top: 16px; line-height: 1.8;
+    border-top: 1px solid #2c2c36; padding-top: 12px; }
+  .tip code { color: #9a9ee0; }
+  main { flex: 1; display: flex; flex-wrap: wrap; gap: 26px; padding: 44px;
+    align-content: flex-start; align-items: flex-start; }
+  .cell { text-align: center; }
+  .stage { border-radius: 14px; display: flex; align-items: center; justify-content: center; }
+  .d { background: #101014; }
+  .l { background: #f1f1f5; }
+  .cap { font-size: 11px; color: #6d6d7a; margin-top: 10px; }
+  /* ==== 图标图层（与 content.js 中 #fab 的样式同构，改动请两边同步） ==== */
+  .lab { --f-lmask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cpath d='M37 25V51C37 61 43 66 51 66H62' fill='none' stroke='%23fff' stroke-width='14' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    --f-hmask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cpath d='M34.5 27V51C34.5 59.5 40 63 48 63H58' fill='none' stroke='%23fff' stroke-width='3.5' stroke-linecap='round'/%3E%3C/svg%3E"); }
+  .fab { position: relative; width: 44px; height: 44px; }
+  .fab.big { width: 96px; height: 96px; }
+  .fab > i { position: absolute; display: block; }
+  .p { inset: 0; border-radius: 50%;
+    background: radial-gradient(circle at 40% 32%, var(--f-core), var(--f-mid) 58%, var(--f-deep) 85%); }
+  .p::before { content: ""; position: absolute; inset: 0; border-radius: 50%;
+    opacity: var(--f-glow);
+    background: radial-gradient(circle closest-side, transparent 68%,
+      color-mix(in srgb, var(--f-edge) 55%, transparent) 87%, transparent 100%); }
+  .r { left: -15%; top: 37%; width: 130%; height: 26%; border-radius: 50%;
+    border: 2px solid rgba(232,225,255,.78); transform: rotate(-18deg); }
+  .fab.big .r { border-width: 4.4px; }
+  .lb { inset: 0;
+    background: linear-gradient(155deg, #fff, #eef1ff 30%, #d8ddff 58%, #c4b5fd 82%, #e8c7ee);
+    -webkit-mask: var(--f-lmask) center/100% 100% no-repeat;
+    mask: var(--f-lmask) center/100% 100% no-repeat;
+    filter: drop-shadow(0 0 1px rgba(255,255,255,.6)) drop-shadow(0 0 4px rgba(165,155,255,.5)); }
+  .fab.big .lb { filter: drop-shadow(0 0 2px rgba(255,255,255,.6)) drop-shadow(0 0 8px rgba(165,155,255,.5)); }
+  .lh { inset: 0; background: #fff; opacity: .72; filter: blur(.4px);
+    -webkit-mask: var(--f-hmask) center/100% 100% no-repeat;
+    mask: var(--f-hmask) center/100% 100% no-repeat; }
+  .s1, .s2 { clip-path: polygon(50% 0, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0 50%, 41% 41%); }
+  .s1 { left: 62%; top: 9%; width: 21%; height: 21%; background: linear-gradient(160deg, #fff, #f3a6e0); }
+  .s2 { left: 18%; top: 56%; width: 11%; height: 11%; background: #fff; }
+  .d1, .d2 { border-radius: 50%; background: #fff; }
+  .d1 { left: 30%; top: 28%; width: 3%; height: 3%; opacity: .55; }
+  .d2 { left: 78%; top: 76%; width: 3%; height: 3%; opacity: .45; }
+</style>
+</head>
+<body>
+<aside>
+  <h1>FAB 图标调色台</h1>
+  <p class="sub">拖动取色器实时预览，满意后点「复制 CSS」，粘贴到 content.js 里 <code style="color:#9a9ee0">#fab</code> 的变量区即可生效。</p>
+  <div class="ctl"><label>边缘光（轮廓光晕） <code>--f-edge</code> <span class="val" id="v-edge"></span></label>
+    <input type="color" id="c-edge" value="#c2b8ff"></div>
+  <div class="ctl"><label>球心亮部 <code>--f-core</code> <span class="val" id="v-core"></span></label>
+    <input type="color" id="c-core" value="#040615"></div>
+  <div class="ctl"><label>球体主色 <code>--f-mid</code> <span class="val" id="v-mid"></span></label>
+    <input type="color" id="c-mid" value="#7479b9"></div>
+  <div class="ctl"><label>球体暗部 <code>--f-deep</code> <span class="val" id="v-deep"></span></label>
+    <input type="color" id="c-deep" value="#83479e"></div>
+  <div class="ctl"><label>边缘光强度 <code>--f-glow</code></label>
+    <input type="range" id="c-glow" min="0" max="100" value="80"></div>
+  <div class="btns">
+    <button id="p1">预设：降饱和</button>
+    <button id="p2">预设：概念图原色</button>
+    <button id="p3" style="flex-basis:100%">预设：泡泡（透明感）</button>
+    <button id="copy" class="primary" style="flex-basis:100%">复制 CSS 变量</button>
+  </div>
+  <p class="tip">粘贴位置：content.js 中 <code>#fab { --f-edge: ... }</code> 变量区。<br>
+    也可以在 LOFTER 页面按 F12，Elements 里搜 <code>lc-fab-host</code> 展开闭包 shadow root 直接改 <code>--f-*</code> 值试效果（刷新即失，仅试玩用）。</p>
+</aside>
+<main id="lab" class="lab">
+  <div class="cell">
+    <div class="stage d" style="width:150px;height:150px"><div class="fab big"><i class="p"></i><i class="r"></i><i class="lb"></i><i class="lh"></i><i class="s1"></i><i class="s2"></i><i class="d1"></i><i class="d2"></i></div></div>
+    <div class="cap">放大 2× · 深色底</div>
+  </div>
+  <div class="cell">
+    <div class="stage d" style="width:76px;height:76px"><div class="fab"><i class="p"></i><i class="r"></i><i class="lb"></i><i class="lh"></i><i class="s1"></i><i class="s2"></i><i class="d1"></i><i class="d2"></i></div></div>
+    <div class="cap">44px 实际 · 深色底</div>
+  </div>
+  <div class="cell">
+    <div class="stage l" style="width:76px;height:76px"><div class="fab"><i class="p"></i><i class="r"></i><i class="lb"></i><i class="lh"></i><i class="s1"></i><i class="s2"></i><i class="d1"></i><i class="d2"></i></div></div>
+    <div class="cap">44px 实际 · 浅色底</div>
+  </div>
+</main>
+<script>
+(function () {
+  const KEYS = ["edge", "core", "mid", "deep"];
+  const PRESETS = {
+    soft: { edge: "#9285d6", core: "#6a6fc4", mid: "#4a4fa0", deep: "#373c78", glow: 90 },
+    orig: { edge: "#8f6ffb", core: "#4d54dd", mid: "#3f45c6", deep: "#35378f", glow: 90 },
+    /* 泡泡：球心用近黑反转为「中心暗、边缘亮」，呈透明玻璃感（用户调试发现） */
+    bubble: { edge: "#c2b8ff", core: "#040615", mid: "#7479b9", deep: "#83479e", glow: 80 },
+  };
+  const lab = document.getElementById("lab");
+  function hex(v) {
+    const n = Math.round(v).toString(16);
+    return n.length < 2 ? "0" + n : n;
+  }
+  function apply() {
+    const s = lab.style;
+    for (const k of KEYS) {
+      s.setProperty("--f-" + k, document.getElementById("c-" + k).value);
+      document.getElementById("v-" + k).textContent =
+        document.getElementById("c-" + k).value;
+    }
+    const g = document.getElementById("c-glow").value;
+    s.setProperty("--f-glow", String(g / 100));
+  }
+  for (const k of KEYS) {
+    document.getElementById("c-" + k).addEventListener("input", apply);
+  }
+  document.getElementById("c-glow").addEventListener("input", apply);
+  function setPreset(p) {
+    for (const k of KEYS) document.getElementById("c-" + k).value = p[k];
+    document.getElementById("c-glow").value = p.glow;
+    apply();
+  }
+  document.getElementById("p1").addEventListener("click", () => setPreset(PRESETS.soft));
+  document.getElementById("p2").addEventListener("click", () => setPreset(PRESETS.orig));
+  document.getElementById("p3").addEventListener("click", () => setPreset(PRESETS.bubble));
+  document.getElementById("copy").addEventListener("click", function () {
+    const parts = KEYS.map((k) =>
+      "--f-" + k + ": " + document.getElementById("c-" + k).value + ";");
+    parts.push("--f-glow: " + document.getElementById("c-glow").value / 100 + ";");
+    const text = "        " + parts.join(" ");
+    const btn = this;
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = "已复制，粘贴到 content.js";
+      setTimeout(() => { btn.textContent = "复制 CSS 变量"; }, 1600);
+    });
+  });
+  apply();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>图标导出页 · Lofter Customizer</title>
+<style>
+  /* 开发工具：供无头浏览器截图导出插件图标 PNG（512×512，透明背景）。
+   * 用法（仓库根执行，输出到临时目录再按尺寸缩放）：
+   *   msedge --headless=new --window-size=512,512 --default-background-color=00000000 \
+   *          --screenshot=out-full.png "file:///D:/Code/lofter-customizer/tools/icon-export.html"
+   *   ... 简化版（16/32 用）URL 末尾加 #mini 即可。
+   * 尺寸约定：128/48 ← 完整版；32/16 ← 简化版（星球满幅、L 加粗）。
+   * 图标图层与 content.js 的 #fab 同构，改配色请同步三处。 */
+  html, body { margin: 0; padding: 0; background: transparent; }
+  .wrap { width: 512px; height: 512px; display: flex; align-items: center; justify-content: center; }
+  .fab {
+    --s: 372px;                     /* 星球直径：留出星环伸出的余量 */
+    --ce: #c2b8ff; --cc: #040615; --cm: #7479b9; --cd: #83479e; --fglow: .8;
+    --lm: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cpath d='M37 25V51C37 61 43 66 51 66H62' fill='none' stroke='%23fff' stroke-width='14' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    --hm: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cpath d='M34.5 27V51C34.5 59.5 40 63 48 63H58' fill='none' stroke='%23fff' stroke-width='3.5' stroke-linecap='round'/%3E%3C/svg%3E");
+    position: relative; width: var(--s); height: var(--s);
+  }
+  /* 小尺寸简化版：星球满幅、去掉星环/微尘/小星/高光带，L 加粗，保证 16px 可辨 */
+  html.mini .fab {
+    --s: 484px;                     /* 满幅略留边，避免 16px 下顶到工具栏边界 */
+    --lm: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cpath d='M37 25V51C37 61 43 66 51 66H62' fill='none' stroke='%23fff' stroke-width='17' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+  html.mini .r, html.mini .lh, html.mini .s2,
+  html.mini .d1, html.mini .d2 { display: none; }
+  .fab > i { position: absolute; display: block; }
+  .p { inset: 0; border-radius: 50%;
+    background: radial-gradient(circle at 40% 32%, var(--cc), var(--cm) 58%, var(--cd) 85%); }
+  .p::before { content: ""; position: absolute; inset: 0; border-radius: 50%;
+    opacity: var(--fglow);
+    background: radial-gradient(circle closest-side, transparent 68%,
+      color-mix(in srgb, var(--ce) 55%, transparent) 87%, transparent 100%); }
+  .r { left: -15%; top: 37%; width: 130%; height: 26%; border-radius: 50%;
+    border: calc(var(--s) * .045) solid rgba(232,225,255,.78); transform: rotate(-18deg); }
+  .lb { inset: 0;
+    background: linear-gradient(155deg, #fff, #eef1ff 30%, #d8ddff 58%, #c4b5fd 82%, #e8c7ee);
+    -webkit-mask: var(--lm) center/100% 100% no-repeat;
+    mask: var(--lm) center/100% 100% no-repeat;
+    filter: drop-shadow(0 0 calc(var(--s) * .023) rgba(255,255,255,.6))
+            drop-shadow(0 0 calc(var(--s) * .09) rgba(165,155,255,.5)); }
+  .lh { inset: 0; background: #fff; opacity: .72; filter: blur(calc(var(--s) * .008));
+    -webkit-mask: var(--hm) center/100% 100% no-repeat;
+    mask: var(--hm) center/100% 100% no-repeat; }
+  .s1, .s2 { clip-path: polygon(50% 0, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0 50%, 41% 41%); }
+  .s1 { left: 62%; top: 9%; width: 21%; height: 21%; background: linear-gradient(160deg, #fff, #f3a6e0); }
+  .s2 { left: 18%; top: 56%; width: 11%; height: 11%; background: #fff; }
+  .d1, .d2 { border-radius: 50%; background: #fff; }
+  .d1 { left: 30%; top: 28%; width: 3%; height: 3%; opacity: .55; }
+  .d2 { left: 78%; top: 76%; width: 3%; height: 3%; opacity: .45; }
+</style>
+<script>
+  if (location.hash === "#mini") document.documentElement.classList.add("mini");
+</script>
+</head>
+<body>
+<div class="wrap">
+  <div class="fab">
+    <i class="p"></i><i class="r"></i><i class="lb"></i><i class="lh"></i>
+    <i class="s1"></i><i class="s2"></i><i class="d1"></i><i class="d2"></i>
+  </div>
+</div>
+</body>
+</html>
