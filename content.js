@@ -14020,6 +14020,9 @@ function bindGlobalDecListener() {
       #fab:hover { transform: scale(1.08); box-shadow: 0 6px 20px rgba(0,0,0,.34); }
       #fab.dragging { cursor: grabbing; transform: scale(1.05);
         box-shadow: 0 8px 24px rgba(0,0,0,.4); transition: none; }
+      /* 拖近 logo 图标时的磁吸提示：轻微放大 + 一圈淡紫描边 */
+      #fab.magnet { transform: scale(1.18);
+        box-shadow: 0 0 0 3px rgba(196,181,253,.35), 0 8px 24px rgba(0,0,0,.4); }
       /* FAB 图标：全 CSS 分层绘制（星球 → 星环 → L → 星星）。矢量形状 + CSS 发光：
        * 星环是完整椭圆，两端伸出按钮圆外（#fab 因此不能设 overflow:hidden）；
        * L 用矢量 mask 定形状、linear-gradient 供材质，发光交给 CSS drop-shadow——
@@ -14129,8 +14132,46 @@ function bindGlobalDecListener() {
     return Math.min(Math.max(EDGE, y), maxY);
   }
 
+  /* ---------- 回顶按钮探测：默认位与它对齐 ----------
+   * 站点回顶按钮类名混淆且可能改版，不用选择器，按几何特征找：
+   * 右下角 140px 范围内、36~90px 见方的 fixed/absolute 元素、几乎无文字。
+   * 量出它的右边距与顶边后，FAB 默认位与其同列、悬于其上方 10px，
+   * 右缘不再参差。量不到（页面没有该按钮）时回退 RIGHT_EDGE 常规值。 */
+  let dockMarginR = RIGHT_EDGE; // 右侧停靠边距：默认值，量到回顶按钮后对齐
+  let bttInfo = null;           // { margin, top }
+  function probeBtt() {
+    try {
+      const vwv = vw(), vhv = vh();
+      let best = null;
+      for (const el of document.body.getElementsByTagName("*")) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 36 || r.width > 90 || r.height < 36 || r.height > 90) continue;
+        if (r.right < vwv - 140 || r.bottom < vhv - 140) continue;
+        const cs = getComputedStyle(el);
+        if (cs.position !== "fixed" && cs.position !== "absolute") continue;
+        if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") continue;
+        if (el.textContent.trim().length > 4) continue;
+        if (!best || r.bottom > best.bottom) {
+          best = { bottom: r.bottom, right: r.right, top: r.top };
+        }
+      }
+      if (best) {
+        bttInfo = {
+          margin: Math.max(EDGE, Math.round(vwv - best.right)),
+          top: Math.round(best.top),
+        };
+        dockMarginR = bttInfo.margin;
+      }
+    } catch (err) { /* body 未就绪等，静默跳过，下次再试 */ }
+    return bttInfo;
+  }
+
+  /* fabIsDefault：当前是否仍处于"从未被用户/存档指定过位置"的默认态。
+   * 只有默认态才会跟随回顶按钮探测结果重摆；一旦有记忆位置即固定。 */
+  let fabIsDefault = true;
+
   const sideX = (side) =>
-    side === "left" ? EDGE : vw() - FAB - RIGHT_EDGE;
+    side === "left" ? EDGE : vw() - FAB - dockMarginR;
 
   /* 归一化存档：兼容旧版 {x,y} 自由坐标（按 x 落在哪半边判定停靠侧），
    * 也接受新版 {side,y}；无效或缺省返回 null（用默认位）。 */
@@ -14151,26 +14192,148 @@ function bindGlobalDecListener() {
     return null;
   }
 
-  function placeFab(animate) {
-    const p = normPos(fabPos);
-    fabPos = {
-      side: p ? p.side : "right",
-      y: clampY(p && p.y !== null ? p.y : vh() - FAB - FAB_MARGIN_BOTTOM),
-    };
-    const left = sideX(fabPos.side) + "px";
-    const top = fabPos.y + "px";
+  function setFabPos(left, top, animate) {
     if (animate === false) {
       /* 挂载首帧 / 恢复记忆位置：不能带过渡——left/top 从空值过渡到目标值
        * 会出现"从左上角滑过来"的启动动画。强制结算一次再恢复。 */
       fab.style.transition = "none";
-      fab.style.left = left;
-      fab.style.top = top;
+      fab.style.left = left + "px";
+      fab.style.top = top + "px";
       void fab.offsetWidth;
       fab.style.transition = "";
     } else {
-      fab.style.left = left;
-      fab.style.top = top;
+      fab.style.left = left + "px";
+      fab.style.top = top + "px";
     }
+  }
+
+  /* ---------- 彩蛋：吸附站点 logo 图标 ----------
+   * logo（图标 + LOFTER 文字）是一个链接，点文字也能回首页，所以只盖图标、
+   * 文字留在外面，导航不丢。个人主页/归档页/长文章写作页/批量管理没有 logo，
+   * 此时回退普通停靠位，等回到有 logo 的页面自动再吸上（存的是 snap 标记，
+   * 不是坐标——位置每页实时读，天然自适应）。 */
+  /* 探测实现（实证修正 v3）：
+   *  - 根链接判定收紧：解析后 host 必须是 www.lofter.com 且 pathname 为
+   *    "/"。个人头像链接（https://<user>.lofter.com）pathname 同样是 "/"，
+   *    按根路径打分会和 logo 平分且锚点更靠左反胜——刷新/进个人主页就吸到
+   *    头像上，滚动后头像移出探测窗才"归位"（实测踩坑）；
+   *  - 锚点内 img/svg 可能不止一个：首页 logo 锚点同时含圆形图标与
+   *    LOFTER 字标，querySelector 取 DOM 第一个会命中字标（曾致吸到
+   *    logo 正中间）。改为收集全部可见图标元素，优先左上方的方形者
+   *    （图标近正方，字标宽扁 aspect>1.8），兜底取最左；
+   *  - 命中结果缓存元素引用，滚动跟随等高频调用只重读坐标，不做全树扫描。 */
+  let logoCache = null; // { a, ic }——a 必须保持 isConnected 才算有效
+
+  /* 吸附中心相对 logo 图标圆心的水平微调：FAB(44px) 比图标(约36px)宽，
+   * 居中时右侧多出约 4px，悬停放大 1.18 倍后光环会蹭到 LOFTER 字标，
+   * 整体左移一点让出余量（负值=向左）。 */
+  const LOGO_SNAP_DX = -6;
+
+  /* 由图标元素求吸附中心。宽扁图形（aspect>1.8）按"图标+字标合一"处理：
+   * LOFTER 实测是单个 svg（viewBox 132x32，一条 path，圆形图标占左侧
+   * 32x32 见方、右侧是 LOFTER 字母）——没有第二个元素可选，取左端一个
+   * 见方即图标区。方/近方图形则整块即图标。 */
+  function logoSnapRect(el) {
+    const r = el.getBoundingClientRect();
+    if (r.width > r.height * 1.8) {
+      return { x: r.left + r.height / 2, y: r.top + r.height / 2, w: r.height, h: r.height };
+    }
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
+  }
+
+  function probeLogo() {
+    try {
+      /* 缓存快路径：元素还在、图标仍够大且大致在顶栏，直接重读坐标 */
+      if (logoCache && logoCache.a.isConnected) {
+        const s = logoSnapRect(logoCache.ic || logoCache.a);
+        if (s.w >= 20 && s.h >= 20 && s.y - s.h / 2 <= 160 && s.y + s.h / 2 >= -20) {
+          return { x: s.x + LOGO_SNAP_DX, y: s.y };
+        }
+        logoCache = null; // 换页/重构了，走全量探测
+      }
+      const vwv = vw();
+      let best = null; // { a, ic, score }
+      for (const a of document.querySelectorAll("a[href]")) {
+        const r0 = a.getBoundingClientRect();
+        if (r0.width < 30 || r0.height < 24 || r0.top > 120 || r0.bottom < 0) continue;
+        if (r0.left > vwv / 2) continue; // logo 固定在左上区
+        const cs = getComputedStyle(a);
+        if (cs.display === "none" || cs.visibility === "hidden") continue;
+        let root = false;
+        try {
+          const u = new URL(a.href, location.href);
+          root = u.hostname === "www.lofter.com" && u.pathname === "/";
+        } catch (err) {}
+        if (!root) continue; // 只认指向 www 首页的链接，子域名头像等一律排除
+        /* 收集锚点内全部可见图标元素（img/svg），方形的优先 */
+        const rects = [];
+        for (const el of a.querySelectorAll("img, svg")) {
+          const er = el.getBoundingClientRect();
+          if (er.width >= 20 && er.height >= 20)
+            rects.push({ el, er });
+        }
+        rects.sort((p, q) => {
+          const pw = p.er.width / p.er.height > 1.8 ? 1 : 0; // 宽扁=字标
+          const qw = q.er.width / q.er.height > 1.8 ? 1 : 0;
+          return pw - qw || p.er.left - q.er.left; // 方形优先，再按最左
+        });
+        let ic = null, r = null;
+        if (rects.length) { ic = rects[0].el; r = rects[0].er; }
+        if (!ic) {
+          /* 退路：图标是 CSS 背景图——找链内第一个带背景图的可见元素 */
+          for (const el of a.querySelectorAll("*")) {
+            const bgi = getComputedStyle(el).backgroundImage;
+            if (!bgi || bgi === "none" || bgi.indexOf("url(") === -1) continue;
+            const er = el.getBoundingClientRect();
+            if (er.width >= 20 && er.height >= 20) { ic = el; r = er; break; }
+          }
+        }
+        if (!ic && a.textContent.trim() === "") {
+          ic = a; r = r0; // 整链无文字（图标是链接自身背景）：链接即图标
+        }
+        if (!ic) continue; // 纯文字链接（如导航"首页"），不是 logo
+        const score = (/^(img|svg)$/i.test(ic.tagName) ? 1 : 0) - r0.left / 10000;
+        if (!best || score > best.score) best = { a, ic, score };
+      }
+      if (best) {
+        logoCache = { a: best.a, ic: best.ic };
+        const s = logoSnapRect(best.ic || best.a);
+        return { x: s.x + LOGO_SNAP_DX, y: s.y };
+      }
+    } catch (err) { /* DOM 未就绪等，静默忽略 */ }
+    return null;
+  }
+
+  const MAGNET_R = 34; // 拖动松手时距图标中心小于该值即吸附
+
+  function placeFab(animate) {
+    /* 吸附态：每次摆放实时读 logo 位置（header 若随页滚动由 scroll 监听跟上） */
+    if (fabPos && fabPos.snap === "logo") {
+      const L = probeLogo();
+      if (L) {
+        const left = L.x - FAB / 2, top = L.y - FAB / 2;
+        fabPos = { snap: "logo", side: "left", y: top };
+        setFabPos(left, top, animate);
+      } else {
+        /* 本页没有 logo：先回右侧停靠位（边距用回顶按钮对齐值） */
+        const y = clampY(bttInfo ? bttInfo.top - FAB - 10 : vh() - FAB - FAB_MARGIN_BOTTOM);
+        fabPos = { snap: "logo", side: "right", y };
+        setFabPos(sideX("right"), y, animate);
+      }
+      return;
+    }
+    const p = normPos(fabIsDefault ? null : fabPos);
+    fabPos = {
+      side: p ? p.side : "right",
+      y: clampY(
+        p && p.y !== null
+          ? p.y
+          : bttInfo
+          ? bttInfo.top - FAB - 10
+          : vh() - FAB - FAB_MARGIN_BOTTOM
+      ),
+    };
+    setFabPos(sideX(fabPos.side), fabPos.y, animate);
   }
 
   /* 位置写入 storage（整对象取出、局部更新、整体写回，
@@ -14179,7 +14342,9 @@ function bindGlobalDecListener() {
     chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
       const s = res[LC_STORAGE_KEY] || {};
       s.panel = Object.assign({}, s.panel, {
-        fabPos: { side: fabPos.side, y: Math.round(fabPos.y) },
+        fabPos: fabPos.snap === "logo"
+          ? { snap: "logo" } // 吸附态只存标记，坐标每页实时读
+          : { side: fabPos.side, y: Math.round(fabPos.y) },
       });
       chrome.storage.local.set({ [LC_STORAGE_KEY]: s });
     });
@@ -14289,13 +14454,17 @@ function bindGlobalDecListener() {
     let pid = null;
     let sx = 0, sy = 0, ox = 0, oy = 0;
     let dragX = 0, dragY = 0; // 拖动中的自由坐标（松手才按半边归岸）
+    let dragLogo = null;      // 本次拖动开始时缓存的 logo 图标位置（磁吸判定用）
 
     fab.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       dragMoved = false;
       sx = e.clientX; sy = e.clientY;
-      ox = sideX(fabPos.side); oy = fabPos.y;
+      // 拖动起点取当前实际渲染位置（吸附态的 left/top 不是停靠坐标）
+      ox = parseFloat(fab.style.left) || sideX(fabPos.side);
+      oy = parseFloat(fab.style.top) || fabPos.y || 0;
       dragX = ox; dragY = oy;
+      dragLogo = probeLogo(); // 一次拖动只查一次，move 里只做距离计算
       pid = e.pointerId;
       try { fab.setPointerCapture(pid); } catch (err) {}
     });
@@ -14313,6 +14482,14 @@ function bindGlobalDecListener() {
       fab.style.top = dragY + "px";
       // 同步拖动态的停靠侧：侧向展开时面板要跟着翻边，而不是等松手才翻
       fabPos.side = dragX + FAB / 2 >= vw() / 2 ? "right" : "left";
+      // 磁吸提示：靠近 logo 图标时给视觉反馈（位置用 pointerdown 时的缓存）
+      if (dragLogo) {
+        const near = Math.hypot(
+          dragX + FAB / 2 - dragLogo.x,
+          dragY + FAB / 2 - dragLogo.y
+        ) < MAGNET_R;
+        fab.classList.toggle("magnet", near);
+      }
       // 面板保持展开并实时跟随（rAF 节流：避免每帧多次 getBoundingClientRect 触发布局抖动；
       // 同档位瞬跟保手感，翻边/换档由 positionPanel 内部自动走过渡）
       if (isOpen && followRaf === null) {
@@ -14328,12 +14505,25 @@ function bindGlobalDecListener() {
       pid = null; // capture 在 pointerup 后由浏览器自动释放
       fab.classList.remove("dragging");
       if (dragMoved) {
-        // 停靠定盘：按钮中心落在哪半边就归哪侧边缘，垂直高度保留
-        fabPos = { side: fabPos.side, y: dragY };
-        fab.style.left = sideX(fabPos.side) + "px";
-        fab.style.top = fabPos.y + "px";
-        if (isOpen) positionPanel(true); // 归岸后面板随之平滑校正
-        saveFabPos();
+        fabIsDefault = false; // 用户亲手定过位，此后不再跟随默认位重摆
+        if (dragLogo && Math.hypot(
+              dragX + FAB / 2 - dragLogo.x,
+              dragY + FAB / 2 - dragLogo.y
+            ) < MAGNET_R) {
+          // 磁吸命中：吸附 logo 图标（彩蛋位）。再拖走即解除，回到普通停靠。
+          fabPos = { snap: "logo", side: "left", y: dragY };
+          saveFabPos();
+          placeFab(); // 带过渡滑到图标上
+          if (isOpen) positionPanel(true);
+        } else {
+          // 停靠定盘：按钮中心落在哪半边就归哪侧边缘，垂直高度保留
+          fabPos = { side: fabPos.side, y: dragY };
+          fab.style.left = sideX(fabPos.side) + "px";
+          fab.style.top = fabPos.y + "px";
+          if (isOpen) positionPanel(true); // 归岸后面板随之平滑校正
+          saveFabPos();
+        }
+        fab.classList.remove("magnet");
       } else {
         togglePanel();
       }
@@ -14352,10 +14542,43 @@ function bindGlobalDecListener() {
       if (isOpen && e.key === "Escape") closePanel();
     });
 
+    /* 探测回顶按钮并对齐：基准（边距/顶边）变化时才重摆，避免多余动画。
+     * 对记忆位置的用户同样生效——x 是停靠边距、跟着基准走，y 保留用户选择；
+     * 吸附态则重读 logo 位置。拖动中跳过，避免和跟手逻辑打架。 */
+    function probeAndAlign() {
+      if (pid !== null) return;
+      const prev = bttInfo && bttInfo.margin + "|" + bttInfo.top;
+      const found = probeBtt();
+      const cur = found && found.margin + "|" + found.top;
+      if (found && cur !== prev) placeFab();
+      else if (fabPos && fabPos.snap === "logo") placeFab(); // 吸附态顺便试试本页有没有 logo
+    }
+
+    let lastProbe = 0;
     window.addEventListener("resize", () => {
-      placeFab(); // 带过渡：视口变化时按钮平滑贴到新边缘
+      placeFab(); // 带过渡：视口变化时按钮平滑贴到新边缘（吸附态重读 logo 位置）
       if (isOpen) positionPanel(true); // 只重定位，不重建
+      const now = Date.now();
+      if (now - lastProbe > 800) {
+        lastProbe = now;
+        probeAndAlign();
+      }
     });
+
+    /* 吸附态跟随滚动：logo 若随页面滚走，按钮跟着走（rAF 节流；固定顶栏时无感知） */
+    let scrollRaf = null;
+    window.addEventListener("scroll", () => {
+      if (!fabPos || fabPos.snap !== "logo" || scrollRaf !== null) return;
+      scrollRaf = requestAnimationFrame(() => {
+        scrollRaf = null;
+        placeFab(false);
+      });
+    }, { passive: true });
+
+    /* 站点元素往往在脚本执行后才渲染（SPA 渐进挂载），load 后多探几拍 */
+    for (const t of [400, 1000, 2400, 4500, 8000]) {
+      setTimeout(probeAndAlign, t);
+    }
 
     // 主题联动：settings 或系统深浅变化时刷新按钮配色
     chrome.storage.onChanged.addListener((c, area) => {
@@ -14378,6 +14601,7 @@ function bindGlobalDecListener() {
     // 恢复记忆位置（normPos 兼容旧版 {x,y} 存档）
     const saved = res[LC_STORAGE_KEY]?.panel?.fabPos;
     if (saved) {
+      fabIsDefault = false; // 有记忆位置：固定不动，不再跟随默认位重摆
       fabPos = saved;
       placeFab(false); // 恢复记忆位置同样免过渡
     }
