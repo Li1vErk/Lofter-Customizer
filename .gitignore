@@ -29,3 +29,7 @@ package-lock.json
 *.tmp
 tmp-*
 .workbuddy/
+
+# 本地规划文档（不入库、不推送 GitHub）
+docs/todo-priorities.md
+docs/panel-ia.md
