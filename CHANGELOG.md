@@ -3,6 +3,22 @@
 本文件记录 Lofter Customizer 的重要变更。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.3] - 2026-09-18
+
+### 修复
+
+- **字数角标掉到导航栏下方左上角**：LOFTER 写作页改版，触发按钮 `#btm-music` 不复存在（现为 `#btn-music`，class `btn-icon btn-music`），`#menu-music` 从按钮变成了藏在 header 下的白噪音下拉菜单、折叠态仅 161x1px，骗过了「有盒子即可见」判定被错当锚点。现在锚点候选按 `#btn-music` → `#btm-music` → `.btn-music` → `#menu-music` 顺序查找；锚点可见性增加 8px 高度下限（宽度仍不设阈值，窄字形图标不受影响）；回退排除名单补齐 logo / 头像 / 音乐类，className 与 id 双查
+- **字数角标跑到头像右上角**：新版 `.right` 是 `position:absolute` 的块容器，图标 `a` 全靠 `float:left` 排横；不浮动的角标被当作普通行内内容挤到行尾右上（实测 rect `[940,-1]`）。角标现在跟着 `float:left`（flex 容器会忽略 float，row / row-reverse 版本不受影响）
+- **字数角标贴着页面顶部**：`applyWordCounter` 原先先落位（按锚点中心差实测写 `marginTop` 做垂直对齐）再上漆，而 `wcPaint` 开头 `cssText=""` 会清掉全部内联样式，垂直补偿每次都被抹掉。改为先 `wcPaint` 再落位；float 行顶对齐的偏差由实测补偿收敛，flex 垂直居中版本差值≈0 不写
+
+### 变更
+
+- `manifest.json` 版本号 1.1.3
+
+### 开发工具
+
+- `tools/wc-place-check.py`：mock 更新为 2026-09-18 傍晚线上真实 DOM（`btn-*` 命名、折叠态 `#menu-music` 陷阱、logo 陷阱），新增线上 `float-items` 布局用例（`.right` absolute + 图标 float + ~17px 顶部偏移），量测增加垂直对齐断言（中心差 ≤3px）；已用「临时回退修复」验证断言能精确复现线上两个 bug，防止虚过
+
 ## [1.1.2] - 2026-09-18
 
 ### 修复
