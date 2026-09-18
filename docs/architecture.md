@@ -45,7 +45,8 @@ settings (chrome.storage.local)
         ├─► applyDarkOverlay()        → 暗色叠加层
         ├─► applyFontFace()           → @font-face 注入（仅用于"字体文件直接嵌入"通道，当前面板未接线）
         ├─► 字体名写入               → 通过 font.family 生成 font-family 规则（预置=一键填入字体名）
-        └─► 各页面专用补丁函数（JS 内联 / 观察器）
+        ├─► 各页面专用补丁函数（JS 内联 / 观察器）
+        └─► 功能栏注入（tools.*）     → 如 applyWordCounter：同源 iframe 内取文本 + 主文档挂角标
 ```
 
 要点：
@@ -53,6 +54,10 @@ settings (chrome.storage.local)
 - 全站样式集中在一张样式表中，通过重写 `textContent` 实现更新，避免大量 `<style>` 节点堆积。
 - 设置项在 `defaults.js` 中集中定义，`LC_merge` 负责与用户已存配置做深合并，保证新增字段对老用户生效。
 - 体积较大的字段（装饰图 dataUrl、互动音效）与样式生成解耦，避免每次重建 CSS 都做无谓拼接。
+- **功能栏（`settings.tools`）约定**：每项独立开关、默认关闭；每项自带「页面不存在时自我收回」的清理分支（如 `applyWordCounter()` 找不到编辑器就直接移除角标与轮询），避免开关残留或空转轮询。
+- **两条「不碰站点布局」的红线**：
+  1. 不给站点自己的外层容器（如长文章编辑器的 `.editorWrap`）加 `position`——站内已有绝对定位的 placeholder label，改变包含块会把它挪走；
+  2. 自绘浮层挂在 `document.documentElement` 下（`position: fixed` + `pointer-events: none`），既躲开 `#main` / `#rside` 等容器的反色滤镜，也不参与页面布局、不遮挡站点点击。
 
 ## 3. 双渲染管线（核心）
 
