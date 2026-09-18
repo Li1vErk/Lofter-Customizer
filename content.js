@@ -12433,7 +12433,9 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   function wcVisible(el) {
     if (!el) return false;
     const r = el.getBoundingClientRect();
-    return r.width >= 10 && r.height >= 10 && r.bottom > 0 && r.top < vh0();
+    /* 只要真有盒子且在视口内就算可见：宽度不能用固定阈值——
+       顶栏图标按钮可能只有一个窄字形（实测 8px 宽），会被误判不可见 */
+    return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < vh0();
   }
   function wcAnchorEl() {
     const hd = document.querySelector(".m-hd-longpost");
