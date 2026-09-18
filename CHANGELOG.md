@@ -3,6 +3,19 @@
 本文件记录 Lofter Customizer 的重要变更。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.1] - 2026-09-18
+
+### 修复
+
+- **长文章字数统计在真实页面上不显示**：编辑器 UEditor 正文 iframe 可能跨域（lf127.net），主帧读不到 `contentDocument`，角标被直接收回。新增 `wc-frame.js` 桥接脚本注入子帧计数后 `postMessage` 上报（消息只含三个整数，不传正文），主帧只认来自编辑器 iframe 的消息；同源路径保留
+- **字数角标位置**：改为内联在长文章写作页顶栏右栏第一个图标（插入音乐按钮，即未来白噪音的预留位）左侧；找不到锚点（如编辑弹窗）时回退右下角 fixed 角标
+- **FAB 吸附 logo 时每次打开页面都有"从右下角飞过去"的动画**：启动静默期（用户首次触碰按钮前，至多 15s）内的探测重摆一律免过渡，按钮直接出现在 logo 位置
+- **暗色面板下「其他 → 数据」的模块勾选 chip 残留浅色底**：`--lc-accent-weak` 在 `:root` 用 `color-mix(…, var(--lc-card))` 派生，自定义属性在声明元素处即完成替换，`body.dark` 覆盖 `--lc-card` 无法回改；已在 `body.dark` 重声明。hover/聚焦态同步修复；「关于」栏版本号内联 `#555` 改主题变量
+
+### 变更
+
+- `manifest.json`：`host_permissions` 增加 `lf127.net`（编辑器 iframe 所在域，用于注入桥接脚本）；`content_scripts` 增加 `wc-frame.js` 子帧注入条目与 `match_about_blank`
+
 ## [1.1.0] - 2026-09-18
 
 ### 新增

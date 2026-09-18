@@ -2,9 +2,14 @@
   "manifest_version": 3,
   "name": "Lofter Customizer",
   "description": "自定义 Lofter 背景、卡片圆角、字体和导航栏样式",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "permissions": ["storage"],
-  "host_permissions": ["https://*.lofter.com/*", "https://lofter.com/*"],
+  "host_permissions": [
+    "https://*.lofter.com/*",
+    "https://lofter.com/*",
+    "https://*.lf127.net/*",
+    "https://lf127.net/*"
+  ],
   "web_accessible_resources": [
     {
       "resources": ["popup.html"],
@@ -60,8 +65,18 @@
       "https://lofter.com/*",
       "https://lofter.lf127.net/lofter-admin/*"
     ],
-    "js": ["defaults.js", "content.js"],
+    "js": ["defaults.js", "content.js", "wc-frame.js"],
     "run_at": "document_start",
+    "all_frames": true,
+    "match_about_blank": true
+  },
+  {
+    "matches": [
+      "https://*.lf127.net/*",
+      "https://lf127.net/*"
+    ],
+    "js": ["wc-frame.js"],
+    "run_at": "document_idle",
     "all_frames": true
   }
 ]

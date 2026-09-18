@@ -12328,12 +12328,16 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
 
   /* ---------- 长文章实时字数统计（功能栏 · 默认关闭） ----------
    * 口径（docs 定稿）：汉字按字、连续英文/数字按词，标点计入总字符。
-   * 编辑器是 lofter.com 同源 UEditor iframe（长文章页与「长文章编辑弹窗」
-   * 共用同一批选择器，所以复用 applyLongpostEditorDark 的候选列表）。
-   * 角标挂在主文档 documentElement 下、fixed 定位：不在任何反色容器内、
+   * 编辑器正文在 UEditor iframe 里，可能跨域（lf127.net，主帧读不到
+   * contentDocument）：同源时直接计数；跨域时由 wc-frame.js（manifest
+   * 单独注入子帧）计数后 postMessage 上报，主帧只认来自编辑器 iframe
+   * contentWindow 的消息。角标位置：长文章写作页顶栏图标组（音乐图标
+   * 左侧）内联；找不到锚点（如编辑弹窗）回退 fixed 挂 documentElement。
    * 不参与编辑器布局（编辑器 wrapper 一旦改 position 会挪走站点自带的
-   * placeholder label，绝不能碰），也不再占位。 */
+   * placeholder label，绝不能碰）。 */
   const WC_ID = "lc-word-count";
+  const WC_MSG_UPDATE = "lc-wc-update";
+  const WC_MSG_PING = "lc-wc-ping";
   const WC_IFRAME_SELECTORS = [
     'iframe[id^="baidu_editor"]',
     'iframe[id^="ueditor"]',
@@ -12344,6 +12348,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   let wcBoundDoc = null;
   let wcLastText = null;
   let wcDebounce = 0;
+  let wcMsgCounts = null; /* 跨域桥接上报的最新计数 {han, words, chars} */
 
   const wcOn = () => !!(settings.enabled && settings.tools && settings.tools.wordCount);
 
@@ -12370,6 +12375,32 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     return null;
   }
 
+  /* 只找 iframe 元素本身（跨域也能拿），用于「编辑器在不在」与消息源校验 */
+  function wcIframeEl() {
+    for (const sel of WC_IFRAME_SELECTORS) {
+      const f = document.querySelector(sel);
+      if (f) return f;
+    }
+    return null;
+  }
+
+  /* 跨域桥接：只认编辑器 iframe contentWindow 发来的计数 */
+  window.addEventListener("message", (e) => {
+    if (!e.data || e.data.type !== WC_MSG_UPDATE) return;
+    const f = wcIframeEl();
+    if (!f || !f.contentWindow || e.source !== f.contentWindow) return;
+    wcMsgCounts = {
+      han: e.data.han | 0,
+      words: e.data.words | 0,
+      chars: e.data.chars | 0,
+    };
+    const el = document.getElementById(WC_ID);
+    if (el) {
+      const c = wcMsgCounts;
+      wcRender(el, c.han, c.words, c.chars);
+    }
+  });
+
   function wcRemove() {
     if (wcTimer) {
       clearInterval(wcTimer);
@@ -12381,13 +12412,54 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     }
     wcBoundDoc = null;
     wcLastText = null;
+    wcMsgCounts = null;
     const el = document.getElementById(WC_ID);
     if (el) el.remove();
   }
 
-  function wcPaint(el) {
+  /* 顶栏锚点：长文章写作页头部右栏（.m-hd-longpost .right）第一个可见
+   * 图标——即「插入音乐」按钮（未来白噪音开关的预留位）。角标插到它
+   * 左边，作为行内元素随顶栏布局；找不到就回退 fixed。 */
+  function wcAnchorEl() {
+    const right = document.querySelector(".m-hd-longpost .right");
+    if (!right) return null;
+    for (const el of right.querySelectorAll("a, .u-select-menu, span, i")) {
+      if (/btn-publish/.test(el.className || "")) continue; /* 发布按钮不当前锚 */
+      const r = el.getBoundingClientRect();
+      if (r.width >= 12 && r.height >= 12 && r.top >= 0 && r.bottom <= vh0()) {
+        return el;
+      }
+    }
+    return null;
+  }
+  /* wcAnchorEl 用视口高判定可见性；FAB 段的 vh() 在这里还不可用，独立兜底 */
+  const vh0 = () =>
+    document.documentElement.clientHeight || window.innerHeight || 800;
+
+  function wcPaint(el, inline) {
     const dark = isDarkMode();
     const st = el.style;
+    if (inline) {
+      /* 顶栏行内：占位随布局，配色贴合顶栏深浅 */
+      st.cssText = "";
+      st.display = "inline-flex";
+      st.alignItems = "center";
+      st.marginRight = "12px";
+      st.padding = "3px 10px";
+      st.borderRadius = "999px";
+      st.font =
+        "12px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif";
+      st.fontVariantNumeric = "tabular-nums";
+      st.pointerEvents = "none";
+      st.userSelect = "none";
+      st.whiteSpace = "nowrap";
+      st.verticalAlign = "middle";
+      st.background = dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.05)";
+      st.color = dark ? "rgba(255,255,255,0.75)" : "rgba(40,40,48,0.65)";
+      st.border = "1px solid " + (dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.06)");
+      return;
+    }
+    st.cssText = "";
     st.position = "fixed";
     st.right = "22px";
     st.bottom = "18px";
@@ -12408,19 +12480,29 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     st.webkitBackdropFilter = "blur(6px)";
   }
 
-  function wcUpdate() {
-    const doc = wcBoundDoc;
-    const el = document.getElementById(WC_ID);
-    if (!doc || !doc.body || !el) return;
-    const text = doc.body.innerText || doc.body.textContent || "";
-    if (text === wcLastText) return; /* 文本没变就不重算、不写 DOM */
-    wcLastText = text;
-    const c = wcCount(text);
-    el.textContent = "字数 " + wcFmt(c.total);
+  function wcRender(el, han, words, chars) {
+    el.textContent = "字数 " + wcFmt(han + words);
     el.title =
-      "汉字 " + wcFmt(c.han) +
-      " · 英文/数字词 " + wcFmt(c.words) +
-      " · 总字符 " + wcFmt(c.chars) + "（含标点，不含空白）";
+      "汉字 " + wcFmt(han) +
+      " · 英文/数字词 " + wcFmt(words) +
+      " · 总字符 " + wcFmt(chars) + "（含标点，不含空白）";
+  }
+
+  function wcUpdate() {
+    const el = document.getElementById(WC_ID);
+    if (!el) return;
+    /* 同源编辑器：本地直读计数 */
+    if (wcBoundDoc && wcBoundDoc.body) {
+      const text = wcBoundDoc.body.innerText || wcBoundDoc.body.textContent || "";
+      if (text === wcLastText) return; /* 文本没变就不重算、不写 DOM */
+      wcLastText = text;
+      const c = wcCount(text);
+      wcRender(el, c.han, c.words, c.chars);
+      return;
+    }
+    /* 跨域编辑器：用桥接脚本（wc-frame.js）上报的计数 */
+    const c = wcMsgCounts;
+    if (c) wcRender(el, c.han, c.words, c.chars);
   }
 
   function wcSchedule() {
@@ -12438,34 +12520,53 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     }
 
     const doc = wcEditorDoc();
-    if (!doc) {
-      wcRemove(); /* 页面上没有编辑器（或滚出了长文章页）→ 角标一起收掉 */
+    const frame = doc ? null : wcIframeEl();
+    if (!doc && !frame) {
+      wcRemove(); /* 页面上没有编辑器 → 角标一起收掉 */
       return;
     }
-
-    let el = document.getElementById(WC_ID);
-    if (!el) {
-      el = document.createElement("div");
-      el.id = WC_ID;
-      el.setAttribute("role", "status");
-      (document.documentElement || document.body).appendChild(el);
-      wcLastText = null;
-    }
-    wcPaint(el);
 
     /* 编辑器 iframe 会被反复重建，doc 变了就重新绑监听（旧 doc 已随 iframe 销毁） */
     if (doc !== wcBoundDoc) {
       wcBoundDoc = doc;
       wcLastText = null;
-      ["input", "keyup", "paste", "cut"].forEach((ev) =>
-        doc.addEventListener(ev, wcSchedule, true),
-      );
+      wcMsgCounts = null;
+      if (doc) {
+        ["input", "keyup", "paste", "cut"].forEach((ev) =>
+          doc.addEventListener(ev, wcSchedule, true),
+        );
+      }
     }
+
+    /* 挂角标：顶栏行内优先，找不到锚点回退 fixed（两种模式切换时重挂） */
+    const anchor = wcAnchorEl();
+    const mode = anchor ? "inline" : "fixed";
+    let el = document.getElementById(WC_ID);
+    if (el && el.getAttribute("data-mode") !== mode) {
+      el.remove();
+      el = null;
+    }
+    if (!el) {
+      el = document.createElement("div");
+      el.id = WC_ID;
+      el.setAttribute("role", "status");
+      el.setAttribute("data-mode", mode);
+    }
+    if (mode === "inline") {
+      /* 角标应紧贴音乐图标左侧：右边一个兄弟就是锚点才不用重挂 */
+      if (!el.isConnected || el.nextElementSibling !== anchor) {
+        anchor.parentNode.insertBefore(el, anchor);
+      }
+    } else if (!el.isConnected) {
+      (document.documentElement || document.body).appendChild(el);
+    }
+    wcPaint(el, mode === "inline");
 
     wcUpdate();
 
     /* 兜底轮询：UEditor 的 setContent/撤销/模板插入等路径不发 input 事件，
-       且 iframe 重建后需要重新发现。文本未变时 wcUpdate 直接返回，开销可忽略。 */
+       iframe 重建后需要重新发现；跨域时顺带 ping 桥接脚本要最新计数。
+       文本未变时 wcUpdate 直接返回，开销可忽略。 */
     if (!wcTimer) {
       wcTimer = setInterval(() => {
         if (!wcOn()) {
@@ -12474,9 +12575,22 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         }
         if (document.hidden) return;
         const d = wcEditorDoc();
-        if (!d || d !== wcBoundDoc) {
-          lcSafe(applyWordCounter);
+        if (d && d !== wcBoundDoc) {
+          lcSafe(applyWordCounter); /* iframe 重建：重新发现并绑监听 */
           return;
+        }
+        if (!d) {
+          const f = wcIframeEl();
+          if (!f) {
+            lcSafe(applyWordCounter); /* 编辑器消失（滚出页面等）→ 收角标 */
+            return;
+          }
+          /* 跨域：ping 桥接脚本要最新计数 */
+          if (f.contentWindow) {
+            try {
+              f.contentWindow.postMessage({ type: WC_MSG_PING }, "*");
+            } catch (e) {}
+          }
         }
         wcUpdate();
       }, 1200);
@@ -14332,6 +14446,13 @@ function bindGlobalDecListener() {
    * 只有默认态才会跟随回顶按钮探测结果重摆；一旦有记忆位置即固定。 */
   let fabIsDefault = true;
 
+  /* 启动静默期：logo 吸附与回顶按钮对齐都靠异步探测（400ms~8s 多拍），
+   * 首次探测命中前按钮先落在默认位，之后 placeFab(带过渡) 会呈现
+   * "从右下角飞到 logo"的轨迹。期内（用户首次 pointerdown 前）一律免过渡。 */
+  let fabTouched = false;
+  const FAB_BOOT_QUIET_MS = 15000;
+  const fabBootAt = performance.now();
+
   const sideX = (side) =>
     side === "left" ? EDGE : vw() - FAB - dockMarginR;
 
@@ -14469,6 +14590,14 @@ function bindGlobalDecListener() {
   const MAGNET_R = 34; // 拖动松手时距图标中心小于该值即吸附
 
   function placeFab(animate) {
+    /* 启动静默期内的重摆（吸附命中、btt 对齐）免过渡，直接落到目标位 */
+    if (
+      animate !== false &&
+      !fabTouched &&
+      performance.now() - fabBootAt < FAB_BOOT_QUIET_MS
+    ) {
+      animate = false;
+    }
     /* 吸附态：每次摆放实时读 logo 位置（header 若随页滚动由 scroll 监听跟上） */
     if (fabPos && fabPos.snap === "logo") {
       const L = probeLogo();
@@ -14620,6 +14749,7 @@ function bindGlobalDecListener() {
 
     fab.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
+      fabTouched = true; // 用户碰过按钮，此后的重摆恢复过渡动画
       dragMoved = false;
       sx = e.clientX; sy = e.clientY;
       // 拖动起点取当前实际渲染位置（吸附态的 left/top 不是停靠坐标）

@@ -38,6 +38,10 @@
       --lc-text: #e7e7ef;
       --lc-sub: #a2a2b0;
       --lc-danger: #ff6b5e;
+      /* accent-weak 必须在这里重声明：它在 :root 用 color-mix(…, var(--lc-card))
+       * 派生，自定义属性在声明元素（:root）处就按浅色 --lc-card 完成替换并整值
+       * 下发继承——只在 body.dark 覆盖 --lc-card 改不了它，chip/hover 会残留浅底 */
+      --lc-accent-weak: color-mix(in srgb, var(--lc-accent) 12%, var(--lc-card));
       color-scheme: dark; /* 原生控件（select 下拉/滚动条/取色器）跟随变暗 */
     }
 
@@ -935,7 +939,7 @@
       </div>
 
       <div class="grp-card"><div class="grp-title">关于</div>
-        <div class="row"><label>版本</label><span id="about-version" style="font-size:13px;color:#555;"></span></div>
+        <div class="row"><label>版本</label><span id="about-version" style="font-size:13px;color:var(--lc-sub);"></span></div>
         <div class="row"><label>项目主页</label><a href="https://github.com/Li1vErk/Lofter-Customizer" target="_blank" rel="noopener" style="font-size:13px;color:#667eea;text-decoration:none;">GitHub 仓库</a></div>
         <p class="hint" style="margin-left:90px;">问题反馈与版本更新见仓库 Releases 页</p>
       </div>
