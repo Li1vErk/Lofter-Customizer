@@ -3,6 +3,17 @@
 本文件记录 Lofter Customizer 的重要变更。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.2] - 2026-09-18
+
+### 修复
+
+- **长文章编辑器变白底黑字（1.1.1 引入的回归）**：1.1.1 为字数桥接开启 `match_about_blank` 后，`content.js` 被注入进编辑器自己的 `about:blank` 子帧；该帧 `location.href` 不含 `lf127.net`，于是落进评论区 iframe 分支、又叠了一层 `body{filter:invert}`，与父帧 `#main` 的反色相互抵消——背景 `rgb(225,225,219)` 反回浅色、预反色文字 `rgb(38,38,38)` 反回近黑。现在 `about:` 开头的帧一律直接退出：编辑器暗色由父帧 `applyLongpostEditorDark` 负责，计数由 `wc-frame.js` 负责
+- **字数角标位置**：锚点改为顶栏「插入音乐」按钮 `#menu-music`（仓库既有暗色 CSS 引用的 id），角标贴其视觉左侧；顶栏右栏是 `flex-direction: row-reverse` 的版本里 DOM 顺序与视觉左右相反，先按 flex 方向选边、再用实测矩形校正一次，不再被塞到顶栏最右侧；找不到锚点（如编辑弹窗）仍回退右下角 fixed
+
+### 变更
+
+- `manifest.json` 版本号 1.1.2
+
 ## [1.1.1] - 2026-09-18
 
 ### 修复

@@ -3,6 +3,16 @@ window.decorationsGloballyHidden = false;
 if (window !== window.top) {
   const href = location.href;
 
+  /* about:blank / about:srcdoc 帧：既不是评论区，也不该走评论区的反色管线。
+   * manifest 为字数桥接开启 match_about_blank 后，content.js 会注入进编辑器
+   * 自己的 about:blank 子帧；一旦落到下面的评论区分支，该帧会再叠一层
+   * body{filter:invert} 滤镜，与父帧 #main 的反色相互抵消 →
+   * 编辑器变白底黑字（v1.1.1 实测回归）。这类帧一律不插手：
+   * 编辑器暗色由父帧 applyLongpostEditorDark 负责，计数由 wc-frame.js 负责。 */
+  if (/^about:/i.test(href) || /^about:/i.test(document.URL || '')) {
+    throw new Error('lc-iframe-exit');
+  }
+
   // 编辑器 iframe (lf127.net)
   if (href.includes('lf127.net')) {
     chrome.storage.local.get('lc_settings_v1', (res) => {
@@ -12417,24 +12427,66 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     if (el) el.remove();
   }
 
-  /* 顶栏锚点：长文章写作页头部右栏（.m-hd-longpost .right）第一个可见
-   * 图标——即「插入音乐」按钮（未来白噪音开关的预留位）。角标插到它
-   * 左边，作为行内元素随顶栏布局；找不到就回退 fixed。 */
+  /* 顶栏锚点：长文章写作页头部右栏的「插入音乐」按钮 #menu-music
+   * （即未来白噪音开关的预留位，仓库既有暗色 CSS 就引用这个 id）。
+   * 角标贴在它视觉左侧，作为行内元素随顶栏布局；找不到就回退 fixed。 */
+  function wcVisible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width >= 10 && r.height >= 10 && r.bottom > 0 && r.top < vh0();
+  }
   function wcAnchorEl() {
-    const right = document.querySelector(".m-hd-longpost .right");
-    if (!right) return null;
-    for (const el of right.querySelectorAll("a, .u-select-menu, span, i")) {
-      if (/btn-publish/.test(el.className || "")) continue; /* 发布按钮不当前锚 */
-      const r = el.getBoundingClientRect();
-      if (r.width >= 12 && r.height >= 12 && r.top >= 0 && r.bottom <= vh0()) {
-        return el;
-      }
+    const hd = document.querySelector(".m-hd-longpost");
+    if (!hd) return null;
+    const right = hd.querySelector(".right") || hd;
+    const music =
+      right.querySelector("#menu-music") || hd.querySelector("#menu-music");
+    if (wcVisible(music)) return music;
+    /* 回退：右栏第一个可见图标，排除发布按钮 / 头像下拉 / 下拉菜单 */
+    for (const el of right.querySelectorAll("a, button, span, i")) {
+      if (/btn-publish|btn-arrow|u-select-menu/.test(el.className || "")) continue;
+      if (wcVisible(el)) return el;
     }
     return null;
   }
   /* wcAnchorEl 用视口高判定可见性；FAB 段的 vh() 在这里还不可用，独立兜底 */
   const vh0 = () =>
     document.documentElement.clientHeight || window.innerHeight || 800;
+
+  /* wcPlaceInline：把角标放到锚点（音乐图标）的「视觉左侧」。
+   * 顶栏右栏在部分版本里是 flex-direction: row-reverse（实测 v1.1.1 角标被
+   * 塞到了最右侧），此时 DOM 上「放在锚点之后」才是视觉上的左侧。所以先按
+   * flex 方向选边，再用实测矩形校正一次（每元素只校正一次，避免来回抖动）。
+   * 无布局信息时（jsdom 等）以 DOM 判定为准。 */
+  function wcPlaceInline(el, anchor) {
+    const parent = anchor.parentNode;
+    if (!parent) return;
+    if (el.__lcWcAnchor !== anchor) {
+      el.__lcWcAnchor = anchor;
+      el.dataset.wcFlip = "";
+    }
+    const rev =
+      parent.nodeType === 1 &&
+      getComputedStyle(parent).flexDirection === "row-reverse";
+    const wantAfter = rev;
+    const placed =
+      el.parentNode === parent &&
+      (wantAfter
+        ? el.previousElementSibling === anchor
+        : el.nextElementSibling === anchor);
+    if (!placed) {
+      parent.insertBefore(el, wantAfter ? anchor.nextSibling : anchor);
+    }
+    if (el.dataset.wcFlip === "1") return; /* 已按实测校正过 */
+    const a = anchor.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    if (!a.width || !r.width) return; /* 无布局信息 → 认 DOM 判定 */
+    if (r.left >= a.right) {
+      /* 实测仍在锚点右侧：换到另一侧 */
+      el.dataset.wcFlip = "1";
+      parent.insertBefore(el, wantAfter ? anchor : anchor.nextSibling);
+    }
+  }
 
   function wcPaint(el, inline) {
     const dark = isDarkMode();
@@ -12553,10 +12605,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       el.setAttribute("data-mode", mode);
     }
     if (mode === "inline") {
-      /* 角标应紧贴音乐图标左侧：右边一个兄弟就是锚点才不用重挂 */
-      if (!el.isConnected || el.nextElementSibling !== anchor) {
-        anchor.parentNode.insertBefore(el, anchor);
-      }
+      wcPlaceInline(el, anchor);
     } else if (!el.isConnected) {
       (document.documentElement || document.body).appendChild(el);
     }
