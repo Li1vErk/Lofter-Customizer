@@ -12427,33 +12427,34 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     if (el) el.remove();
   }
 
-  /* 顶栏锚点：长文章写作页头部右栏的「插入音乐」按钮 #menu-music
-   * （即未来白噪音开关的预留位，仓库既有暗色 CSS 就引用这个 id）。
-   * 角标贴在它视觉左侧，作为行内元素随顶栏布局；找不到就回退 fixed。 */
+  /* 顶栏锚点：长文章写作页头部右栏的白噪音（♪）/音乐按钮。2026-09-18
+   * 线上 DOM：触发按钮是 #btn-music（class btn-icon btn-music，.right 第
+   * 一个子元素）；#btm-music 是另一版本的写法；#menu-music 在旧版里是
+   * 触发按钮、新版里则是藏在 header 下的白噪音下拉菜单（折叠态实测
+   * 161x1px，能骗过「有盒子即可见」判定——靠 wcVisible 的最小高度挡掉，
+   * 否则角标会被锚到菜单上、掉出顶栏左下角）。找不到就回退 fixed。 */
   function wcVisible(el) {
     if (!el) return false;
     const r = el.getBoundingClientRect();
-    /* 只要真有盒子且在视口内就算可见：宽度不能用固定阈值——
-       顶栏图标按钮可能只有一个窄字形（实测 8px 宽），会被误判不可见 */
-    return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < vh0();
+    /* 宽度不能设固定阈值——顶栏图标按钮可能只有一个窄字形（实测 8px 宽）；
+       高度设 8px 下限，滤掉折叠成 1px 的下拉菜单 */
+    return r.width > 0 && r.height >= 8 && r.bottom > 0 && r.top < vh0();
   }
+  const WC_NOT_ANCHOR =
+    /(btn|btm)-(publish|arrow|preview|klass|music)|author-ava|\bava\b|\blogo\b|u-select-menu/;
   function wcAnchorEl() {
     const hd = document.querySelector(".m-hd-longpost");
     if (!hd) return null;
-    /* 写作页真实 id 是 #btm-music（class icon icon-btm-music，2026-09 实测 DOM）；
-     * #menu-music 是旧版/其他版本的写法，一并兼容。直接在头部范围内找，
-     * 不假定它所在的容器（.right 在部分版本里 float: left，不可靠）。 */
-    const music =
-      hd.querySelector("#btm-music") || hd.querySelector("#menu-music");
-    if (wcVisible(music)) return music;
-    /* 回退：头部里第一个可见图标。发布/预览/头像/下拉按钮可能带 btn- 或
-     * btm- 前缀（btm-preview-* / btm-arrow-do / btn-publish …），全部排除。 */
+    /* 按新旧版本顺序找触发按钮；直接在头部范围内找，不假定它所在的
+     * 容器（.right 在部分版本里 float: left，不可靠）。 */
+    for (const sel of ["#btn-music", "#btm-music", ".btn-music", "#menu-music"]) {
+      const el = hd.querySelector(sel);
+      if (wcVisible(el)) return el;
+    }
+    /* 回退：头部里第一个可见图标。发布/预览/箭头/头像/logo/下拉菜单都
+     * 不是锚点——className 和 id 都过一遍名单，防止换前缀绕过。 */
     for (const el of hd.querySelectorAll("a, button, span, i")) {
-      if (
-        /(btn|btm)-(publish|arrow|preview|klass)|author-ava|u-select-menu/.test(
-          el.className || "",
-        )
-      )
+      if (WC_NOT_ANCHOR.test(el.className || "") || WC_NOT_ANCHOR.test(el.id || ""))
         continue;
       if (wcVisible(el)) return el;
     }
@@ -12487,14 +12488,25 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     if (!placed) {
       parent.insertBefore(el, wantAfter ? anchor.nextSibling : anchor);
     }
-    if (el.dataset.wcFlip === "1") return; /* 已按实测校正过 */
     const a = anchor.getBoundingClientRect();
     const r = el.getBoundingClientRect();
     if (!a.width || !r.width) return; /* 无布局信息 → 认 DOM 判定 */
-    if (r.left >= a.right) {
+    if (el.dataset.wcFlip !== "1" && r.left >= a.right) {
       /* 实测仍在锚点右侧：换到另一侧 */
       el.dataset.wcFlip = "1";
       parent.insertBefore(el, wantAfter ? anchor : anchor.nextSibling);
+    }
+    /* 垂直对齐：float 行是顶对齐，角标会贴到容器顶、比图标高一截
+     * （2026-09-18 实测差 ~17px）。按锚点中心差补偿 marginTop；flex
+     * 垂直居中布局下差值≈0 不写，写了也会随重测收敛，不会抖。 */
+    const a2 = anchor.getBoundingClientRect();
+    const r2 = el.getBoundingClientRect();
+    if (a2.height && r2.height) {
+      const dy = a2.top + a2.height / 2 - (r2.top + r2.height / 2);
+      if (Math.abs(dy) > 2) {
+        el.style.marginTop =
+          (parseFloat(el.style.marginTop) || 0) + Math.round(dy) + "px";
+      }
     }
   }
 
@@ -12505,6 +12517,11 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       /* 顶栏行内：占位随布局，配色贴合顶栏深浅 */
       st.cssText = "";
       st.display = "inline-flex";
+      /* 线上 .right 是 position:absolute 的块容器，图标 a 全靠 float:left
+       * 排成一行；角标若不跟着浮动，会作为普通 inline 内容被 float 挤到
+       * 行尾右上角（2026-09-18 实测 rect [940,-1]）。float 在 flex 容器里
+       * 会被忽略，对 row / row-reverse 版本无影响。 */
+      st.cssFloat = "left";
       st.alignItems = "center";
       st.marginRight = "12px";
       st.padding = "3px 10px";
@@ -12614,12 +12631,15 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       el.setAttribute("role", "status");
       el.setAttribute("data-mode", mode);
     }
+    /* 先 wcPaint 再落位：wcPaint 开头 st.cssText="" 会清掉全部内联样式，
+     * 若先落位（wcPlaceInline 里会按实测写 marginTop 做垂直对齐）再上漆，
+     * 对齐补偿就被抹掉了——线上曾因此角标始终贴着页面顶部。 */
+    wcPaint(el, mode === "inline");
     if (mode === "inline") {
       wcPlaceInline(el, anchor);
     } else if (!el.isConnected) {
       (document.documentElement || document.body).appendChild(el);
     }
-    wcPaint(el, mode === "inline");
 
     wcUpdate();
 
