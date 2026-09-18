@@ -58,6 +58,10 @@ settings (chrome.storage.local)
 - **两条「不碰站点布局」的红线**：
   1. 不给站点自己的外层容器（如长文章编辑器的 `.editorWrap`）加 `position`——站内已有绝对定位的 placeholder label，改变包含块会把它挪走；
   2. 自绘浮层挂在 `document.documentElement` 下（`position: fixed` + `pointer-events: none`），既躲开 `#main` / `#rside` 等容器的反色滤镜，也不参与页面布局、不遮挡站点点击。
+- **iframe 注入范围的三条规矩**（`manifest.content_scripts`）：
+  1. 主站管线 `content.js` 只跑真实页面帧：`lofter.com` 各页 + `lofter.lf127.net/lofter-admin/*`；
+  2. 编辑器正文帧是 UEditor 的 `about:blank`（继承父帧源、**自己没有 URL**）。`content.js` 一旦注入进去，`location.href` 不含 `lf127.net`，会落进评论区 iframe 分支、再叠一层 `body{filter:invert}`，与父帧 `#main` 的反色相互抵消——表现为编辑器白底黑字。所以 `about:` 开头的帧必须**立即退出**：编辑器暗色归父帧 `applyLongpostEditorDark`，计数归 `wc-frame.js`；
+  3. 桥接脚本 `wc-frame.js` 只在子帧跑（`window.top !== window`），只上报三个整数、不传正文，主帧用 `e.source === iframe.contentWindow` 校验来源。
 
 ## 3. 双渲染管线（核心）
 
@@ -90,7 +94,7 @@ const A = isDarkMode() && inMain ? computeDarkAccent(settings.theme.accent) : se
 
 1. **写色前先确认元素是否在反色区内**。写错一侧的结果通常是「颜色被翻转成诡异色相」或「黑字变白底」。
 2. **非反色区域一律写原始色**，不要做预反色，否则同样错位。
-3. **iframe 要单独判定宿主管线**：编辑器（`lf127.net`）与评论区 iframe 的处理逻辑可能完全不同，按 `iframe.src` 分支处理。
+3. **iframe 要单独判定宿主管线**：编辑器（`lf127.net`）与评论区 iframe 的处理逻辑可能完全不同，按 `iframe.src` 分支处理。注意编辑器正文帧可能是 `about:blank`（**没有 src**），这类帧既不走 `lf127.net` 分支、也不能走评论区分支，应直接退出（见第 2 节"iframe 注入范围的三条规矩"）。
 
 ## 4. 稳定锚点策略
 

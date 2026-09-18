@@ -8,11 +8,16 @@
 ### 修复
 
 - **长文章编辑器变白底黑字（1.1.1 引入的回归）**：1.1.1 为字数桥接开启 `match_about_blank` 后，`content.js` 被注入进编辑器自己的 `about:blank` 子帧；该帧 `location.href` 不含 `lf127.net`，于是落进评论区 iframe 分支、又叠了一层 `body{filter:invert}`，与父帧 `#main` 的反色相互抵消——背景 `rgb(225,225,219)` 反回浅色、预反色文字 `rgb(38,38,38)` 反回近黑。现在 `about:` 开头的帧一律直接退出：编辑器暗色由父帧 `applyLongpostEditorDark` 负责，计数由 `wc-frame.js` 负责
-- **字数角标位置**：锚点改为顶栏「插入音乐」按钮 `#menu-music`（仓库既有暗色 CSS 引用的 id），角标贴其视觉左侧；顶栏右栏是 `flex-direction: row-reverse` 的版本里 DOM 顺序与视觉左右相反，先按 flex 方向选边、再用实测矩形校正一次，不再被塞到顶栏最右侧；找不到锚点（如编辑弹窗）仍回退右下角 fixed
+- **字数角标位置**：锚点改为顶栏「插入音乐」按钮 `#menu-music`（仓库既有暗色 CSS 引用的 id），角标贴其视觉左侧；顶栏右栏是 `flex-direction: row-reverse` 的版本里 DOM 顺序与视觉左右相反，先按 flex 方向选边、再用实测矩形校正一次，不再被塞到顶栏最右侧；锚点可见性不再用固定宽度阈值（顶栏图标按钮可能只有一个窄字形，实测 8px 宽，会被误判不可见而退回下一个图标）；找不到锚点（如编辑弹窗）仍回退右下角 fixed
+- **`about:blank` 子帧不再被主站管线接管**：新增第 4 条 iframe 前置规则（见 `docs/architecture.md`），`about:` 开头的帧一律直接退出
 
 ### 变更
 
 - `manifest.json` 版本号 1.1.2
+
+### 开发工具
+
+- `tools/wc-place-check.py`：用无头浏览器渲染与写作页顶栏同构的 mock（row / row-reverse 两种写法），真实加载 `content.js` 后量测角标与音乐按钮的矩形，验证角标落在音乐按钮左侧
 
 ## [1.1.1] - 2026-09-18
 
