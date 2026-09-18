@@ -12017,6 +12017,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       decDragTarget = null;
       decResizeTarget = null;
       clearFouc();
+      lcSafe(applyWordCounter); /* 总开关关闭 → 收掉字数角标与轮询 */
       return;
     }
     lcSafe(applyFontFace);
@@ -12037,6 +12038,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     lcSafe(lcStyleDarenApplyGlass);
     lcSafe(lcFixCreatorCenter);
     lcSafe(applyLongpostEditorDark);
+    lcSafe(applyWordCounter);
     lcSafe(initDraftManager);
     lcSafe(applyCustomPlaceholder);
   }
@@ -12090,6 +12092,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         lcSafe(lcStyleDarenApplyGlass);
         lcSafe(lcFixCreatorCenter);
         lcSafe(applyLongpostEditorDark);
+        lcSafe(applyWordCounter);
         lcSafe(applyCardAnimations);
         lcSafe(applyCustomPlaceholder);
       }, CHAIN_DEBOUNCE);
@@ -12321,6 +12324,163 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         }, 500);
       }
     });
+  }
+
+  /* ---------- 长文章实时字数统计（功能栏 · 默认关闭） ----------
+   * 口径（docs 定稿）：汉字按字、连续英文/数字按词，标点计入总字符。
+   * 编辑器是 lofter.com 同源 UEditor iframe（长文章页与「长文章编辑弹窗」
+   * 共用同一批选择器，所以复用 applyLongpostEditorDark 的候选列表）。
+   * 角标挂在主文档 documentElement 下、fixed 定位：不在任何反色容器内、
+   * 不参与编辑器布局（编辑器 wrapper 一旦改 position 会挪走站点自带的
+   * placeholder label，绝不能碰），也不再占位。 */
+  const WC_ID = "lc-word-count";
+  const WC_IFRAME_SELECTORS = [
+    'iframe[id^="baidu_editor"]',
+    'iframe[id^="ueditor"]',
+    ".edui-editor-iframeholder iframe",
+    ".m-main iframe",
+  ];
+  let wcTimer = null;
+  let wcBoundDoc = null;
+  let wcLastText = null;
+  let wcDebounce = 0;
+
+  const wcOn = () => !!(settings.enabled && settings.tools && settings.tools.wordCount);
+
+  /* 统计口径：汉字按字、连续英文/数字按词（内部连接符不断词），标点计入总字符 */
+  function wcCount(text) {
+    const t = String(text || "");
+    const han = (t.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || []).length;
+    const words = (t.match(/[A-Za-z0-9]+(?:['\u2019-][A-Za-z0-9]+)*/g) || []).length;
+    return { han, words, chars: t.replace(/\s/g, "").length, total: han + words };
+  }
+  const wcFmt = (n) => n.toLocaleString("en-US");
+
+  function wcEditorDoc() {
+    for (const sel of WC_IFRAME_SELECTORS) {
+      const f = document.querySelector(sel);
+      if (!f) continue;
+      try {
+        const d = f.contentDocument || (f.contentWindow && f.contentWindow.document);
+        if (d && d.body) return d;
+      } catch (e) {
+        /* 跨域或尚未就绪：换下一个候选 */
+      }
+    }
+    return null;
+  }
+
+  function wcRemove() {
+    if (wcTimer) {
+      clearInterval(wcTimer);
+      wcTimer = null;
+    }
+    if (wcDebounce) {
+      clearTimeout(wcDebounce);
+      wcDebounce = 0;
+    }
+    wcBoundDoc = null;
+    wcLastText = null;
+    const el = document.getElementById(WC_ID);
+    if (el) el.remove();
+  }
+
+  function wcPaint(el) {
+    const dark = isDarkMode();
+    const st = el.style;
+    st.position = "fixed";
+    st.right = "22px";
+    st.bottom = "18px";
+    st.zIndex = "2147482000"; /* 低于悬浮按钮宿主 2147483000，面板永远盖在角标上 */
+    st.padding = "5px 11px";
+    st.borderRadius = "999px";
+    st.font =
+      "12px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif";
+    st.fontVariantNumeric = "tabular-nums";
+    st.pointerEvents = "none"; /* 纯展示，不挡站点点击 */
+    st.userSelect = "none";
+    st.whiteSpace = "nowrap";
+    st.background = dark ? "rgba(32,32,40,0.82)" : "rgba(255,255,255,0.86)";
+    st.color = dark ? "rgba(255,255,255,0.82)" : "rgba(40,40,48,0.82)";
+    st.border = "1px solid " + (dark ? "rgba(255,255,255,0.14)" : "rgba(0,0,0,0.08)");
+    st.boxShadow = dark ? "0 2px 10px rgba(0,0,0,0.4)" : "0 2px 10px rgba(0,0,0,0.1)";
+    st.backdropFilter = "blur(6px)";
+    st.webkitBackdropFilter = "blur(6px)";
+  }
+
+  function wcUpdate() {
+    const doc = wcBoundDoc;
+    const el = document.getElementById(WC_ID);
+    if (!doc || !doc.body || !el) return;
+    const text = doc.body.innerText || doc.body.textContent || "";
+    if (text === wcLastText) return; /* 文本没变就不重算、不写 DOM */
+    wcLastText = text;
+    const c = wcCount(text);
+    el.textContent = "字数 " + wcFmt(c.total);
+    el.title =
+      "汉字 " + wcFmt(c.han) +
+      " · 英文/数字词 " + wcFmt(c.words) +
+      " · 总字符 " + wcFmt(c.chars) + "（含标点，不含空白）";
+  }
+
+  function wcSchedule() {
+    if (wcDebounce) clearTimeout(wcDebounce);
+    wcDebounce = setTimeout(() => {
+      wcDebounce = 0;
+      wcUpdate();
+    }, 160);
+  }
+
+  function applyWordCounter() {
+    if (!wcOn()) {
+      wcRemove();
+      return;
+    }
+
+    const doc = wcEditorDoc();
+    if (!doc) {
+      wcRemove(); /* 页面上没有编辑器（或滚出了长文章页）→ 角标一起收掉 */
+      return;
+    }
+
+    let el = document.getElementById(WC_ID);
+    if (!el) {
+      el = document.createElement("div");
+      el.id = WC_ID;
+      el.setAttribute("role", "status");
+      (document.documentElement || document.body).appendChild(el);
+      wcLastText = null;
+    }
+    wcPaint(el);
+
+    /* 编辑器 iframe 会被反复重建，doc 变了就重新绑监听（旧 doc 已随 iframe 销毁） */
+    if (doc !== wcBoundDoc) {
+      wcBoundDoc = doc;
+      wcLastText = null;
+      ["input", "keyup", "paste", "cut"].forEach((ev) =>
+        doc.addEventListener(ev, wcSchedule, true),
+      );
+    }
+
+    wcUpdate();
+
+    /* 兜底轮询：UEditor 的 setContent/撤销/模板插入等路径不发 input 事件，
+       且 iframe 重建后需要重新发现。文本未变时 wcUpdate 直接返回，开销可忽略。 */
+    if (!wcTimer) {
+      wcTimer = setInterval(() => {
+        if (!wcOn()) {
+          wcRemove();
+          return;
+        }
+        if (document.hidden) return;
+        const d = wcEditorDoc();
+        if (!d || d !== wcBoundDoc) {
+          lcSafe(applyWordCounter);
+          return;
+        }
+        wcUpdate();
+      }, 1200);
+    }
   }
 
   /* ---------- 导航栏透明/毛玻璃（对抗Lofter的JS内联覆盖）---------- */
@@ -12591,10 +12751,12 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     if (document.body?.id === "longpost-publish-page") {
       setTimeout(() => {
         applyLongpostEditorDark();
+        applyWordCounter();
         // 每隔 2 秒再检查一次，持续 30 秒（编辑器可能反复重建）
         let count = 0;
         const iv = setInterval(() => {
           applyLongpostEditorDark();
+          applyWordCounter();
           if (++count > 15) clearInterval(iv);
         }, 2000);
       }, 1000);

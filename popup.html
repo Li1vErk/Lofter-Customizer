@@ -209,14 +209,16 @@
     }
 
     /* 滑动色块：随 --i 平移到激活标签下方（切换时滑行动画），
-     * 外圈光晕即概念图的边缘模糊效果 */
+     * 外圈光晕即概念图的边缘模糊效果。
+     * 宽度按当前标签数等分：n 栏 → (100% - 左右内边距 24px - (n-1) 个 4px 间隙) / n
+     * 现为 6 栏。增删标签时只改这一处（translateX 用百分比，自动跟随）。 */
     .tabs::before {
       content: "";
       position: absolute;
       top: 8px;
       bottom: 8px;
       left: 12px;
-      width: calc((100% - 24px - 16px) / 5);
+      width: calc((100% - 24px - 20px) / 6);
       background: var(--lc-accent);
       border-radius: 999px;
       transform: translateX(calc(var(--i) * (100% + 4px)));
@@ -519,6 +521,83 @@
       left: 22px;
     }
 
+    /* ---------- 数据栏（导入导出）：模块勾选 chip ----------
+       全局 input[type=checkbox] 被隐藏，这里显式恢复成原生方框 */
+    .lc-mods {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      flex: 1;
+    }
+
+    .lc-mods label {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 9px;
+      border: 1px solid var(--lc-line);
+      border-radius: 999px;
+      background: var(--lc-soft);
+      font-size: 12px;
+      color: var(--lc-sub);
+      cursor: pointer;
+      transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+    }
+
+    .lc-mods input[type="checkbox"] {
+      display: inline-block;
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      width: 13px;
+      height: 13px;
+      margin: 0;
+      border: 1px solid var(--lc-line);
+      border-radius: 4px;
+      background: var(--lc-card);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .lc-mods input[type="checkbox"]::after {
+      content: "";
+      position: absolute;
+      left: 3.5px;
+      top: 0.5px;
+      width: 3px;
+      height: 7px;
+      border: solid #fff;
+      border-width: 0 1.6px 1.6px 0;
+      transform: rotate(45deg) scale(0);
+      transition: transform 0.12s ease;
+    }
+
+    .lc-mods input[type="checkbox"]:checked {
+      background: var(--lc-accent);
+      border-color: var(--lc-accent);
+    }
+
+    .lc-mods input[type="checkbox"]:checked::after {
+      transform: rotate(45deg) scale(1);
+    }
+
+    .lc-mods label:has(input:checked) {
+      border-color: var(--lc-accent);
+      background: var(--lc-accent-weak);
+      color: var(--lc-text);
+    }
+
+    /* 通栏提示（不带 90px 左缩进，用于整组说明） */
+    .hint.plain {
+      margin-left: 0;
+    }
+
+    /* 数据栏按钮行：右对齐，按钮不撑满 */
+    .lc-btn-row {
+      justify-content: flex-end;
+    }
+
     /* ---------- 底栏 ---------- */
     .foot {
       padding: 12px 16px;
@@ -633,6 +712,7 @@
     <button class="tab" data-tab="deco" data-page-node-id="BLEPdWrlIeoCPqTK0Gs7mM">装饰</button>
     <button class="tab" data-tab="card" data-page-node-id="1s3GefGYGAOuNiVP7D2kic">卡片</button>
     <button class="tab" data-tab="nav" data-page-node-id="gEYpeWuSI2HOCOSmxzEZSa">导航</button>
+    <button class="tab" data-tab="func" data-page-node-id="lcFuncTab">功能</button>
     <button class="tab" data-tab="misc" data-page-node-id="TB1GrefcSslxwW7gh2DJmw">其他</button>
   </nav>
 
@@ -786,6 +866,20 @@
       </div>
     </section>
 
+    <!-- 功能（往页面注入的功能开关） -->
+    <section class="pane" data-pane="func" data-page-node-id="lcFuncPane">
+      <div class="grp-card"><div class="grp-title">写作辅助</div>
+        <label class="toggle" data-page-node-id="lcWcToggle">
+          <span data-page-node-id="lcWcLabel">长文章实时字数统计</span>
+          <input type="checkbox" id="tool-wordcount" data-page-node-id="lcWcInput" />
+        </label>
+        <p class="hint plain" data-page-node-id="lcWcHint">在长文章编辑器右下角常驻显示字数，随输入实时更新。口径：汉字按字、连续英文/数字按词，标点计入总字符（悬停可看明细）。</p>
+      </div>
+      <div class="grp-card"><div class="grp-title">路线图</div>
+        <p class="hint plain" data-page-node-id="lcFuncRoadmap">关键词过滤、评论区增强、表情快捷输入、文章导出等功能会陆续加入本栏，每项都是独立开关、默认关闭。</p>
+      </div>
+    </section>
+
     <section class="pane" data-pane="misc" data-page-node-id="ZHR6vKyIVNU71GiLvGGY2D">
       <div class="grp-card"><div class="grp-title">快捷键</div>
       <label class="toggle" style="margin-bottom:14px;" data-page-node-id="ATESbGG0VvLW5bMXcBXCtv">
@@ -811,6 +905,33 @@
             style="font-size:12px;padding:4px 12px;" data-page-node-id="lZqOw8lr12MsohOciyJrVU">在浏览器中修改快捷键</button>
         </div>
       </div>
+      </div>
+
+      <div class="grp-card"><div class="grp-title">数据</div>
+        <div class="row" data-page-node-id="lcExpRow">
+          <label data-page-node-id="lcExpLabel">导出配置</label>
+          <button class="btn" id="cfg-export-all" type="button" data-page-node-id="lcExpAll">导出全部</button>
+        </div>
+        <div class="row" data-page-node-id="lcModRow">
+          <label data-page-node-id="lcModLabel">选择模块</label>
+          <div class="lc-mods" id="cfg-modules" data-page-node-id="lcMods">
+            <label><input type="checkbox" data-mod="display" checked data-page-node-id="lcMod1" />显示</label>
+            <label><input type="checkbox" data-mod="deco" checked data-page-node-id="lcMod2" />装饰</label>
+            <label><input type="checkbox" data-mod="card" checked data-page-node-id="lcMod3" />卡片</label>
+            <label><input type="checkbox" data-mod="nav" checked data-page-node-id="lcMod4" />导航</label>
+            <label><input type="checkbox" data-mod="func" checked data-page-node-id="lcMod6" />功能</label>
+            <label><input type="checkbox" data-mod="misc" checked data-page-node-id="lcMod5" />其他</label>
+          </div>
+        </div>
+        <div class="row lc-btn-row" data-page-node-id="lcExpPartRow">
+          <button class="btn" id="cfg-export-part" type="button" data-page-node-id="lcExpPart">导出勾选模块</button>
+        </div>
+        <p class="hint" data-page-node-id="lcExpHint">模块与面板栏目一一对应，方便只恢复某一栏。默认全选。</p>
+        <div class="row lc-btn-row" data-page-node-id="lcImpRow">
+          <input type="file" id="cfg-import-file" accept="application/json,.json" hidden data-page-node-id="lcImpFile" />
+          <button class="btn" id="cfg-import" type="button" data-page-node-id="lcImpBtn">导入配置…</button>
+        </div>
+        <p class="hint" data-page-node-id="lcImpHint">导入会覆盖对应模块的现有设置（会先弹确认框）。导出文件是纯 JSON 文本，不含任何上传行为，可自行留存或分享。</p>
       </div>
 
       <div class="grp-card"><div class="grp-title">关于</div>

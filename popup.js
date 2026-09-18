@@ -841,6 +841,10 @@
     syncBgGroups();
     syncDarkBrightness();
     syncGtotopSize();
+
+    // 功能栏
+    $("tool-wordcount").checked = !!(s.tools && s.tools.wordCount);
+
     renderDecorations();
 
     // 词卡弹窗事件（只绑一次，确保 DOM 已加载）
@@ -1086,6 +1090,13 @@
 
   on("reset", "click", () => { if (!confirm("确定要全部重置吗？")) return; state = LC_clone(LC_DEFAULTS); render(); save(); });
 
+  /* 功能栏：长文章实时字数统计（默认关闭，见 defaults.js 开发约定） */
+  on("tool-wordcount", "change", (e) => {
+    if (!state.tools) state.tools = LC_clone(LC_DEFAULTS.tools);
+    state.tools.wordCount = e.target.checked;
+    save();
+  });
+
   on("gtotop-file-btn", "click", () => $("gtotop-file").click());
   on("gtotop-file", "change", async (e) => {
     const f = e.target.files[0]; if (!f) return;
@@ -1166,6 +1177,158 @@
     state.gtotop.imageSize = +e.target.value;
     $("gtotop-size-v").textContent = e.target.value + "%";
     save();
+  });
+
+  /* ============================================================
+   * 数据栏：配置导入导出
+   * 免权限方案——导出用 Blob + <a download>（不申请 downloads 权限），
+   * 导入用 <input type="file"> + FileReader，全程本地、无网络请求。
+   * 模块划分与面板一级栏目一致，便于"只恢复被我改坏的那一栏"。
+   * ============================================================ */
+  const LC_MODULES = [
+    /* enabled（美化总开关）随「显示」走：它是整站观感的总闸 */
+    { id: "display", label: "显示", keys: ["darkMode", "background", "font", "theme", "enabled"] },
+    { id: "deco", label: "装饰", keys: ["decorations", "decorationsVisible"] },
+    { id: "card", label: "卡片", keys: ["card", "tidy"] },
+    { id: "nav", label: "导航", keys: ["navbar", "searchPlaceholder", "gtotop"] },
+    { id: "func", label: "功能", keys: ["tools"] },
+    { id: "misc", label: "其他", keys: ["shortcutsEnabled", "panel"] },
+  ];
+  /* 允许写入 storage 的键白名单：导入时剔除非本扩展的键，避免脏数据进配置 */
+  const LC_KNOWN_KEYS = new Set(LC_MODULES.flatMap((m) => m.keys));
+
+  function cfgDate() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+
+  function cfgDownload(filename, payload) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  /* 从当前 state 里挑出指定模块的键；mods 为 null 表示整份快照 */
+  function cfgPick(mods) {
+    const data = {};
+    if (!mods) return LC_clone(state);
+    mods.forEach((id) => {
+      const m = LC_MODULES.find((x) => x.id === id);
+      if (!m) return;
+      m.keys.forEach((k) => {
+        if (state[k] !== undefined) data[k] = LC_clone(state[k]);
+      });
+    });
+    return data;
+  }
+
+  function cfgExport(mods) {
+    const picked = cfgPick(mods);
+    cfgDownload(
+      `lofter-customizer-settings-${mods ? "part" : "all"}-${cfgDate()}.json`,
+      {
+        _type: "lofter-customizer-settings",
+        _format: 1,
+        _app: chrome.runtime.getManifest().version,
+        _exportedAt: new Date().toISOString(),
+        _modules: mods || "all",
+        data: picked,
+      },
+    );
+  }
+
+  on("cfg-export-all", "click", () => cfgExport(null));
+
+  on("cfg-export-part", "click", () => {
+    const mods = [...$("cfg-modules").querySelectorAll("input[data-mod]")]
+      .filter((i) => i.checked)
+      .map((i) => i.dataset.mod);
+    if (!mods.length) {
+      alert("请先勾选至少一个模块。");
+      return;
+    }
+    cfgExport(mods);
+  });
+
+  on("cfg-import", "click", () => $("cfg-import-file").click());
+
+  on("cfg-import-file", "change", async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = ""; // 清空，便于连续两次选同一个文件
+    if (!f) return;
+
+    let raw = null;
+    try {
+      raw = JSON.parse(await f.text());
+    } catch (err) {
+      alert("导入失败：文件不是有效的 JSON 文本。");
+      return;
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      alert("导入失败：无法识别的配置文件。");
+      return;
+    }
+
+    /* 兼容两种来源：本扩展导出的包裹格式，以及手写的裸设置对象 */
+    const wrapped = raw._type === "lofter-customizer-settings";
+    let data = wrapped && raw.data && typeof raw.data === "object" ? raw.data : raw;
+    const mods = wrapped && Array.isArray(raw._modules) ? raw._modules : null;
+
+    const dropped = Object.keys(data).filter((k) => !LC_KNOWN_KEYS.has(k));
+    dropped.forEach((k) => delete data[k]);
+    if (!Object.keys(data).length) {
+      alert("导入失败：文件中没有本扩展认识的设置项。");
+      return;
+    }
+
+    const scope = mods
+      ? "模块：" +
+        mods
+          .map((id) => (LC_MODULES.find((x) => x.id === id) || {}).label)
+          .filter(Boolean)
+          .join("、")
+      : "全部配置";
+
+    const lines = [
+      `即将导入${scope}。`,
+      "",
+      mods
+        ? "只覆盖上述模块的设置，未包含的项保持当前值不变。"
+        : "会覆盖当前全部设置（未包含的项回到默认值）。",
+      "导入后需刷新 LOFTER 页面才会生效。",
+    ];
+    if (dropped.length) lines.push("", `已忽略无法识别的项：${dropped.join("、")}`);
+    if (!confirm(lines.join("\n") + "\n\n继续？")) return;
+
+    if (mods) {
+      const patch = {};
+      mods.forEach((id) => {
+        const m = LC_MODULES.find((x) => x.id === id);
+        if (!m) return;
+        m.keys.forEach((k) => {
+          if (k in data) patch[k] = data[k];
+        });
+      });
+      /* LC_merge 对数组是整体替换（装饰图列表按导入值覆盖），符合预期 */
+      state = LC_merge(state, patch);
+    } else {
+      state = LC_merge(LC_DEFAULTS, data);
+    }
+
+    render();
+    initRanges();
+    save();
+    alert("导入完成。刷新 LOFTER 页面后生效。");
   });
 
   buildFontOptions();
