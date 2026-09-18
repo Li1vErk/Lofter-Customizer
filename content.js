@@ -12440,13 +12440,21 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   function wcAnchorEl() {
     const hd = document.querySelector(".m-hd-longpost");
     if (!hd) return null;
-    const right = hd.querySelector(".right") || hd;
+    /* 写作页真实 id 是 #btm-music（class icon icon-btm-music，2026-09 实测 DOM）；
+     * #menu-music 是旧版/其他版本的写法，一并兼容。直接在头部范围内找，
+     * 不假定它所在的容器（.right 在部分版本里 float: left，不可靠）。 */
     const music =
-      right.querySelector("#menu-music") || hd.querySelector("#menu-music");
+      hd.querySelector("#btm-music") || hd.querySelector("#menu-music");
     if (wcVisible(music)) return music;
-    /* 回退：右栏第一个可见图标，排除发布按钮 / 头像下拉 / 下拉菜单 */
-    for (const el of right.querySelectorAll("a, button, span, i")) {
-      if (/btn-publish|btn-arrow|u-select-menu/.test(el.className || "")) continue;
+    /* 回退：头部里第一个可见图标。发布/预览/头像/下拉按钮可能带 btn- 或
+     * btm- 前缀（btm-preview-* / btm-arrow-do / btn-publish …），全部排除。 */
+    for (const el of hd.querySelectorAll("a, button, span, i")) {
+      if (
+        /(btn|btm)-(publish|arrow|preview|klass)|author-ava|u-select-menu/.test(
+          el.className || "",
+        )
+      )
+        continue;
       if (wcVisible(el)) return el;
     }
     return null;

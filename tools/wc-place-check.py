@@ -2,8 +2,9 @@
 """字数角标落位检查（真实布局引擎）
 
 jsdom 没有排版，验证不了「角标在音乐图标视觉左侧」。本脚本用无头 Edge/Chrome
-渲染一个与长文章写作页顶栏同构的 mock（含 .m-hd-longpost .right + #menu-music），
-真实加载 defaults.js / content.js，再量测角标与音乐按钮的矩形，判定落位。
+渲染一个与长文章写作页顶栏同构的 mock（含 .m-hd-longpost .right + #btm-music，
+id/class 抄自 2026-09-18 线上 DOM），真实加载 defaults.js / content.js，
+再量测角标与音乐按钮的矩形，判定落位。
 
 覆盖两种顶栏写法：
   row          —— DOM 序与视觉序一致（音乐按钮是 .right 第一个子元素）
@@ -30,15 +31,16 @@ BROWSERS = [
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
 ]
 
-# 顶栏右栏的两种 DOM 写法（视觉顺序均为：音乐 / 手机 / 电脑 / 发布 / 头像）
+# 顶栏右栏的 DOM 写法（2026-09-18 从线上写作页 DOM 抄来的真实 id / class）。
+# 视觉顺序均为：音乐 / 手机预览 / 电脑预览 / 发布 / 下拉箭头。
 NODES = {
-    "music": '<a class="btn-icon" id="menu-music" href="#">♪</a>',
-    "phone": '<a class="btn-icon" href="#">▢</a>',
-    "pc": '<a class="btn-icon" href="#">▭</a>',
-    "publish": '<a class="btn-publish" href="#">发 布</a>',
-    "avatar": '<a class="btn-arrow" href="#">◍ ▾</a>',
+    "music": '<a class="icon icon-btm-music" id="btm-music" href="#"><span class="btm-music">♪</span></a>',
+    "phone": '<a class="btm-icon btm-preview-mobile" id="btm-preview-mobile" href="#">▢</a>',
+    "pc": '<a class="btm-icon btm-preview-pc" id="btm-preview-pc" href="#">▭</a>',
+    "publish": '<a class="btn-publish" id="btm-publish" href="#">发 布<img class="author-ava" src=""></a>',
+    "arrow": '<a class="btm-arrow-do" id="btm-arrow-do" href="#">▾</a>',
 }
-ORDER_ROW = ["music", "phone", "pc", "publish", "avatar"]
+ORDER_ROW = ["music", "phone", "pc", "publish", "arrow"]
 ORDER_REV = list(reversed(ORDER_ROW))
 
 PAGE = """<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -47,7 +49,7 @@ PAGE = """<!DOCTYPE html><html><head><meta charset="utf-8">
   .m-hd-longpost {{ display: flex; align-items: center; height: 62px; padding: 0 16px;
                     background: #2b2b33; color: #ddd; }}
   .m-hd-longpost .left {{ flex: 1; }}
-  .m-hd-longpost .right {{ display: flex; flex-direction: {flex}; align-items: center; gap: 18px; }}
+  .m-hd-longpost .right {{ {flex} }}
   .m-hd-longpost .right a {{ color: #ddd; text-decoration: none; font-size: 16px; }}
   .m-hd-longpost .right .btn-publish {{ background: #c9b6e4; color: #3b2a52; padding: 8px 22px;
                                         border-radius: 8px; font-size: 14px; }}
@@ -93,7 +95,7 @@ PAGE = """<!DOCTYPE html><html><head><meta charset="utf-8">
     try {{ f.contentDocument.body.textContent = "测试内容 hello"; }} catch (e) {{}}
     setTimeout(function () {{
       var el = document.getElementById("lc-word-count");
-      var music = document.getElementById("menu-music");
+      var music = document.getElementById("btm-music");
       var out = "WCCHECK";
       if (!el || !music) {{
         out += "|missing el=" + !!el + " music=" + !!music;
@@ -161,8 +163,16 @@ def main():
     browser = find_browser()
     print("用 %s 渲染 mock 顶栏并量测角标落位\n" % os.path.basename(browser))
     results = [
-        run_case(browser, "row", "row", ORDER_ROW),
-        run_case(browser, "row-reverse", "row-reverse", ORDER_REV),
+        run_case(browser, "row",
+                 "display: flex; flex-direction: row; align-items: center; gap: 18px;",
+                 ORDER_ROW),
+        run_case(browser, "row-reverse",
+                 "display: flex; flex-direction: row-reverse; align-items: center; gap: 18px;",
+                 ORDER_REV),
+        # 线上写作页实测：.right { float: left; width: 358px; margin: 17px 0 16px 17px; }
+        run_case(browser, "float-left",
+                 "float: left; width: 358px; height: 26px; margin: 17px 0 16px 17px;",
+                 ORDER_ROW),
     ]
     tmp = os.path.join(ROOT, TMP_NAME)
     if os.path.exists(tmp):
