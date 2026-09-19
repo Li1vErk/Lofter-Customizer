@@ -12028,6 +12028,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       decResizeTarget = null;
       clearFouc();
       lcSafe(applyWordCounter); /* 总开关关闭 → 收掉字数角标与轮询 */
+      lcSafe(applyFilter); /* 总开关关闭 → 摘掉过滤标记与提示 */
       return;
     }
     lcSafe(applyFontFace);
@@ -12049,6 +12050,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     lcSafe(lcFixCreatorCenter);
     lcSafe(applyLongpostEditorDark);
     lcSafe(applyWordCounter);
+    lcSafe(applyFilter);
     lcSafe(initDraftManager);
     lcSafe(applyCustomPlaceholder);
   }
@@ -12103,6 +12105,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         lcSafe(lcFixCreatorCenter);
         lcSafe(applyLongpostEditorDark);
         lcSafe(applyWordCounter);
+        lcSafe(applyFilter);
         lcSafe(applyCardAnimations);
         lcSafe(applyCustomPlaceholder);
       }, CHAIN_DEBOUNCE);
@@ -12673,6 +12676,301 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         }
         wcUpdate();
       }, 1200);
+    }
+  }
+
+  /* ---------- 关键词/用户过滤（功能栏 · 默认关闭） ----------
+   * 范围（分期）：Phase 1 = 首页时间线 + 标签页的博文卡片；
+   * 评论区过滤（Phase 2）与发现页暂不启用。
+   * 设计要点（相对参考实现 Greasyfork「Lofter 增强插件」的修正）：
+   * - 幂等全量重算：每次扫描范围内所有卡片，命中打 data-lc-filtered、
+   *   未命中摘除，显隐由一条独立 CSS 驱动。规则增删/开关切换都只是
+   *   重算，绝不残留（参考实现用内联 style + dataset 双份状态，删
+   *   规则时要反向遍历恢复，易漏）；
+   * - 用户按 id 精确等值匹配（主页链接 hostname 首段或路径首段），
+   *   不用 href*="id" 子串包含——id "abc" 不能误杀 "abcxx"；
+   * - 关键词统一 lowercase 子串匹配，口径固定：标题+正文+标签
+   *   （参考实现过滤时不查标签、恢复时才查，口径不一致）；
+   * - 挂主 MutationObserver 的 120ms 防抖链，不新开全页观察器。 */
+  const FILTER_STYLE_ID = "lc-filter-style";
+  const FILTER_COUNTER_ID = "lc-filter-counter";
+  const FILTER_CARD_SELECTOR = ".m-mlist";
+  const FILTER_CSS = `
+    [data-lc-filtered] { display: none !important; }
+    a.lc-mute-btn {
+      /* 跟着 float：作者行是全 float 排版（同字数角标那次教训），
+       * 不浮动的 inline 元素会被后续浮动头像盖住 → 看似"缩到头像
+       * 后面"且点不到。float 后按 DOM 序排在昵称/头像右侧同行 */
+      float: left; position: relative; z-index: 5;
+      display: inline-block; margin: 2px 0 0 6px; padding: 1px 7px;
+      font-size: 11px; line-height: 1.6; border-radius: 999px;
+      color: inherit; opacity: 0.55; text-decoration: none;
+      border: 1px solid currentColor; vertical-align: middle;
+      cursor: pointer; user-select: none; transition: opacity 0.15s;
+    }
+    a.lc-mute-btn:hover { opacity: 1; }
+    #lc-filter-counter {
+      position: fixed; left: 18px; bottom: 18px; z-index: 2147482000;
+      padding: 4px 10px; border-radius: 999px; font-size: 12px; line-height: 1.5;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: rgba(255,255,255,0.86); color: rgba(40,40,48,0.7);
+      border: 1px solid rgba(0,0,0,0.08); box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      pointer-events: none; user-select: none; white-space: nowrap;
+    }
+  `;
+
+  /* 生效范围：Phase 1 只认 www.lofter.com 的首页时间线与标签页。
+   * 帖子永久页/发现页/个人主页一律不生效——个人主页模板各异且
+   * 用户点进去本来就是要看 TA 的博文（产品决策，见 todo）。 */
+  function filterScope() {
+    const h = location.hostname;
+    if (h !== "www.lofter.com" && h !== "lofter.com") return null;
+    const p = location.pathname;
+    if (p === "/" || p === "") return "home";
+    if (p.startsWith("/tag/")) return "tag";
+    return null;
+  }
+
+  /* 从作者主页链接提取稳定 id：xxx.lofter.com → "xxx"；
+   * www.lofter.com/<seg>/… → 首段。非 lofter.com 域名一律不要。 */
+  function filterUserIdFromLink(a) {
+    try {
+      const u = new URL(a.href, location.href);
+      if (!/(^|\.)lofter\.com$/i.test(u.hostname)) return "";
+      if (u.hostname !== "www.lofter.com" && u.hostname !== "lofter.com") {
+        return u.hostname.split(".")[0] || "";
+      }
+      return u.pathname.split("/").filter(Boolean)[0] || "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function filterCardText(card) {
+    let t = "";
+    const tit = card.querySelector("h2.tit");
+    if (tit) t += tit.textContent + "\n";
+    const cnt = card.querySelector("div.cnt");
+    if (cnt) t += cnt.textContent + "\n";
+    card.querySelectorAll(".opta span").forEach((s) => {
+      t += s.textContent + "\n";
+    });
+    return t.toLowerCase();
+  }
+
+  /* 作者链接：参考实现的两个锚点 + w-who 内兜底，取第一个能提取出 id 的 */
+  function filterCardAuthor(card) {
+    const links = card.querySelectorAll(
+      "a.publishernick, div.mlistimg a[href], .w-who a[href]",
+    );
+    for (const a of links) {
+      const id = filterUserIdFromLink(a);
+      if (id) return { id, name: (a.textContent || "").trim(), link: a };
+    }
+    return null;
+  }
+
+  /* 卡片上的「隐藏」按钮：一键屏蔽作者（id 进配置，昵称仅展示） */
+  function filterEnsureMuteBtn(card, author) {
+    if (card.querySelector("a.lc-mute-btn")) return;
+    const btn = document.createElement("a");
+    btn.className = "lc-mute-btn";
+    btn.textContent = "隐藏";
+    /* 故意不设 href：设了 javascript:void(0) 会在浏览器状态栏常驻显示 */
+    btn.title = "屏蔽该用户的帖子（可在扩展面板撤销）";
+    btn.addEventListener(
+      "click",
+      (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!settings.filter) settings.filter = LC_clone(LC_DEFAULTS.filter);
+        if (!Array.isArray(settings.filter.users)) settings.filter.users = [];
+        if (settings.filter.users.some((u) => u.id === author.id)) return;
+        settings.filter.users.push({
+          id: author.id,
+          name: author.name || author.id,
+        });
+        filterPersist();
+        applyFilter();
+      },
+      true,
+    );
+    author.link.insertAdjacentElement("afterend", btn);
+  }
+
+  /* 卡片上点「隐藏」后把 users 写回 storage；走 get→merge→set，
+   * 避免覆盖 popup 同时写入的其它字段。onChanged 会再触发 applyAll。 */
+  function filterPersist() {
+    try {
+      chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
+        const cur = res[LC_STORAGE_KEY] || {};
+        cur.filter = LC_clone(settings.filter);
+        chrome.storage.local.set({ [LC_STORAGE_KEY]: cur }, () => {});
+      });
+    } catch (e) {}
+  }
+
+  /* 内联 display 的备份/还原——备份存模块级 WeakMap，不写进卡片 DOM。
+   * 血泪史：上一版备份存 data-* 属性，LOFTER 的 React 重渲染/水合会把
+   * 不认识的 data-* 属性洗掉、style 却原样保留 → 所有权标记丢失 →
+   * 恢复函数提前返回 → 我们写的 display:none!important 成孤儿，卡片
+   * 永久隐藏只能刷新（2026-09-19 线上实证：计数器归零＝扫描在跑且
+   * 未命中、标记也摘了，卡片却仍隐藏——恢复败在标记没了）。
+   * WeakMap 键为节点、外部洗不到；弱引用不阻碍节点回收。
+   * Set 仅用于关闭过滤时枚举兜底（WeakMap 不可枚举）。 */
+  const lcDispBackup = new WeakMap();
+  const lcDispBacked = new Set();
+  function filterHideCard(card) {
+    const cur = card.style.getPropertyValue("display");
+    const curPrio = card.style.getPropertyPriority("display");
+    const b = lcDispBackup.get(card);
+    if (!b) {
+      lcDispBackup.set(card, { prev: cur, prio: curPrio });
+      lcDispBacked.add(card);
+    } else if (!(cur === "none" && curPrio === "important")) {
+      /* 我们的隐藏被外部洗掉、LOFTER 又写了新内联值 → 刷新备份 */
+      b.prev = cur;
+      b.prio = curPrio;
+    }
+    try {
+      card.style.setProperty("display", "none", "important");
+    } catch (e) {}
+  }
+  function filterRestoreDisplay(card) {
+    const b = lcDispBackup.get(card);
+    if (!b) return;
+    lcDispBackup.delete(card);
+    lcDispBacked.delete(card);
+    try {
+      if (b.prev) {
+        card.style.setProperty("display", b.prev, b.prio || "");
+      } else {
+        card.style.removeProperty("display");
+      }
+    } catch (e) {}
+  }
+
+  function filterClearAll() {
+    document
+      .querySelectorAll("[data-lc-filtered]")
+      .forEach((el) => {
+        el.removeAttribute("data-lc-filtered");
+        filterRestoreDisplay(el);
+      });
+    /* 孤儿兜底：标记被外部洗掉、但内联隐藏还在的卡（备份在 WeakMap 里），
+     * 关闭过滤时一并还原——否则这些卡在过滤关闭后仍永久隐藏 */
+    lcDispBacked.forEach((el) => {
+      try {
+        el.removeAttribute("data-lc-filtered");
+      } catch (e) {}
+      filterRestoreDisplay(el);
+    });
+    /* 「隐藏」按钮也一并收掉：否则 CSS 已清空，按钮会退化成无样式裸文字 */
+    document.querySelectorAll("a.lc-mute-btn").forEach((el) => el.remove());
+    const c = document.getElementById(FILTER_COUNTER_ID);
+    if (c) c.remove();
+  }
+
+  let filterSig = "";
+  function applyFilter() {
+    const f = settings.filter;
+    const scope = filterScope();
+    const active =
+      !!(
+        settings.enabled &&
+        f &&
+        f.enabled &&
+        scope &&
+        f.scope &&
+        f.scope[scope]
+      ) && !!((f.keywords || []).length || (f.users || []).length);
+
+    let st = document.getElementById(FILTER_STYLE_ID);
+    if (active) {
+      if (!st) {
+        st = document.createElement("style");
+        st.id = FILTER_STYLE_ID;
+        (document.head || document.documentElement).appendChild(st);
+      }
+      /* 每次激活都回填 CSS：关闭分支只清空 textContent 不删元素，
+       * 若仅在创建时写入一次，重开过滤后 CSS 永远缺失——标记照打、
+       * 计数照显，但一条也藏不掉（2026-09-18 线上实测踩坑） */
+      st.textContent = FILTER_CSS;
+    }
+
+    if (!active) {
+      /* 签名兜底：只在状态可能残留时清一次，避免每批变异都全页扫 */
+      if (filterSig !== "off") {
+        filterSig = "off";
+        const st2 = st;
+        if (st2) st2.textContent = "";
+        filterClearAll();
+      }
+      return;
+    }
+
+    const kws = (f.keywords || [])
+      .map((k) => String(k).toLowerCase().trim())
+      .filter(Boolean);
+    const userIds = new Set((f.users || []).map((u) => u.id));
+    /* 全量幂等重算，不做签名早退。签名优化（规则+卡片数+标记数做指纹跳过
+     * 重扫）连修三轮仍有竞态：标记数落盘时序、React 重渲染洗标记、"移除
+     * 规则后不恢复/计数卡死"全是它卡住重扫的症状。而扫描本身只是几十张
+     * 卡片的文本匹配（微秒级），每批防抖变异跑一次毫无压力——可靠性 >
+     * 微优化。off 态保留一次性清理去重（filterSig="off"）。 */
+
+    let hidden = 0;
+    document.querySelectorAll(FILTER_CARD_SELECTOR).forEach((card) => {
+      try {
+        /* 嵌套列表只算外层：只查祖先、绝不含自身。closest() 会匹配元素
+         * 自己——已标记的卡从第二轮扫描起全被误跳过：hidden 永远数 0
+         * （计数器闪现即逝的元凶），规则移除后也永远走不到还原分支
+         * （此前恢复全靠 React 洗标记后的孤儿自愈兜底，页面安静时不恢复） */
+        const anc =
+          card.parentElement &&
+          card.parentElement.closest("[data-lc-filtered]");
+        if (anc) return;
+        const author = filterCardAuthor(card);
+        const textHit =
+          kws.length && kws.some((kw) => filterCardText(card).includes(kw));
+        const userHit = author && userIds.has(author.id);
+        if (textHit || userHit) {
+          card.setAttribute("data-lc-filtered", "");
+          /* 双保险：光靠样式表规则藏不住（2026-09-19 线上实证：标记在、
+           * CSS 在、帖子却可见——LOFTER 自有规则的级联权重更高）。内联
+           * !important 在作者样式里优先级最高，必赢；React 重渲染会连
+           * 内联样式一起洗掉，下次重扫会补回 */
+          filterHideCard(card);
+          hidden++;
+        } else {
+          card.removeAttribute("data-lc-filtered");
+          filterRestoreDisplay(card);
+          if (author && settings.enabled) {
+            try {
+              filterEnsureMuteBtn(card, author);
+            } catch (e) {}
+          }
+        }
+      } catch (e) {
+        /* 单张卡片异常不拖垮整轮扫描（下一批变异会重试） */
+      }
+    });
+    filterSig = "active";
+
+    /* 「已过滤 N 条」提示：防误杀无感——至少让用户知道过滤在工作 */
+    const counter = document.getElementById(FILTER_COUNTER_ID);
+    if (f.showCounter !== false && hidden > 0) {
+      if (counter) {
+        counter.textContent = "已过滤 " + hidden + " 条";
+      } else {
+        const el = document.createElement("div");
+        el.id = FILTER_COUNTER_ID;
+        el.textContent = "已过滤 " + hidden + " 条";
+        el.setAttribute("role", "status");
+        (document.body || document.documentElement).appendChild(el);
+      }
+    } else if (counter) {
+      counter.remove();
     }
   }
 

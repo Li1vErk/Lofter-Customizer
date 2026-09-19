@@ -845,6 +845,15 @@
     // 功能栏
     $("tool-wordcount").checked = !!(s.tools && s.tools.wordCount);
 
+    // 关键词过滤
+    const f = s.filter || LC_clone(LC_DEFAULTS.filter);
+    $("filter-enabled").checked = !!f.enabled;
+    $("filter-scope-home").checked = !!(f.scope && f.scope.home);
+    $("filter-scope-tag").checked = !!(f.scope && f.scope.tag);
+    $("filter-counter").checked = f.showCounter !== false;
+    $("filter-keywords").value = (f.keywords || []).join("\n");
+    renderFilterUsers();
+
     renderDecorations();
 
     // 词卡弹窗事件（只绑一次，确保 DOM 已加载）
@@ -1097,6 +1106,88 @@
     save();
   });
 
+  /* ---------- 功能栏：关键词/用户过滤 ---------- */
+  function ensureFilter() {
+    if (!state.filter) state.filter = LC_clone(LC_DEFAULTS.filter);
+    if (!state.filter.scope) state.filter.scope = { home: true, tag: true };
+    if (!Array.isArray(state.filter.keywords)) state.filter.keywords = [];
+    if (!Array.isArray(state.filter.users)) state.filter.users = [];
+    return state.filter;
+  }
+
+  function renderFilterUsers() {
+    const box = $("filter-users");
+    if (!box) return;
+    const f = state.filter || LC_DEFAULTS.filter;
+    const users = f.users || [];
+    $("filter-user-count").textContent = users.length + " 人";
+    box.innerHTML = users.length
+      ? users
+          .map(
+            (u, i) =>
+              `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-soft);">` +
+              `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(u.name || u.id).replace(/[<>&"]/g, "")}</span>` +
+              `<button class="btn" data-filter-unmute="${i}" type="button" style="padding:1px 8px;font-size:11px;flex-shrink:0;">移除</button></div>`,
+          )
+          .join("")
+      : `<p class="hint" style="margin:0;">暂无。在帖子作者名旁点「隐藏」即可添加。</p>`;
+  }
+
+  on("filter-users", "click", (e) => {
+    const b = e.target.closest("[data-filter-unmute]");
+    if (!b) return;
+    const f = ensureFilter();
+    f.users.splice(+b.dataset.filterUnmute, 1);
+    renderFilterUsers();
+    save();
+  });
+
+  /* 页面上点「隐藏」→ storage 变化 → 打开着的面板要实时反映出来，
+   * 不能等重开面板（面板常驻期间收不到自己的渲染周期）。
+   * 只同步 users 列表：keywords textarea 可能正被用户编辑，不能覆盖 */
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local" || !changes.lc_settings_v1) return;
+      const nf = changes.lc_settings_v1.newValue?.filter;
+      if (!nf || !Array.isArray(nf.users)) return;
+      const cur = ensureFilter();
+      if (JSON.stringify(cur.users) === JSON.stringify(nf.users)) return;
+      cur.users = nf.users;
+      renderFilterUsers();
+    });
+  } catch (e) {}
+
+  on("filter-enabled", "change", (e) => {
+    ensureFilter().enabled = e.target.checked;
+    save();
+  });
+  on("filter-scope-home", "change", (e) => {
+    ensureFilter().scope.home = e.target.checked;
+    save();
+  });
+  on("filter-scope-tag", "change", (e) => {
+    ensureFilter().scope.tag = e.target.checked;
+    save();
+  });
+  on("filter-counter", "change", (e) => {
+    ensureFilter().showCounter = e.target.checked;
+    save();
+  });
+  on("filter-keywords", "input", (e) => {
+    const f = ensureFilter();
+    const seen = new Set();
+    /* 多关键词两种写法都支持：一行一个，或中/英文逗号（分号）分隔 */
+    f.keywords = e.target.value
+      .split(/[\n，,；;]+/)
+      .map((k) => k.trim())
+      .filter((k) => {
+        if (!k || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    save();
+  });
+
   on("gtotop-file-btn", "click", () => $("gtotop-file").click());
   on("gtotop-file", "change", async (e) => {
     const f = e.target.files[0]; if (!f) return;
@@ -1191,7 +1282,7 @@
     { id: "deco", label: "装饰", keys: ["decorations", "decorationsVisible"] },
     { id: "card", label: "卡片", keys: ["card", "tidy"] },
     { id: "nav", label: "导航", keys: ["navbar", "searchPlaceholder", "gtotop"] },
-    { id: "func", label: "功能", keys: ["tools"] },
+    { id: "func", label: "功能", keys: ["tools", "filter"] },
     { id: "misc", label: "其他", keys: ["shortcutsEnabled", "panel"] },
   ];
   /* 允许写入 storage 的键白名单：导入时剔除非本扩展的键，避免脏数据进配置 */

@@ -89,6 +89,20 @@ const LC_DEFAULTS = {
     wordCount: false,
   },
 
+  /* ========== 关键词/用户过滤（功能栏 · 默认关闭）==========
+   * 范围（分期）：Phase 1 = 首页时间线 + 标签页的博文卡片；
+   * 评论区过滤（Phase 2）与发现页暂不启用。
+   * keywords 大小写不敏感子串匹配（标题/正文/标签）；
+   * users 按 id 精确等值匹配（id 取主页链接 hostname 首段或路径首段，
+   * name 仅作展示——昵称会改，id 才是稳定标识）。 */
+  filter: {
+    enabled: false,
+    scope: { home: true, tag: true },
+    keywords: [],
+    users: [],
+    showCounter: true,
+  },
+
   darkMode: {
     mode: "off",
     brightness: 90,

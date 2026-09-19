@@ -879,6 +879,31 @@
         </label>
         <p class="hint plain" data-page-node-id="lcWcHint">在长文章编辑器右下角常驻显示字数，随输入实时更新。口径：汉字按字、连续英文/数字按词，标点计入总字符（悬停可看明细）。</p>
       </div>
+      <div class="grp-card"><div class="grp-title">关键词过滤</div>
+        <label class="toggle">
+          <span>启用关键词/用户过滤</span>
+          <input type="checkbox" id="filter-enabled" />
+        </label>
+        <div class="row"><label>生效范围</label>
+          <div class="lc-mods" id="filter-scope">
+            <label><input type="checkbox" id="filter-scope-home" checked />首页</label>
+            <label><input type="checkbox" id="filter-scope-tag" checked />标签页</label>
+          </div>
+        </div>
+        <div class="row"><label>关键词</label></div>
+        <textarea id="filter-keywords" rows="4"
+          style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);resize:vertical;"
+          placeholder="一行一个关键词，也可以用逗号分隔"></textarea>
+        <p class="hint plain">多个关键词写法：一行一个，或用中/英文逗号分隔，命中任一个即隐藏。匹配标题、正文与标签，不区分大小写。评论区过滤将在后续版本加入。</p>
+        <div class="row"><label>已屏蔽用户</label><span class="hint" id="filter-user-count" style="margin-left:0;">0</span></div>
+        <div id="filter-users"
+          style="display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;padding-right:4px;"></div>
+        <p class="hint plain">在首页/标签页帖子的作者名旁点「隐藏」即可屏蔽该用户；被屏蔽的用户在这里移除。</p>
+        <label class="toggle">
+          <span>显示「已过滤 N 条」提示</span>
+          <input type="checkbox" id="filter-counter" />
+        </label>
+      </div>
       <div class="grp-card"><div class="grp-title">路线图</div>
         <p class="hint plain" data-page-node-id="lcFuncRoadmap">关键词过滤、评论区增强、表情快捷输入、文章导出等功能会陆续加入本栏，每项都是独立开关、默认关闭。</p>
       </div>
