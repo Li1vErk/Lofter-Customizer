@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Lofter Customizer",
   "description": "自定义 Lofter 背景、卡片圆角、字体和导航栏样式",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "permissions": ["storage"],
   "host_permissions": [
     "https://*.lofter.com/*",
