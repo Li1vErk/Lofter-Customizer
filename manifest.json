@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Lofter Customizer",
-  "description": "自定义 Lofter 背景、卡片圆角、字体和导航栏样式",
-  "version": "1.1.4",
+  "description": "自定义 Lofter 背景、卡片材质、字体与导航栏样式，支持关键词/用户过滤、评论区隐藏与实时字数统计",
+  "version": "1.2.0",
   "permissions": ["storage"],
   "host_permissions": [
     "https://*.lofter.com/*",
@@ -65,7 +65,7 @@
       "https://lofter.com/*",
       "https://lofter.lf127.net/lofter-admin/*"
     ],
-    "js": ["defaults.js", "content.js", "wc-frame.js"],
+    "js": ["defaults.js", "hyalite.js", "lc-dwr.js", "content.js", "wc-frame.js"],
     "run_at": "document_start",
     "all_frames": true,
     "match_about_blank": true

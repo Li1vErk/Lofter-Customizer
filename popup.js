@@ -90,6 +90,11 @@
     const mode = state.darkMode.mode;
     $("dark-brightness-row").hidden = !mode || mode === 'off';
   }
+  /* 淡透底卡面透明度：仅开关开启时显示 */
+  function syncFeedTrans() {
+    const row = $("dark-feed-trans-row");
+    if (row) row.style.display = state.darkMode && state.darkMode.feedTranslucent ? "" : "none";
+  }
 
   /* 返回顶层图片大小组显隐 */
   function syncGtotopSize() {
@@ -797,6 +802,11 @@
     $("card-radius").value = s.card.radius; $("card-radius-v").textContent = s.card.radius + "px";
     $("card-gap").value = s.card.gap; $("card-gap-v").textContent = s.card.gap + "px";
     $("card-shadow").checked = s.card.shadow;
+    $("card-light-frost").checked = !!s.card.lightFrost;
+    $("card-face-adapt").checked = s.card.faceAdapt !== false;
+    $("card-frost-alpha").value = Math.round((s.card.frostAlpha || 0.6) * 100);
+    $("card-frost-alpha-v").textContent = Math.round((s.card.frostAlpha || 0.6) * 100) + "%";
+    syncCardFrost();
     // 卡片动画
     $("card-animation").value = s.card.animation || 'none';
     $("card-duration").value = s.card.duration || 500; $("card-duration-v").textContent = (s.card.duration || 500) + "ms";
@@ -821,10 +831,22 @@
     $("dark-mode").value = s.darkMode.mode || 'off';
     $("dark-brightness").value = s.darkMode.brightness || 90;
     $("dark-brightness-v").textContent = (s.darkMode.brightness || 90) + "%";
+    $("dark-feed-translucent").checked = !!s.darkMode.feedTranslucent;
+    $("dark-feed-trans-alpha").value = Math.round((s.darkMode.feedTransAlpha || 0.65) * 100);
+    $("dark-feed-trans-v").textContent = Math.round((s.darkMode.feedTransAlpha || 0.65) * 100) + "%";
+    syncFeedTrans();
 
-    // 导航
-    $("nav-transparent").checked = s.navbar.transparent;
+    // 导航（本批两档化：毛玻璃低透 / 液态玻璃高透，互斥）
     $("nav-blur").checked = s.navbar.blur;
+    $("nav-hyalite").checked = !!s.navbar.hyalite;
+    $("nav-mat-mode").value = s.navbar.matMode || "auto";
+    syncNavMat();
+    // 右侧栏液态玻璃（与导航栏同一套引擎，独立开关/材质）
+    if (!state.sidebar) state.sidebar = LC_clone(LC_DEFAULTS.sidebar);
+    $("sidebar-hyalite").checked = !!state.sidebar.hyalite;
+    $("side-mat-mode").value = state.sidebar.matMode || "auto";
+    $("sidebar-refract").checked = !!state.sidebar.refract;
+    syncSideMat();
     $("th-accent").value = s.theme.accent || "#000000";
     $("search-placeholder").value = s.searchPlaceholder || "搜索用户、标签"; 
 
@@ -842,17 +864,22 @@
     syncDarkBrightness();
     syncGtotopSize();
 
-    // 功能栏
-    $("tool-wordcount").checked = !!(s.tools && s.tools.wordCount);
+    // 功能栏（字数统计已去开关、默认启用，无需回填）
 
     // 关键词过滤
     const f = s.filter || LC_clone(LC_DEFAULTS.filter);
     $("filter-enabled").checked = !!f.enabled;
     $("filter-scope-home").checked = !!(f.scope && f.scope.home);
     $("filter-scope-tag").checked = !!(f.scope && f.scope.tag);
+    $("filter-scope-comment").checked = !!(f.scope && f.scope.comment);
     $("filter-counter").checked = f.showCounter !== false;
     $("filter-keywords").value = (f.keywords || []).join("\n");
     renderFilterUsers();
+
+    // 官方黑名单联动
+    $("official-comments").checked = !!(
+      s.official && s.official.hideInComments
+    );
 
     renderDecorations();
 
@@ -1050,6 +1077,28 @@
   on("card-radius", "input", (e) => { state.card.radius = +e.target.value; $("card-radius-v").textContent = e.target.value + "px"; save(); });
   on("card-gap", "input", (e) => { state.card.gap = +e.target.value; $("card-gap-v").textContent = e.target.value + "px"; save(); });
   on("card-shadow", "change", (e) => { state.card.shadow = e.target.checked; save(); });
+  /* 浅色毛玻璃：滑杆仅开关开启时显示 */
+  function syncCardFrost() {
+    const row = $("card-frost-alpha-row");
+    if (row) row.style.display = state.card && state.card.lightFrost ? "" : "none";
+  }
+  on("card-light-frost", "change", (e) => {
+    if (!state.card) state.card = LC_clone(LC_DEFAULTS.card);
+    state.card.lightFrost = e.target.checked;
+    syncCardFrost();
+    save();
+  });
+  on("card-face-adapt", "change", (e) => {
+    if (!state.card) state.card = LC_clone(LC_DEFAULTS.card);
+    state.card.faceAdapt = e.target.checked;
+    save();
+  });
+  on("card-frost-alpha", "input", (e) => {
+    if (!state.card) state.card = LC_clone(LC_DEFAULTS.card);
+    state.card.frostAlpha = +e.target.value / 100;
+    $("card-frost-alpha-v").textContent = e.target.value + "%";
+    save();
+  });
 
   // 卡片动画
   on("card-animation", "change", (e) => { state.card.animation = e.target.value; save(); });
@@ -1074,37 +1123,78 @@
   });
   on("font-scale", "input", (e) => { state.font.scale = +e.target.value; $("font-scale-v").textContent = e.target.value + "%"; save(); });
   on("font-family", "input", (e) => { state.font.family = e.target.value.trim(); save(); });
-  /* 字体名"?"帮助：点击展开/收起详细说明 */
-  on("font-family-help", "click", () => {
-    const dot = $("font-family-help");
-    const hint = $("font-family-hint");
+  /* "?"帮助图标（通用）：点击展开/收起 data-hint 指向的说明段落 */
+  document.addEventListener("click", (e) => {
+    const dot = e.target.closest && e.target.closest(".help-dot[data-hint]");
+    if (!dot) return;
+    const hint = document.getElementById(dot.getAttribute("data-hint"));
+    if (!hint) return;
     const open = hint.classList.toggle("open");
     dot.classList.toggle("on", open);
   });
 
   on("dark-mode", "change", (e) => { state.darkMode.mode = e.target.value; syncDarkBrightness(); save(); });
-  on("nav-transparent", "change", (e) => {
-    state.navbar.transparent = e.target.checked;
-    if (!e.target.checked) { state.navbar.blur = false; $("nav-blur").checked = false; }
+  on("dark-brightness", "input", (e) => { state.darkMode.brightness = +e.target.value; $("dark-brightness-v").textContent = e.target.value + "%"; save(); });
+  on("dark-feed-translucent", "change", (e) => {
+    if (!state.darkMode) state.darkMode = LC_clone(LC_DEFAULTS.darkMode);
+    state.darkMode.feedTranslucent = e.target.checked;
+    syncFeedTrans();
     save();
   });
-  on("dark-brightness", "input", (e) => { state.darkMode.brightness = +e.target.value; $("dark-brightness-v").textContent = e.target.value + "%"; save(); });
+  on("dark-feed-trans-alpha", "input", (e) => {
+    if (!state.darkMode) state.darkMode = LC_clone(LC_DEFAULTS.darkMode);
+    state.darkMode.feedTransAlpha = +e.target.value / 100;
+    $("dark-feed-trans-v").textContent = e.target.value + "%";
+    save();
+  });
+  /* 玻璃材质档位只在「液态玻璃」开启时出现（毛玻璃是固定磨砂，无材质档） */
+  function syncNavMat() {
+    const row = $("nav-mat-row");
+    if (row) row.style.display = state.navbar && state.navbar.hyalite ? "" : "none";
+  }
+
+  /* 导航栏两档玻璃互斥：开一个自动关另一个 */
   on("nav-blur", "change", (e) => {
     state.navbar.blur = e.target.checked;
-    if (e.target.checked) { state.navbar.transparent = true; $("nav-transparent").checked = true; }
+    if (e.target.checked && state.navbar.hyalite) { state.navbar.hyalite = false; $("nav-hyalite").checked = false; }
+    syncNavMat();
+    save();
+  });
+  on("nav-hyalite", "change", (e) => {
+    state.navbar.hyalite = e.target.checked;
+    if (e.target.checked && state.navbar.blur) { state.navbar.blur = false; $("nav-blur").checked = false; }
+    syncNavMat();
+    save();
+  });
+  on("nav-mat-mode", "change", (e) => { state.navbar.matMode = e.target.value; save(); });
+  /* 右侧栏玻璃：开关直接生效，材质档与折射选项只在开启时出现 */
+  function syncSideMat() {
+    const on = !!(state.sidebar && state.sidebar.hyalite);
+    const row = $("side-mat-row");
+    if (row) row.style.display = on ? "" : "none";
+    const rf = $("side-refract-row");
+    if (rf) rf.style.display = on ? "" : "none";
+  }
+  on("sidebar-hyalite", "change", (e) => {
+    if (!state.sidebar) state.sidebar = LC_clone(LC_DEFAULTS.sidebar);
+    state.sidebar.hyalite = e.target.checked;
+    syncSideMat();
+    save();
+  });
+  on("sidebar-refract", "change", (e) => {
+    if (!state.sidebar) state.sidebar = LC_clone(LC_DEFAULTS.sidebar);
+    state.sidebar.refract = e.target.checked;
+    save();
+  });
+  on("side-mat-mode", "change", (e) => {
+    if (!state.sidebar) state.sidebar = LC_clone(LC_DEFAULTS.sidebar);
+    state.sidebar.matMode = e.target.value;
     save();
   });
   on("th-accent", "input", (e) => { state.theme.accent = e.target.value; save(); });
   on("search-placeholder", "input", (e) => { state.searchPlaceholder = e.target.value.trim() || "搜索用户、标签"; save(); }); 
 
   on("reset", "click", () => { if (!confirm("确定要全部重置吗？")) return; state = LC_clone(LC_DEFAULTS); render(); save(); });
-
-  /* 功能栏：长文章实时字数统计（默认关闭，见 defaults.js 开发约定） */
-  on("tool-wordcount", "change", (e) => {
-    if (!state.tools) state.tools = LC_clone(LC_DEFAULTS.tools);
-    state.tools.wordCount = e.target.checked;
-    save();
-  });
 
   /* ---------- 功能栏：关键词/用户过滤 ---------- */
   function ensureFilter() {
@@ -1169,6 +1259,11 @@
     ensureFilter().scope.tag = e.target.checked;
     save();
   });
+  /* 评论区（Phase 2）：只做用户维度隐藏，关键词不参与 */
+  on("filter-scope-comment", "change", (e) => {
+    ensureFilter().scope.comment = e.target.checked;
+    save();
+  });
   on("filter-counter", "change", (e) => {
     ensureFilter().showCounter = e.target.checked;
     save();
@@ -1187,6 +1282,259 @@
       });
     save();
   });
+
+  /* ---------- 功能栏：官方黑名单 ----------
+   * DWR 调用与回复解析在 lc-dwr.js（popup 页面 CSP 禁 eval，
+   * 回复解析用手写解析器，不能 new Function）。 */
+  let lcOfficialList = []; /* {id, blogId, blogName, nick, ava} */
+  let lcOfficialLoading = false;
+
+  const lcDwr = LC_dwrCall;
+
+  function lcOfficialBlogName(input) {
+    /* 接受三种写法：完整主页 URL / xxx.lofter.com / 裸 id。
+     * 裸 id 必须先判：new URL("https://abc") 也能解析成功
+     * （hostname 就是 "abc"），先走 URL 分支会把裸 id 误杀。 */
+    const s = String(input || "").trim();
+    if (!s) return "";
+    if (/^[a-zA-Z0-9_-]+$/.test(s)) return s;
+    try {
+      const u = new URL(s.includes("://") ? s : "https://" + s);
+      if (!/(^|\.)lofter\.com$/i.test(u.hostname)) return "";
+      if (u.hostname !== "www.lofter.com" && u.hostname !== "lofter.com") {
+        return u.hostname.split(".")[0] || "";
+      }
+      return u.pathname.split("/").filter(Boolean)[0] || "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function lcOfficialEsc(s) {
+    return String(s || "").replace(/[<>&"]/g, "");
+  }
+
+  /* 成员列表日常收起（用户可能不想看见拉黑的人），收起时人数照样更新；
+   * 拉黑成功后在人数旁闪现绿色「已拉黑 xxx」供即时确认 */
+  let lcOfficialExpanded = false;
+  let lcOfficialToastTimer = 0;
+
+  function lcOfficialToast(msg) {
+    const el = $("official-toast");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.display = "";
+    clearTimeout(lcOfficialToastTimer);
+    lcOfficialToastTimer = setTimeout(() => {
+      el.style.display = "none";
+    }, 4000);
+  }
+
+  function renderOfficialList() {
+    const box = $("official-list");
+    if (!box) return;
+    $("official-count").textContent = lcOfficialLoading
+      ? "读取中…"
+      : lcOfficialList.length + " 人";
+    const toggleBtn = $("official-toggle");
+    if (toggleBtn) toggleBtn.textContent = lcOfficialExpanded ? "收起" : "展开";
+    if (!lcOfficialExpanded) {
+      box.style.display = "none";
+      box.innerHTML = "";
+      return;
+    }
+    box.style.display = "";
+    if (lcOfficialLoading) return;
+    if (!lcOfficialList.length) {
+      box.innerHTML = `<p class="hint" style="margin:0;">黑名单为空。</p>`;
+      return;
+    }
+    box.innerHTML = lcOfficialList
+      .map((u, i) => {
+        const home =
+          u.home ||
+          (u.blogName ? "https://" + u.blogName + ".lofter.com/" : "");
+        return (
+          `<div style="display:flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-soft);">` +
+          (home
+            ? `<a href="${lcOfficialEsc(home)}" target="_blank" rel="noopener noreferrer" title="访问 TA 的主页" style="flex-shrink:0;line-height:0;">` +
+              `<img src="${lcOfficialEsc(u.ava)}" style="width:24px;height:24px;border-radius:50%;object-fit:cover;" onerror="this.style.visibility='hidden'"></a>`
+            : `<img src="${lcOfficialEsc(u.ava)}" style="width:24px;height:24px;border-radius:50%;flex-shrink:0;object-fit:cover;" onerror="this.style.visibility='hidden'">`) +
+          `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">` +
+          (home
+            ? `<a href="${lcOfficialEsc(home)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;">${lcOfficialEsc(u.nick)}</a>`
+            : lcOfficialEsc(u.nick)) +
+          ` <span class="hint" style="font-size:11px;">@${lcOfficialEsc(u.blogName)}</span></span>` +
+          `<button class="btn" data-official-unblk="${i}" type="button" style="padding:1px 8px;font-size:11px;flex-shrink:0;">移除</button></div>`
+        );
+      })
+      .join("");
+  }
+
+  on("official-toggle", "click", () => {
+    lcOfficialExpanded = !lcOfficialExpanded;
+    renderOfficialList();
+  });
+
+  /* 官方黑名单镜像到 storage（lc_official_bl_v1）：评论过滤（content.js
+   * 任意帧）据此隐藏黑名单成员的评论。popup 能调 DWR，页面帧未必
+   * （子域跨域）——所以谁调通谁写镜像，读取方只看存储。 */
+  function lcOfficialPersist() {
+    try {
+      const names = Array.from(
+        new Set(
+          (lcOfficialList || [])
+            .map((u) => String(u.blogName || "").toLowerCase())
+            .filter(Boolean),
+        ),
+      );
+      chrome.storage.local.set(
+        { lc_official_bl_v1: { names, ts: Date.now() } },
+        () => {},
+      );
+    } catch (e) {}
+  }
+
+  async function lcOfficialRefresh() {
+    if (lcOfficialLoading) return;
+    lcOfficialLoading = true;
+    renderOfficialList();
+    try {
+      const raw = await lcDwr("getBlacklistUserList", [
+        "number:200",
+        "number:0",
+      ]);
+      /* 正常应是条目数组；若服务端包了一层对象，取第一个数组型属性兜底 */
+      let arr = raw;
+      if (!Array.isArray(arr) && arr && typeof arr === "object") {
+        const cand = Object.values(arr).find((v) => Array.isArray(v));
+        if (cand) arr = cand;
+      }
+      lcOfficialList = (Array.isArray(arr) ? arr : [])
+        .filter((e) => e && typeof e === "object")
+        .map((e) => ({
+          id: e.id,
+          blogId: e.blacklistBlogId,
+          blogName: (e.blogInfo && e.blogInfo.blogName) || "",
+          nick: (e.blogInfo && e.blogInfo.blogNickName) || "",
+          ava: (e.blogInfo && e.blogInfo.bigAvaImg) || "",
+          home: (e.blogInfo && e.blogInfo.homePageUrl) || "",
+        }));
+      if (!lcOfficialList.length) {
+        /* 官方页明明有成员但这里读到空：多半是回复形态和抓包样本不符，
+         * 把原始回复片段亮出来方便定位（强制展开列表，收起时看不到） */
+        const rawSnap = String(LC_dwrCall.lastRaw || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 260);
+        $("official-count").textContent = "0 人（异常）";
+        $("official-list").style.display = "";
+        $("official-list").innerHTML =
+          `<p class="hint" style="margin:0;">接口成功但未解析到成员。原始回复片段：<br><code style="word-break:break-all;font-size:10px;">${lcOfficialEsc(rawSnap) || "(空)"}</code></p>`;
+        return;
+      }
+    } catch (err) {
+      $("official-count").textContent = "读取失败";
+      lcOfficialList = [];
+      renderOfficialList();
+      $("official-list").style.display = "";
+      $("official-list").innerHTML =
+        `<p class="hint" style="margin:0;">读取失败：${lcOfficialEsc(err.message)}。请确认已在浏览器登录 LOFTER 后重试。</p>`;
+      return;
+    } finally {
+      lcOfficialLoading = false;
+    }
+    renderOfficialList();
+    lcOfficialPersist();
+  }
+
+  /* 拉黑是对方可感知的强动作：两段式确认（第一次点变成「确认拉黑？」，3 秒内再点才执行） */
+  on("official-add-btn", "click", async (e) => {
+    const btn = e.currentTarget;
+    const name = lcOfficialBlogName($("official-add-input").value);
+    if (!name) {
+      $("official-add-input").value = "";
+      $("official-add-input").placeholder = "请输入有效的 LOFTER 主页链接或 ID";
+      return;
+    }
+    if (btn.dataset.confirm !== "1") {
+      btn.dataset.confirm = "1";
+      btn.textContent = "确认拉黑？";
+      setTimeout(() => {
+        btn.dataset.confirm = "";
+        btn.textContent = "拉黑";
+      }, 3000);
+      return;
+    }
+    btn.dataset.confirm = "";
+    btn.textContent = "拉黑中…";
+    btn.disabled = true;
+    try {
+      const entry = await lcDwr("addBlacklist", ["string:" + name, "number:0"]);
+      let toastName = name;
+      if (entry && entry.id) {
+        const bi = entry.blogInfo || {};
+        toastName = bi.blogNickName || bi.blogName || name;
+        lcOfficialList.push({
+          id: entry.id,
+          blogId: entry.blacklistBlogId,
+          blogName: bi.blogName || name,
+          nick: bi.blogNickName || name,
+          ava: bi.bigAvaImg || "",
+          home: bi.homePageUrl || "",
+        });
+        renderOfficialList();
+      } else {
+        await lcOfficialRefresh();
+      }
+      /* 绿色「已拉黑 xxx」闪现数秒，方便确认没拉错人；要细看就展开列表 */
+      lcOfficialToast("已拉黑 " + toastName);
+      lcOfficialPersist();
+      $("official-add-input").value = "";
+    } catch (err) {
+      alert("拉黑失败：" + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "拉黑";
+    }
+  });
+
+  on("official-list", "click", async (e) => {
+    const b = e.target.closest("[data-official-unblk]");
+    if (!b) return;
+    if (b.dataset.confirm !== "1") {
+      b.dataset.confirm = "1";
+      b.textContent = "确认移除？";
+      setTimeout(() => {
+        b.dataset.confirm = "";
+        b.textContent = "移除";
+      }, 3000);
+      return;
+    }
+    const u = lcOfficialList[+b.dataset.officialUnblk];
+    if (!u) return;
+    b.textContent = "…";
+    b.disabled = true;
+    try {
+      await lcDwr("removeBlacklist", ["number:" + u.id]);
+      lcOfficialList = lcOfficialList.filter((x) => x.id !== u.id);
+      renderOfficialList();
+      lcOfficialPersist();
+    } catch (err) {
+      alert("移除失败：" + err.message);
+      b.disabled = false;
+      b.textContent = "移除";
+    }
+  });
+
+  on("official-comments", "change", (e) => {
+    if (!state.official) state.official = LC_clone(LC_DEFAULTS.official);
+    state.official.hideInComments = e.target.checked;
+    save();
+  });
+
+  /* 打开面板即拉取一次官方黑名单（轻量 XHR，读失败不影响其它功能） */
+  lcOfficialRefresh().catch(() => {});
 
   on("gtotop-file-btn", "click", () => $("gtotop-file").click());
   on("gtotop-file", "change", async (e) => {
@@ -1282,7 +1630,7 @@
     { id: "deco", label: "装饰", keys: ["decorations", "decorationsVisible"] },
     { id: "card", label: "卡片", keys: ["card", "tidy"] },
     { id: "nav", label: "导航", keys: ["navbar", "searchPlaceholder", "gtotop"] },
-    { id: "func", label: "功能", keys: ["tools", "filter"] },
+    { id: "func", label: "功能", keys: ["tools", "filter", "official"] },
     { id: "misc", label: "其他", keys: ["shortcutsEnabled", "panel"] },
   ];
   /* 允许写入 storage 的键白名单：导入时剔除非本扩展的键，避免脏数据进配置 */
@@ -1411,9 +1759,9 @@
         });
       });
       /* LC_merge 对数组是整体替换（装饰图列表按导入值覆盖），符合预期 */
-      state = LC_merge(state, patch);
+      state = LC_migrateNav(LC_merge(state, patch));
     } else {
-      state = LC_merge(LC_DEFAULTS, data);
+      state = LC_migrateNav(LC_merge(LC_DEFAULTS, data));
     }
 
     render();
@@ -1424,7 +1772,8 @@
 
   buildFontOptions();
   chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
-    state = LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {});
+    /* LC_migrateNav：老配置「导航栏透明」迁移为毛玻璃（本批两档化） */
+    state = LC_migrateNav(LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {}));
     render();
     initRanges();
     applyDarkFollow(state); // 面板暗色跟随（函数声明提升，定义在 IIFE 尾部）
@@ -1893,10 +2242,25 @@
     );
   }
   darkMq.addEventListener("change", () => applyDarkFollow(state));
-  /* 面板常驻 iframe：网页里改了深色模式设置也要实时跟上（只重算暗色，不重渲染） */
+  /* 面板常驻 iframe：存储被别人改了（FAB/快捷键/另一处面板）要回灌 state。
+   * 血泪案（2026-09-21）：本监听器原先"只重算暗色、不回写 state"，而面板
+   * state 只在加载时读一次存储——用户在别处把 darkMode 从 manual 改回 off
+   * 后，面板 state 仍是旧值 manual，此时任意一次 save() 全量写盘就把
+   * manual 写回存储 → 页面突然变暗。修复：字段级和解——与 state 不同的
+   * 字段 adopt 进来并重渲染；自己刚写的字段 incoming===state 自然跳过，
+   * 不会打断正在输入的控件（Chrome 对相同 value 赋值不动光标）。 */
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== "local" || !ch[LC_STORAGE_KEY]) return;
-    applyDarkFollow(LC_merge(LC_DEFAULTS, ch[LC_STORAGE_KEY].newValue || {}));
+    const incoming = LC_merge(LC_DEFAULTS, ch[LC_STORAGE_KEY].newValue || {});
+    let touched = false;
+    for (const k of Object.keys(incoming)) {
+      if (JSON.stringify(incoming[k]) !== JSON.stringify(state[k])) {
+        state[k] = incoming[k];
+        touched = true;
+      }
+    }
+    applyDarkFollow(state);
+    if (touched) render();
   });
 
 })();

@@ -592,9 +592,10 @@
       color: var(--lc-text);
     }
 
-    /* 通栏提示（不带 90px 左缩进，用于整组说明） */
+    /* 通栏提示（不带 90px 左缩进，用于整组说明）。
+     * 须整体覆盖 .hint 的负 top margin，否则会向上压住前面的输入框 */
     .hint.plain {
-      margin-left: 0;
+      margin: 0 0 12px 0;
     }
 
     /* 数据栏按钮行：右对齐，按钮不撑满 */
@@ -782,7 +783,7 @@
       </div>
 
       <div class="grp-card"><div class="grp-title">字体</div>
-      <div class="row" data-page-node-id="BGL1lYJuqw5kFN2PYjj7aO"><label data-page-node-id="4PHNb3Pb1iro3GIDVolvrU">字体名<button type="button" class="help-dot" id="font-family-help" title="什么是字体名？" data-page-node-id="4PHNb3Pb1iro3GIDVolvrU">?</button></label><input type="text" id="font-family" placeholder="例：PingFang SC, 霞鹜文楷" data-page-node-id="Yu9E3POr3hdVVV25cbWFzU" />
+      <div class="row" data-page-node-id="BGL1lYJuqw5kFN2PYjj7aO"><label data-page-node-id="4PHNb3Pb1iro3GIDVolvrU">字体名<button type="button" class="help-dot" title="什么是字体名？" data-hint="font-family-hint" data-page-node-id="4PHNb3Pb1iro3GIDVolvrU">?</button></label><input type="text" id="font-family" placeholder="例：PingFang SC, 霞鹜文楷" data-page-node-id="Yu9E3POr3hdVVV25cbWFzU" />
       </div>
       <p class="hint collapsible" id="font-family-hint" data-page-node-id="zHintFontFamily">填本机已安装的字体名（右键字体文件"安装"后进入 C:\Windows\Fonts，未安装的不生效）；可填多个、逗号分隔，找不到时依次回退。部分字体（如京華老宋体）注册名只有英文（KingHwa_OldSong），中文名无效时请填英文名</p>
       <div class="row" data-page-node-id="tiZnWzg2uQ2mPBorrpDqwk"><label data-page-node-id="09fIjlMkV8bwr2vUeID3nm">字体预置</label><select id="font-preset" data-page-node-id="ZXEVt9ilWBxYJ45WgM1bLV"></select></div>
@@ -823,6 +824,16 @@
           min="15" max="30" data-page-node-id="8txne18CMaONeHMZb2MrWD" /></div>
       <label class="toggle" data-page-node-id="qNnHKBilADvhjRm8l5vKFc"><span data-page-node-id="HFxdEGHxOPwNRl9UIAohrl">卡片阴影</span><input type="checkbox" id="card-shadow" data-page-node-id="5Fk3pITBoEtF2twY5ousyT" /></label>
       </div>
+      <div class="grp-card"><div class="grp-title">卡片材质<button type="button" class="help-dot" data-hint="card-mat-help" title="卡片材质说明">?</button></div>
+      <p class="hint collapsible plain" id="card-mat-help">两档材质各自独立、随主题生效：<b>暗色·半透明底</b>——信息流卡片改为半透明深色底，背景图直接透出（卡片间隙也会露背景），卡面自带一圈微弱高光描边；<b>浅色·毛玻璃</b>（实验）——首页卡片改为半透明白＋真磨砂（背景透过卡面被模糊），卡隙同样露背景，若悬停/滚动掉帧请关掉；<b>卡面自适应材质</b>——采样卡片背后背景亮度，偏暗时卡面自动切深膜白字（与右侧栏玻璃深材质同族）。开启毛玻璃后，卡片出现动画期间可能看到从半透明到磨砂的瞬间过渡，属正常现象。</p>
+      <label class="toggle"><span>暗色 · 半透明底</span><input type="checkbox" id="dark-feed-translucent" /></label>
+      <div class="row" id="dark-feed-trans-row" style="display:none;"><label>卡面不透明度 <span class="value"
+            id="dark-feed-trans-v"></span></label><input type="range" id="dark-feed-trans-alpha" min="35" max="92" /></div>
+      <label class="toggle"><span>浅色 · 毛玻璃（实验）</span><input type="checkbox" id="card-light-frost" /></label>
+      <div class="row" id="card-frost-alpha-row" style="display:none;"><label>卡面不透明度 <span class="value"
+            id="card-frost-alpha-v"></span></label><input type="range" id="card-frost-alpha" min="40" max="85" /></div>
+      <label class="toggle"><span>卡面自适应材质</span><input type="checkbox" id="card-face-adapt" /></label>
+      </div>
       <div class="grp-card"><div class="grp-title">出现动画</div>
       <div class="row" data-page-node-id="6I1PmoMiVRpsEAGfoJuzYW"><label data-page-node-id="sKYWV1PHW4VvhMhBdmuqy2">出现动画</label>
         <select id="card-animation" data-page-node-id="Gbx57X2fVKEG96931XhTbl">
@@ -848,12 +859,27 @@
 
     <!-- 导航 -->
     <section class="pane" data-pane="nav" data-page-node-id="RCoxgKQ5V739iASt25aqq2">
-      <div class="grp-card"><div class="grp-title">导航栏</div>
-      <label class="toggle" data-page-node-id="DRi2Z3JAH6bdd2yjmwVHkV"><span data-page-node-id="EMUoR44u6tvfIxHGV7Taxl">导航栏透明</span><input type="checkbox" id="nav-transparent" data-page-node-id="SHd9hix9lKmt7GaR6Nrli9" /></label>
-      <label class="toggle" data-page-node-id="YrVF9sw8GyY0AZmYEbfRA1"><span data-page-node-id="yHd59tfyMbPM7MMesCqplK">导航栏毛玻璃</span><input type="checkbox" id="nav-blur" data-page-node-id="C2sXwPE2lp94jDC3fXkmIB" /></label>
-      <p class="hint" data-page-node-id="zHintNav">毛玻璃需与透明同时开启效果最佳</p>
+      <div class="grp-card"><div class="grp-title">导航栏<button type="button" class="help-dot" data-hint="nav-help" title="导航栏玻璃说明">?</button></div>
+      <p class="hint collapsible plain" id="nav-help">两个开关互斥（开一个自动关另一个），且需先开启自定义背景才生效。毛玻璃：磨砂遮住背后内容；液态玻璃：边缘折射+焦散（仅 Chromium），深色背景自动切白字。</p>
+      <label class="toggle" data-page-node-id="YrVF9sw8GyY0AZmYEbfRA1"><span data-page-node-id="yHd59tfyMbPM7MMesCqplK">导航栏毛玻璃（低透）</span><input type="checkbox" id="nav-blur" data-page-node-id="C2sXwPE2lp94jDC3fXkmIB" /></label>
+      <label class="toggle"><span>导航栏液态玻璃（高透·折射）</span><input type="checkbox" id="nav-hyalite" /></label>
+      <div class="row" id="nav-mat-row" style="display:none;"><label>玻璃材质</label><select id="nav-mat-mode">
+        <option value="auto">自动适应背景</option>
+        <option value="light">浅色材质（黑字）</option>
+        <option value="dark">深色材质（白字）</option>
+      </select></div>
       <div class="row" data-page-node-id="H2ZtLFCSEXUug1ahlEcdEK"><label data-page-node-id="7ciKvUFPTImaCsIfbAEo8R">主题色</label><input type="color" id="th-accent" data-page-node-id="jhl4UyNW5PVF4eDAEomKtG" /></div>
       <p class="hint" data-page-node-id="zUCFOj21Hy3IsaOz0K2d3Q">影响链接、悬停色等</p>
+      </div>
+      <div class="grp-card"><div class="grp-title">右侧栏<button type="button" class="help-dot" data-hint="side-help" title="右侧栏玻璃说明">?</button></div>
+      <p class="hint collapsible plain" id="side-help">把首页右侧栏的卡片换成玻璃卡片。默认「磨砂」：半透明膜＋18px 模糊，走 GPU 加速、开销低；开「边缘折射」才用 hyalite 的折射＋焦散＋边缘光（仅 Chromium，滤镜在 Chromium 走软件光栅化，会拖慢全页其他动效，故默认关）。开启后这一栏的暗色不再靠反色实现，而是深色玻璃＋白字，卡内站点底色会被清成透明。</p>
+      <label class="toggle"><span>右侧栏玻璃（磨砂）</span><input type="checkbox" id="sidebar-hyalite" /></label>
+      <div class="row" id="side-mat-row" style="display:none;"><label>玻璃材质</label><select id="side-mat-mode">
+        <option value="auto">自动适应背景</option>
+        <option value="light">浅色材质（黑字）</option>
+        <option value="dark">深色材质（白字）</option>
+      </select></div>
+      <label class="toggle" id="side-refract-row" style="display:none;"><span>边缘折射（实验·开销较高）</span><input type="checkbox" id="sidebar-refract" /></label>
       </div>
       <div class="grp-card"><div class="grp-title">搜索框</div>
 <div class="row" data-page-node-id="aASjCHFDJmr7k5wcnPpgeI"><label data-page-node-id="E9Ia53OWrqnPgzwnvxIjJC">搜索提示</label><input type="text" id="search-placeholder" placeholder="搜索用户、标签" data-page-node-id="5ByeJ2SJcbOgaJtVNkWVl2" /></div>
@@ -872,13 +898,6 @@
 
     <!-- 功能（往页面注入的功能开关） -->
     <section class="pane" data-pane="func" data-page-node-id="lcFuncPane">
-      <div class="grp-card"><div class="grp-title">写作辅助</div>
-        <label class="toggle" data-page-node-id="lcWcToggle">
-          <span data-page-node-id="lcWcLabel">长文章实时字数统计</span>
-          <input type="checkbox" id="tool-wordcount" data-page-node-id="lcWcInput" />
-        </label>
-        <p class="hint plain" data-page-node-id="lcWcHint">在长文章编辑器右下角常驻显示字数，随输入实时更新。口径：汉字按字、连续英文/数字按词，标点计入总字符（悬停可看明细）。</p>
-      </div>
       <div class="grp-card"><div class="grp-title">关键词过滤</div>
         <label class="toggle">
           <span>启用关键词/用户过滤</span>
@@ -888,24 +907,43 @@
           <div class="lc-mods" id="filter-scope">
             <label><input type="checkbox" id="filter-scope-home" checked />首页</label>
             <label><input type="checkbox" id="filter-scope-tag" checked />标签页</label>
+            <label><input type="checkbox" id="filter-scope-comment" />评论区</label>
           </div>
         </div>
-        <div class="row"><label>关键词</label></div>
+        <div class="row"><label>关键词<button type="button" class="help-dot" data-hint="filter-keywords-help" title="关键词怎么写？">?</button></label></div>
         <textarea id="filter-keywords" rows="4"
           style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);resize:vertical;"
           placeholder="一行一个关键词，也可以用逗号分隔"></textarea>
-        <p class="hint plain">多个关键词写法：一行一个，或用中/英文逗号分隔，命中任一个即隐藏。匹配标题、正文与标签，不区分大小写。评论区过滤将在后续版本加入。</p>
-        <div class="row"><label>已屏蔽用户</label><span class="hint" id="filter-user-count" style="margin-left:0;">0</span></div>
+        <p class="hint collapsible plain" id="filter-keywords-help" style="margin:4px 0 12px 0;">多个关键词写法：一行一个，或用中/英文逗号分隔，命中任一个即隐藏。匹配标题、正文与标签，不区分大小写。关键词只作用于帖子卡片；评论区只按「已屏蔽用户」隐藏，不做关键词匹配（评论正文短，关键词误杀率不可控）。</p>
+        <div class="row" style="margin-bottom:8px;"><label style="flex:0 0 auto;">已屏蔽用户<button type="button" class="help-dot" data-hint="filter-users-help" title="怎么屏蔽用户？">?</button></label><span class="hint" id="filter-user-count" style="margin:0;">0</span></div>
+        <p class="hint collapsible plain" id="filter-users-help" style="margin:4px 0 12px 0;">在首页/标签页帖子的作者名旁点「隐藏」即可屏蔽该用户；被屏蔽的用户在这里移除。</p>
         <div id="filter-users"
           style="display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;padding-right:4px;"></div>
-        <p class="hint plain">在首页/标签页帖子的作者名旁点「隐藏」即可屏蔽该用户；被屏蔽的用户在这里移除。</p>
         <label class="toggle">
           <span>显示「已过滤 N 条」提示</span>
           <input type="checkbox" id="filter-counter" />
         </label>
       </div>
+      <div class="grp-card"><div class="grp-title">官方黑名单<button type="button" class="help-dot" data-hint="official-help" title="什么是官方黑名单？">?</button></div>
+        <p class="hint collapsible plain" id="official-help" style="margin:4px 0 12px 0;">官方拉黑由 LOFTER 服务端执行：动态与标签页不再显示对方内容，对方也无法评论/私信你（对方可能感知，App 端进你主页会看到提示）。插件本地隐藏则完全无感，两者互不替代。</p>
+        <div style="display:flex;gap:6px;">
+          <input id="official-add-input" type="text" placeholder="粘贴对方主页链接或 ID"
+            style="flex:1;min-width:0;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);">
+          <button id="official-add-btn" class="btn"
+            style="padding:6px 12px;font-size:12px;white-space:nowrap;">拉黑</button>
+        </div>
+        <p class="hint plain">无需进 LOFTER 设置页，这里直接添加/移除（等价于官方「设置 → 黑名单」）。</p>
+        <div class="row" style="margin-bottom:8px;"><label style="flex:0 0 auto;">黑名单成员</label><span class="hint" id="official-count" style="margin:0;">…</span><span id="official-toast" style="font-size:11px;color:#34a853;display:none;"></span><button id="official-toggle" type="button" class="btn" style="margin-left:auto;padding:1px 10px;font-size:11px;flex-shrink:0;color:var(--lc-sub);background:none;border:1px dashed var(--lc-line);border-radius:6px;cursor:pointer;">展开</button></div>
+        <div id="official-list"
+          style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;padding-right:4px;display:none;"></div>
+        <label class="toggle">
+          <span>评论区也隐藏黑名单用户</span>
+          <input type="checkbox" id="official-comments" />
+        </label>
+        <p class="hint plain">开启后，评论区里黑名单成员的评论会被隐藏（帖子详情页、首页/标签页、独立评论 iframe 均生效）。开关一开立即刷新，无需重新加载页面。</p>
+      </div>
       <div class="grp-card"><div class="grp-title">路线图</div>
-        <p class="hint plain" data-page-node-id="lcFuncRoadmap">关键词过滤、评论区增强、表情快捷输入、文章导出等功能会陆续加入本栏，每项都是独立开关、默认关闭。</p>
+        <p class="hint plain" data-page-node-id="lcFuncRoadmap">评论区增强、表情快捷输入、文章导出等功能会陆续加入本栏，每项都是独立开关、默认关闭。</p>
       </div>
     </section>
 
@@ -1116,6 +1154,7 @@
   </div>
 
   <script src="defaults.js"></script>
+  <script src="lc-dwr.js"></script>
   <script src="popup.js"></script>
 
 </body>

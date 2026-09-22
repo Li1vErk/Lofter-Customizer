@@ -1,5 +1,942 @@
 window.decorationsGloballyHidden = false;
 
+/* ---------- 评论区用户过滤（Phase 2）----------
+ * 与主帧过滤共用一份配置：filter.enabled + filter.scope.comment +
+ * filter.users（**只认用户，不做关键词**——评论正文短，关键词误杀
+ * 率不可控）。
+ * 运行帧范围：顶层帧 + 评论子帧都要跑——部分帖子详情页的评论列表
+ * （.cmti 结构）直接渲染在主文档里，不在评论 iframe 内（2026-09-21
+ * 实证：只在子帧跑时主文档评论一条都匹配不上）。仅排除编辑器 /
+ * about:blank / 模板预览帧。
+ * 条目结构支持两套：
+ *   a) 新式 .cmti：作者名在 .cmtusr、头像链接在 .w-img2、正文在
+ *      .cmthot（首页/tag 页帖子卡片展开区）；
+ *   b) 旧式：作者链接与正文同处一行，以正文锚点 .bcmtlstf 或条目类
+ *      .bcmti 收敛（评论区 iframe）。
+ * 隐藏方式：data 标记 + 样式表 **加上** 内联 display:none 双保险——
+ * 卡片由 React 渲染，重渲染会洗掉 data-*（2026-09-21 实证：tag 页
+ * 10 个 .cmti 一条都没标记上），内联样式由 1.2s 看门狗补写，
+ * 保证被屏蔽者的评论不会"闪回来"。
+ * 另外：扫描阶段必须逐链接 try/catch。标记动作排在扫描之后，此前
+ * 任何一个异常（SVG className、畸形 href…）都会让整批一枚都不打。 */
+let cmtSettings = null;
+let cmtObserver = null;
+let cmtTimer = 0;
+let cmtWatchdog = 0;
+/* 重挂（re-arm）状态：评论区 iframe（www.lofter.com/comment.do）是旧式
+ * 服务端渲染页，解析时会 document.write() —— 隐式 document.open() 会
+ * 清空文档、连带抹掉挂在 document/html 上的监听与已注入的 <style>，
+ * 而 content script 每帧只跑一次。故模块必须可重入：定时对比
+ * document.documentElement 引用，一旦换过（或样式表被抹掉）就重跑一遍。*/
+let cmtStorageBound = false; /* storage.onChanged 只绑一次 */
+let cmtProbeBound = false; /* 调试桥挂 window，只绑一次（window 不随文档换） */
+let cmtDocEl = null; /* 上次挂载时的 documentElement 引用 */
+/* 官方黑名单 blogName 集合（小写）：来自 storage 镜像 lc_official_bl_v1
+ * （popup 与 www 域页面帧都能调 DWR，子域页面帧调不通——所以用镜像，
+ * 谁能调通谁写，评论过滤只读存储，任意帧都能用） */
+let cmtOfficialNames = new Set();
+const cmtHidden = new Set();
+const cmtPrevDisplay = new WeakMap();
+/* 空白收缩：LOFTER 的评论容器常按渲染时内容高度把 height/min-height 写死
+ * （展开动画量完就定高），评论被隐藏后内容变矮、容器不跟着缩 —— tag 页
+ * 表现为评论区下方一大块空白（2026-09-21 用户截图）。对「含被隐藏条目、
+ * 且实际空白 >48px」的祖先挂 .lc-cmt-collapse 强制恢复 auto；等「查看更多」
+ * 加载出新评论、空白消失后自动摘掉（每次 cmtApply 重算，自愈）。 */
+const CMT_COLLAPSE_CLASS = 'lc-cmt-collapse';
+const cmtCollapsed = new Set();
+/* 分割线叠加修复（见 cmtSeamSync）：正常状态下每个行间隙恰好一条线，
+ * 隐藏行撤掉后两个间隙合并、机制叠加就出粗线/双线。间隙里的线有两种
+ * 摘除方式，各对应一个类：
+ * - CMT_SEAM_HIDE_CLASS：间隙里的**独立分割线元素**（2026-09-21 tag 页
+ *   实测为空的、高 ~1px 的 li，与评论行同类名）—— 多出来的整条藏掉；
+ * - CMT_SEAM_CLASS：**行自身边框**（上一行 border-bottom + 下一行
+ *   border-top 贴合）—— 摘掉下一行的 border-top。 */
+const CMT_SEAM_CLASS = 'lc-cmt-seam';
+const cmtSeamMarked = new Set();
+const CMT_SEAM_HIDE_CLASS = 'lc-cmt-seam-hide';
+const cmtSeamHidden = new Set();
+const CMT_STYLE_ID = 'lc-cmt-filter-style';
+/* 跨帧诊断中继的存储键（见文件后段 lcCmtPublishSelf）：content script 在
+ * 任意帧共享 chrome.storage，用它当中继就不会去碰页面自己的 message 通道 */
+const CMT_DIAG_KEY = 'lc_cmt_diag_v1';
+const CMT_DIAG_REQ_KEY = 'lc_cmt_diag_req_v1';
+/* 诊断快照：控制台调试桥（<html data-lc-probe>）读取，用于定位
+ * 「选择器没命中 / id 没匹配上 / 标记被 React 洗掉」三类问题 */
+const cmtDiag = {
+  ran: false,
+  err: '',
+  style: false,
+  docSwaps: 0,
+  chain: [],
+  avatars: 0,
+  trace: [],
+  unresolved: 0,
+  scope: false,
+  blocked: 0,
+  official: 0,
+  useOfficial: false,
+  cmti: 0,
+  bodies: 0,
+  links: 0,
+  matched: [],
+  sample: [],
+  items: 0,
+  marked: 0,
+  lifted: 0,
+  collapsed: 0,
+  seamHide: 0,
+  seamBorder: 0,
+};
+
+function cmtUserId(a) {
+  try {
+    const u = new URL(a.href, location.href);
+    if (!/(^|\.)lofter\.com$/i.test(u.hostname)) return '';
+    if (u.hostname !== 'www.lofter.com' && u.hostname !== 'lofter.com') {
+      return u.hostname.split('.')[0] || '';
+    }
+    return u.pathname.split('/').filter(Boolean)[0] || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+/* 头像锚点选择器：只用于诊断计数（cmtDiag.avatars / trace 的 a:）。
+ * 注意评论区 iframe 的真实结构里根本没有头像容器（实测 a:0），所以它
+ * 不再参与条目容器判据（v1 曾用它，导致 comment.do 帧 matched 命中却
+ * items=0）。条目收敛见 cmtFindItem 的「离散单元边界法」。 */
+const CMT_AVATAR_SEL =
+  '.bcmtimg, [class*="cmtimg"], .w-img2, [class*="w-img"]';
+
+function cmtTagOf(el) {
+  try {
+    const cn =
+      el.className && typeof el.className === 'string'
+        ? el.className.trim().split(/\s+/).slice(0, 2).join('.')
+        : '';
+    return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (cn ? '.' + cn : '');
+  } catch (e) {
+    return '?';
+  }
+}
+
+/* 一个元素「自身或子树里」的正文锚点数（querySelectorAll 不含自身，
+ * 而 .bcmtlstf 在评论区是作者名后那个「：」，会自己就是锚点） */
+function cmtBodyCount(el) {
+  try {
+    return (
+      el.querySelectorAll('.bcmtlstf, .cmthot').length +
+      (el.matches && el.matches('.bcmtlstf, .cmthot') ? 1 : 0)
+    );
+  } catch (e) {
+    return 0;
+  }
+}
+
+/* 收敛不到容器时记录逐层计数（诊断用）：
+ * b=本层正文锚点数、pb=父层正文锚点数（b<pb 的那一层就是行边界）、
+ * a=头像数、l=博客链接数 */
+function cmtTraceChain(link) {
+  const out = [];
+  try {
+    let el = link.parentElement;
+    for (let i = 0; el && el !== document.body && i < 6; i++, el = el.parentElement) {
+      let links = 0;
+      Array.prototype.forEach.call(el.querySelectorAll('a[href]'), (a) => {
+        if (cmtUserId(a)) links += 1;
+      });
+      const p = el.parentElement;
+      out.push(
+        cmtTagOf(el) +
+          '{b:' + cmtBodyCount(el) +
+          ' pb:' + (p ? cmtBodyCount(p) : -1) +
+          ' a:' + el.querySelectorAll(CMT_AVATAR_SEL).length +
+          ' l:' + links + '}',
+      );
+    }
+  } catch (e) {}
+  return out;
+}
+
+function cmtFindItem(link) {
+  /* 1) 明确的条目容器类名（新式 .cmti / 评论区 iframe 的 .bcmti） */
+  const direct = link.closest('.cmti, .bcmti, .bcmt-item');
+  if (direct) return direct;
+  /* 2) 「离散单元」边界法向上收敛（2026-09-21 按真实 TRACE 定稿）。
+   *    评论区 iframe 的实测结构：
+   *      li.s-bd2.s-bg2{b:2} > div.bcmtlsta > … > div.bcmtlstj > span.itag
+   *      ul.clearfix.ztag{b:78} > li ×N
+   *    唯一的可靠边界是 **li → ul 那一刻正文锚点数从 2 跳到 78**：某层的
+   *    祖先里只要多出「本层之外的正文」，本层就是一条完整评论。
+   *    该结构里没有头像容器（a:0，旧的头像判据在这里恒等于失效），也不该
+   *    猜混淆类名，所以判据改成「父层正文数 > 本层正文数 ⇒ 本层是离散单元」，
+   *    再加「父层是 ul/ol/dl ⇒ 本层是列表项」兜住单条评论的列表。
+   *    安全阀：本层正文数 >4 说明一条评论不该有这么多正文（已越级），
+   *    返回 null——宁漏杀不误杀；上行上限 12 层。 */
+  let el = link.parentElement;
+  let lastCand = null;
+  for (let i = 0; el && el !== document.body && i < 12; i++, el = el.parentElement) {
+    if (!el.querySelectorAll) continue;
+    const cur = cmtBodyCount(el);
+    if (cur < 1) continue; /* 还在作者名小块里（无正文），不算条目 */
+    if (cur > 4) return null; /* 已越级到评论列表 */
+    const p = el.parentElement;
+    if (!p) break;
+    if (p.tagName === 'UL' || p.tagName === 'OL' || p.tagName === 'DL') return el;
+    if (cmtBodyCount(p) > cur) return el; /* 父层含本单元之外的内容 */
+    lastCand = el; /* 纯包裹层（父层内容与本层相同），继续上爬 */
+  }
+  return lastCand;
+}
+
+/* @提及 / 引用回链不是作者链接：主站给这类链接挂 loftermentionblogid
+ * 属性、class 含 atbox（f-atbox s-fc2），href 走 mentionredirect。
+ * 逐个特征判，避免正文里引用别人主页时误杀整条评论。 */
+function cmtIsMention(a) {
+  if (a.hasAttribute('loftermentionblogid')) return true;
+  if (a.className && /(^|\s)f-atbox(\s|$)/.test(a.className)) return true;
+  const h = a.getAttribute('href') || '';
+  return /mentionredirect/i.test(h);
+}
+
+/* 判定一个链接是否为「评论作者」而不是正文里的引用：
+ * - @提及/引用回链直接排除；
+ * - 作者名容器（.cmtusr / .bcmtusr）与头像容器（.w-img2）里的链接是作者；
+ * - 内联布局「作者名：正文…」里作者链接就是正文元素内的第一个非提及
+ *   链接，取其后的一律视为正文引用（防止正文里贴了被屏蔽者主页链接
+ *   而误杀整条评论）。 */
+function cmtIsAuthorLink(a) {
+  if (cmtIsMention(a)) return false;
+  if (a.closest('[class*="cmtusr"]')) return true;
+  if (a.closest('.w-img2, [class*="w-img"]')) return true;
+  const body = a.closest('.bcmtlstf, .cmthot');
+  if (body) {
+    const first = Array.prototype.find.call(
+      body.querySelectorAll('a[href]'),
+      (x) => !cmtIsMention(x),
+    );
+    return first === a;
+  }
+  return true; /* 不在正文元素内，交由 cmtFindItem 按容器收敛 */
+}
+
+/* 行内（旧式）结构里，作者链接 = 该条评论里**第一个**非提及博客链接
+ * （头像链接或作者名链接，二者同属作者）；其后出现的博客链接都视为正文
+ * 里的引用。评论区 iframe 实测一行最多 7 个博客链接（头像、作者名、
+ * 回复 @xx…），若不设这道栏，正文里贴了被屏蔽者的主页链接就会把别人的
+ * 整行评论藏掉（False positive 比漏杀更糟，用户此前专门验证过 @提及
+ * 不误杀）。位置判定需要先收敛出条目容器，所以单独成函数在收敛后调用。 */
+function cmtIsRowAuthor(a, row) {
+  if (a.closest('[class*="cmtusr"]') || a.closest('.w-img2, [class*="w-img"]')) {
+    return true;
+  }
+  if (!row || !row.querySelectorAll) return true;
+  const all = row.querySelectorAll('a[href]');
+  for (let i = 0; i < all.length; i++) {
+    const x = all[i];
+    if (cmtIsMention(x) || !cmtUserId(x)) continue;
+    return x === a;
+  }
+  return false;
+}
+
+/* 行单位提升：把「命中的元素」抬到它所在的那一行（行容器）再隐藏。
+ * 2026-09-21 tag 页探针实证：命中的是 div.cmti，而它独居于 li.a-slide 内，
+ * 该 li 自身带 `border-top: solid 0.571px`、内层隐藏后**自己仍高 1px 且可见**
+ * —— 只藏 .cmti 会留下 li 这条上边框，与下一行自己的 border-top 贴在一起
+ * （每行都画自己的上边框）→ 分割线看起来更粗。抬到 li 整行隐藏，残影边框
+ * 与那 1px 高度一并消失。
+ * 抬升判据是结构性的：**父层只包着当前这一个元素** ⇒ 父层的内容就是这一行，
+ * 所以不猜类名、也不看边框；UL/OL/表格与 body/html 一律不抬（那是列表容器
+ * 或文档根，不是行）；最多 6 层，防止意外爬到过大的容器上。 */
+function cmtRowUnit(el) {
+  let cur = el;
+  for (let i = 0; i < 6; i++) {
+    const p = cur.parentElement;
+    if (!p || p === document.body || p === document.documentElement) break;
+    const tag = p.tagName;
+    if (
+      tag === 'UL' ||
+      tag === 'OL' ||
+      tag === 'TABLE' ||
+      tag === 'TBODY' ||
+      tag === 'THEAD' ||
+      tag === 'TR'
+    ) {
+      break;
+    }
+    if (p.children.length !== 1) break; /* 父层还装着别的元素：不是行容器 */
+    cur = p;
+  }
+  return cur;
+}
+
+function cmtHide(el) {
+  if (!cmtPrevDisplay.has(el)) cmtPrevDisplay.set(el, el.style.display);
+  el.setAttribute('data-lc-cmt-filtered', '1');
+  el.style.setProperty('display', 'none', 'important');
+}
+
+function cmtUnhide(el) {
+  if (!el.hasAttribute('data-lc-cmt-filtered')) return;
+  el.removeAttribute('data-lc-cmt-filtered');
+  const prev = cmtPrevDisplay.get(el);
+  if (prev) el.style.display = prev;
+  else el.style.removeProperty('display');
+  cmtPrevDisplay.delete(el);
+}
+
+/* 看门狗：React 重渲染把内联样式/标记/类名洗掉时补写回来（1.2s，只遍历
+ * 自己隐藏过的那几个条目与收缩过的容器，开销可忽略） */
+function cmtStartWatchdog() {
+  if (cmtWatchdog) return;
+  cmtWatchdog = setInterval(() => {
+    if (!cmtHidden.size && !cmtCollapsed.size) return;
+    cmtHidden.forEach((el) => {
+      if (!el.isConnected) {
+        cmtHidden.delete(el);
+        return;
+      }
+      if (el.style.getPropertyValue('display') !== 'none') {
+        el.setAttribute('data-lc-cmt-filtered', '1');
+        el.style.setProperty('display', 'none', 'important');
+      }
+    });
+    /* 收缩类被重渲染洗掉时补挂；但只补「还藏着隐藏条目」的容器，
+     * 与 cmtCollapseSync 的摘类策略一致（状态判据，非测量判据） */
+    cmtCollapsed.forEach((el) => {
+      if (!el.isConnected) {
+        cmtCollapsed.delete(el);
+        return;
+      }
+      let hasHidden = false;
+      cmtHidden.forEach((item) => {
+        if (el.contains(item)) hasHidden = true;
+      });
+      if (!hasHidden) {
+        cmtCollapsed.delete(el);
+        el.classList.remove(CMT_COLLAPSE_CLASS);
+        return;
+      }
+      if (!el.classList.contains(CMT_COLLAPSE_CLASS)) {
+        el.classList.add(CMT_COLLAPSE_CLASS);
+      }
+    });
+    cmtDiag.marked = cmtHidden.size;
+    cmtDiag.collapsed = cmtCollapsed.size;
+  }, 1200);
+}
+
+/* 一个容器的「实际空白高度」：clientHeight 减去可见子元素的 offsetHeight
+ * 与上下 padding。display:none 的子元素不计入 —— 残留的空白就是这个差值 */
+function cmtBlankOf(el) {
+  try {
+    let sum = 0;
+    Array.prototype.forEach.call(el.children, (c) => {
+      if (getComputedStyle(c).display === 'none') return;
+      sum += c.offsetHeight;
+    });
+    const cs = getComputedStyle(el);
+    const pad =
+      (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    return el.clientHeight - pad - sum;
+  } catch (e) {
+    return 0;
+  }
+}
+
+/* 收缩同步：对每个被隐藏条目的祖先（≤6 层）测量空白，>48px 才挂收缩类。
+ * 摘类条件是**状态**而非测量：只要容器里还有本插件隐藏的条目就保持收缩。
+ * —— 绝不能按「测得空白 ≤48 就摘」：LOFTER 自己的定高/展开脚本会反复
+ * 重写容器内联高度，一摘一挂就和它拉锯，表现为空白不停缩回展开地抖
+ * （2026-09-21 用户实测）。带 !important 的类永远压得过它的内联样式，
+ * 挂上后它写什么都无效，拉锯自然停止；等容器里没有隐藏条目了（名单
+ * 清空 / 关闭开关 / 「查看更多」后我们不再隐藏任何行）才恢复原状。 */
+function cmtCollapseSync() {
+  const cands = new Set();
+  cmtHidden.forEach((item) => {
+    let el = item.parentElement;
+    for (
+      let i = 0;
+      el && el !== document.body && i < 6;
+      i++, el = el.parentElement
+    ) {
+      cands.add(el);
+    }
+  });
+  cands.forEach((el) => {
+    if (el === document.body || el === document.documentElement) return;
+    if (cmtCollapsed.has(el)) return; /* 已收缩：保持，不反复摘挂 */
+    if (cmtBlankOf(el) > 48) {
+      el.classList.add(CMT_COLLAPSE_CLASS);
+      cmtCollapsed.add(el);
+    }
+  });
+  cmtCollapsed.forEach((el) => {
+    if (!el.isConnected) {
+      cmtCollapsed.delete(el);
+      return;
+    }
+    let hasHidden = false;
+    cmtHidden.forEach((item) => {
+      if (el.contains(item)) hasHidden = true;
+    });
+    if (!hasHidden) {
+      cmtCollapsed.delete(el);
+      el.classList.remove(CMT_COLLAPSE_CLASS);
+    }
+  });
+  cmtDiag.collapsed = cmtCollapsed.size;
+}
+
+/* 分割线叠加修复（统一算法）。探针实证（2026-09-21）：tag 页隐藏元素是
+ * div.cmti，prev/next 均为 null —— 它是父级 li 里唯一的子元素，行单位是
+ * 父级 li，**在 .cmti 层找兄弟永远落空**。因此先做行单位提升（cmtSeamUnit：
+ * 自身没有元素兄弟就向上找，≤6 层），再在行单位层面处理。
+ *
+ * 间隙清点：隐藏行撤掉后，相邻两行之间的「线」可能来自三种机制 ——
+ * 独立分割线元素（空、高 ≤2px 的 li）、上一行的 border-bottom、下一行的
+ * border-top。正常状态下每个间隙恰好一条线；隐藏后两个间隙合并，机制
+ * 叠加就出粗线/双线。规则：数出每个可见间隙的线总数，**超出 1 条的逐个
+ * 摘除 —— 优先摘分割线元素，不够再摘下一行的 border-top**（有分割线时
+ * 不动边框、只有双边框时才摘边框，避免「只有上边框/只有下边框」设计里
+ * 把唯一的线删掉）。
+ * 边框测量用 computed style，读不到时回退行内样式（jsdom 等无布局环境）。
+ * 标记每次全量重算：隐藏集合变化后自动还原。 */
+function cmtBorderW(el, top) {
+  /* 必须「确实有可见边框样式」才算数：jsdom 对无边框元素会给出
+   * border-width:16px 的幽灵值（border-style 仍是 none），真机上
+   * border-style:none 时宽度也为 0 —— 用 style 判据一并挡掉。 */
+  const pick = (cs, inline) => {
+    let st = '';
+    let w = 0;
+    try {
+      st = String(
+        (top ? cs.borderTopStyle : cs.borderBottomStyle) || '',
+      ).toLowerCase();
+      w = parseFloat(top ? cs.borderTopWidth : cs.borderBottomWidth) || 0;
+    } catch (e) {}
+    if (!st && inline) {
+      st = String(
+        (top ? inline.borderTopStyle : inline.borderBottomStyle) || '',
+      ).toLowerCase();
+      if (!w) w = parseFloat(top ? inline.borderTopWidth : inline.borderBottomWidth) || 0;
+    }
+    if (!st || st === 'none' || st === 'hidden') return 0;
+    return w > 0 ? w : 0;
+  };
+  try {
+    const v = pick(getComputedStyle(el), el.style);
+    if (v > 0) return v;
+  } catch (e) {}
+  return pick({}, el.style);
+}
+
+/* 行单位提升：与隐藏用的 cmtRowUnit 共用同一判据，避免两套口径分叉
+ * （隐藏已抬到行单位后，这里通常原样返回） */
+function cmtSeamUnit(el) {
+  return cmtRowUnit(el);
+}
+
+function cmtHasHiddenRow(el) {
+  if (!el) return false;
+  if (cmtHidden.has(el)) return true;
+  let has = false;
+  cmtHidden.forEach((item) => {
+    if (!has && el.contains(item)) has = true;
+  });
+  return has;
+}
+
+function cmtIsDividerEl(el) {
+  if (!el || el.nodeType !== 1) return false;
+  if (el.classList.contains(CMT_SEAM_HIDE_CLASS)) return true;
+  try {
+    if ((el.textContent || '').trim() !== '') return false;
+    const h = el.offsetHeight;
+    return h > 0 && h <= 2;
+  } catch (e) {
+    return false;
+  }
+}
+
+function cmtSeamSync() {
+  const units = new Set();
+  cmtHidden.forEach((el) => units.add(cmtSeamUnit(el)));
+  const parents = new Set();
+  units.forEach((u) => {
+    if (u.parentElement) parents.add(u.parentElement);
+  });
+  const wantHide = new Set();
+  const wantSeam = new Set();
+  parents.forEach((p) => {
+    /* 可见子元素序列（含隐藏行的子树视作不存在） */
+    const kids = [];
+    Array.prototype.forEach.call(p.children, (c) => {
+      if (cmtHasHiddenRow(c)) return;
+      kids.push(c);
+    });
+    /* 第 1 步：连续的分割线元素只留最靠上的一条（其余藏掉） */
+    let runStart = -1;
+    for (let i = 0; i <= kids.length; i++) {
+      const isDiv = i < kids.length && cmtIsDividerEl(kids[i]);
+      if (isDiv) {
+        if (runStart < 0) {
+          runStart = i;
+        } else {
+          wantHide.add(kids[i]);
+        }
+      } else {
+        runStart = -1;
+      }
+    }
+    /* 第 2 步：两行之间的间隙若仍有 >1 条线（分割线 + 行边框叠加），
+     * 先摘分割线，不够再摘下一行的 border-top */
+    for (let i = 0; i < kids.length; i++) {
+      if (cmtIsDividerEl(kids[i])) continue;
+      const divs = [];
+      let j = i + 1;
+      while (j < kids.length && cmtIsDividerEl(kids[j])) {
+        divs.push(kids[j]);
+        j += 1;
+      }
+      if (j >= kids.length) break;
+      const a = kids[i];
+      const b = kids[j];
+      /* 保留下来的分割线数 */
+      let lines = 0;
+      divs.forEach((d) => {
+        if (!wantHide.has(d)) lines += 1;
+      });
+      if (cmtBorderW(a, false) > 0) lines += 1;
+      if (cmtBorderW(b, true) > 0) lines += 1;
+      if (lines > 1) {
+        let excess = lines - 1;
+        for (let k = divs.length - 1; k >= 0 && excess > 0; k--) {
+          if (!wantHide.has(divs[k])) {
+            wantHide.add(divs[k]);
+            excess -= 1;
+          }
+        }
+        if (excess > 0) wantSeam.add(b);
+      }
+      i = j - 1;
+    }
+  });
+  wantHide.forEach((el) => {
+    el.classList.add(CMT_SEAM_HIDE_CLASS);
+    cmtSeamHidden.add(el);
+  });
+  cmtSeamHidden.forEach((el) => {
+    if (!wantHide.has(el) || !el.isConnected) {
+      el.classList.remove(CMT_SEAM_HIDE_CLASS);
+      cmtSeamHidden.delete(el);
+    }
+  });
+  wantSeam.forEach((el) => {
+    el.classList.add(CMT_SEAM_CLASS);
+    cmtSeamMarked.add(el);
+  });
+  cmtSeamMarked.forEach((el) => {
+    if (!wantSeam.has(el) || !el.isConnected) {
+      el.classList.remove(CMT_SEAM_CLASS);
+      cmtSeamMarked.delete(el);
+    }
+  });
+  cmtDiag.seamHide = cmtSeamHidden.size;
+  cmtDiag.seamBorder = cmtSeamMarked.size;
+}
+
+function cmtApply() {
+  const f = cmtSettings && cmtSettings.filter;
+  const on = !!(
+    cmtSettings &&
+    cmtSettings.enabled &&
+    f &&
+    f.enabled &&
+    f.scope &&
+    f.scope.comment
+  );
+  const useOfficial = !!(
+    cmtSettings &&
+    cmtSettings.official &&
+    cmtSettings.official.hideInComments
+  );
+  const blocked = new Set(
+    on
+      ? (f.users || [])
+          .map((u) => String(u.id || '').toLowerCase())
+          .filter(Boolean)
+      : [],
+  );
+  /* 官方黑名单成员（面板开关「评论区也隐藏黑名单用户」）并入名单：
+   * 官方拉黑 = 服务端隔离，但别人的帖子评论区不在隔离范围，评论仍可见 */
+  if (on && useOfficial) {
+    cmtOfficialNames.forEach((n) => blocked.add(String(n).toLowerCase()));
+  }
+
+  let st = document.getElementById(CMT_STYLE_ID);
+  if (!st) {
+    st = document.createElement('style');
+    st.id = CMT_STYLE_ID;
+    (document.head || document.documentElement).appendChild(st);
+  }
+  st.textContent = on
+    ? '[data-lc-cmt-filtered] { display: none !important; }\n' +
+      '.' +
+      CMT_COLLAPSE_CLASS +
+      ' { height: auto !important; min-height: 0 !important; max-height: none !important; }\n' +
+      '.' +
+      CMT_SEAM_CLASS +
+      ' { border-top-width: 0 !important; }\n' +
+      '.' +
+      CMT_SEAM_HIDE_CLASS +
+      ' { display: none !important; }'
+    : '';
+
+  /* 幂等全量重算：先撤销上一轮的隐藏（含内联样式还原），再按当前名单重打 */
+  cmtHidden.forEach((el) => cmtUnhide(el));
+  cmtHidden.clear();
+  cmtDiag.scope = on;
+  cmtDiag.blocked = blocked.size;
+  cmtDiag.official = cmtOfficialNames.size;
+  cmtDiag.useOfficial = useOfficial;
+  cmtDiag.err = '';
+  cmtDiag.cmti = document.querySelectorAll('.cmti').length;
+  cmtDiag.bodies = document.querySelectorAll('.bcmtlstf, .cmthot').length;
+  cmtDiag.avatars = document.querySelectorAll(CMT_AVATAR_SEL).length;
+  cmtDiag.style = !!document.getElementById(CMT_STYLE_ID);
+  cmtDiag.trace = [];
+  cmtDiag.unresolved = 0;
+  /* 条目结构自省：从第一个正文锚点向上列 5 层 tag.className，用于核对
+   * 真实容器类名（换结构时不至于只能靠猜）。 */
+  cmtDiag.chain = [];
+  try {
+    let cel = document.querySelector('.bcmtlstf, .cmthot');
+    for (let i = 0; cel && i < 5; i++, cel = cel.parentElement) {
+      cmtDiag.chain.push(cmtTagOf(cel));
+    }
+  } catch (e) {}
+
+  /* 作者 id 采样：名单为空（blocked=0）时也能从探针判断「选择器与 id
+   * 解析是否正常」——若 sample 非空说明链接抓得到，只是没人被屏蔽。 */
+  const sample = [];
+  try {
+    document
+      .querySelectorAll(
+        '.cmti .cmtusr a[href], .cmti .w-img2 a[href], [class*="cmtusr"] a[href]',
+      )
+      .forEach((a) => {
+        if (sample.length >= 5) return;
+        const sid = cmtUserId(a);
+        if (sid && sample.indexOf(sid) < 0) sample.push(sid);
+      });
+  } catch (e) {}
+  cmtDiag.sample = sample;
+
+  if (!on || !blocked.size) {
+    cmtDiag.links = 0;
+    cmtDiag.matched = [];
+    cmtDiag.items = 0;
+    cmtDiag.marked = 0;
+    cmtCollapseSync(); /* 隐藏全撤销后，收缩容器也随之还原 */
+    cmtSeamSync(); /* 分割线/边框叠加修复类同步摘除 */
+    if (cmtWatchdog) {
+      clearInterval(cmtWatchdog);
+      cmtWatchdog = 0;
+    }
+    return;
+  }
+
+  const items = new Set();
+  const linkIds = [];
+  const matched = [];
+  /* 逐链接 try/catch：任一异常都不能中断整批标记 */
+  const guard = (fn) => {
+    try {
+      fn();
+    } catch (e) {
+      cmtDiag.err = String(e);
+    }
+  };
+
+  /* A) 新式 .cmti 条目：只认作者名 / 头像位置的链接 */
+  guard(() => {
+    document
+      .querySelectorAll('.cmti .cmtusr a[href], .cmti .w-img2 a[href]')
+      .forEach((a) => {
+        const id = cmtUserId(a);
+        if (!id) return;
+        linkIds.push(id);
+        if (!blocked.has(id)) return;
+        matched.push(id);
+        const item = a.closest('.cmti');
+        if (item) items.add(item);
+      });
+  });
+
+  /* B) 旧式 / 评论区 iframe 条目：全量扫链接，靠 cmtIsAuthorLink 判定
+   * 作者位置（新式 .cmti 由上面那条更严的位置限定分支处理）。 */
+  guard(() => {
+    document.querySelectorAll('a[href]').forEach((a) => {
+      if (a.closest('.cmti')) return; /* 已由新式分支处理 */
+      if (!cmtIsAuthorLink(a)) return;
+      const id = cmtUserId(a);
+      if (!id) return;
+      linkIds.push(id);
+      if (!blocked.has(id)) return;
+      matched.push(id);
+      const item = cmtFindItem(a);
+      if (!item) {
+        /* 命中名单却收敛不到条目容器：记逐层计数，供诊断定位 */
+        cmtDiag.unresolved += 1;
+        if (cmtDiag.trace.length < 2) {
+          cmtDiag.trace.push({ id, chain: cmtTraceChain(a) });
+        }
+      } else if (cmtIsRowAuthor(a, item)) {
+        items.add(item);
+      }
+    });
+  });
+
+  items.forEach((el) => {
+    /* 抬到行单位再整行隐藏：否则残留行容器的上边框会与下一行叠成粗线
+     * （见 cmtRowUnit 注释） */
+    const unit = cmtRowUnit(el);
+    if (unit !== el) cmtDiag.lifted += 1;
+    cmtHide(unit);
+    cmtHidden.add(unit);
+  });
+  cmtCollapseSync(); /* 隐藏后收缩残留空白（定高容器不随内容变矮） */
+  cmtSeamSync(); /* 隐藏后：分割线元素/行边框叠加 → 间隙只留一条线 */
+  cmtDiag.links = linkIds.length;
+  cmtDiag.matched = Array.from(new Set(matched)).slice(0, 20);
+  cmtDiag.items = items.size;
+  cmtDiag.marked = cmtHidden.size;
+  if (items.size) cmtStartWatchdog();
+  else if (cmtWatchdog) {
+    clearInterval(cmtWatchdog);
+    cmtWatchdog = 0;
+  }
+}
+
+function lcSetupCommentFilter() {
+  cmtDiag.ran = true;
+  /* 可重入：旧观察者可能挂在已被 document.write 重建掉的旧 <html> 上，
+   * 样式表也可能随文档一起被抹掉 —— 一律先拆再建。 */
+  if (cmtObserver) {
+    try {
+      cmtObserver.disconnect();
+    } catch (e) {}
+    cmtObserver = null;
+  }
+  try {
+    const old = document.getElementById(CMT_STYLE_ID);
+    if (old) old.remove();
+  } catch (e) {}
+  chrome.storage.local.get(['lc_settings_v1', 'lc_official_bl_v1'], (res) => {
+    cmtSettings = res['lc_settings_v1'] || {};
+    const obl = res['lc_official_bl_v1'] || {};
+    cmtOfficialNames = new Set(
+      (Array.isArray(obl.names) ? obl.names : []).map(String),
+    );
+    cmtApply();
+    /* 观察当前这一份 documentElement（重挂后可能已经是新的那个） */
+    if (cmtObserver || !document.documentElement) return;
+    cmtObserver = new MutationObserver(() => {
+      clearTimeout(cmtTimer);
+      cmtTimer = setTimeout(cmtApply, 120);
+    });
+    cmtObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+  });
+  if (cmtStorageBound) return;
+  cmtStorageBound = true;
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes['lc_settings_v1']) {
+      cmtSettings = changes['lc_settings_v1'].newValue || {};
+      cmtApply();
+    }
+    if (changes['lc_official_bl_v1']) {
+      const v = changes['lc_official_bl_v1'].newValue || {};
+      cmtOfficialNames = new Set(
+        (Array.isArray(v.names) ? v.names : []).map(String),
+      );
+      cmtApply();
+    }
+    /* 跨帧诊断中继（见 lcCmtPublishSelf）：子帧收到顶层帧的探测请求就自报；
+     * 顶层帧收到任何一帧的诊断就重新汇总。只认这两个键，不会自激循环。 */
+    if (changes[CMT_DIAG_REQ_KEY]) {
+      const pid = changes[CMT_DIAG_REQ_KEY].newValue;
+      if (pid && window !== window.top) lcCmtPublishSelf(pid);
+    }
+    if (changes[CMT_DIAG_KEY] && window === window.top) {
+      lcCmtRender(changes[CMT_DIAG_KEY].newValue || {});
+    }
+  });
+}
+
+function lcCmtGateOk() {
+  try {
+    const href = location.href;
+    if (/^about:/i.test(href) || /^about:/i.test(document.URL || '')) return false;
+    if (window.name === 'theme_preview' || href.includes('themesettingproxy.html')) {
+      return false;
+    }
+    if (href.includes('lf127.net')) return false; /* 编辑器帧：不插手 */
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/* 挂载 / 重挂。评论区 iframe（www.lofter.com/comment.do）是旧式服务端渲染
+ * 页，解析时会 document.write()：隐式 document.open() 把文档清空重建，
+ * 此前注入的样式表与挂在旧 document/html 上的监听全部失效 —— 而 content
+ * script 每帧只执行一次，所以必须自己发现「文档被换过」并重跑
+ * （2026-09-21 实证：该帧探针显示「本帧无桥」，正是这个成因）。 */
+function lcCmtArm() {
+  if (!lcCmtGateOk()) return;
+  const el = document.documentElement;
+  if (!el) return;
+  if (cmtDocEl && el !== cmtDocEl) cmtDiag.docSwaps += 1;
+  cmtDocEl = el;
+  /* documentElement 上也挂一份（兼容不冒泡的事件派发；重挂时随新文档
+   * 换新元素，用 expando 防止同一元素重复绑定） */
+  try {
+    if (!el.__lcCmtProbe) {
+      el.__lcCmtProbe = 1;
+      el.addEventListener('lc-probe-cmt', lcCmtReport);
+    }
+  } catch (e) {}
+  lcSetupCommentFilter();
+}
+
+/* 调试桥挂在 window 上（不是 document）：document.open() 会清空文档上的
+ * 监听，而 window 上的监听在文档被重建后依然存活。任意帧可用：控制台
+ * dispatch 'lc-probe-cmt' → 读 <html data-lc-probe-cmt>；跨域 iframe 需在
+ * DevTools 的帧选择器里切到该帧再执行。事件最好带 {bubbles:true} 才能
+ * 到达 window（另在 documentElement 上也挂一份，兼容不冒泡的派发）。 */
+function lcCmtPayload() {
+  return {
+    url: location.href.slice(0, 160),
+    isTop: window === window.top,
+    docSwapped: document.documentElement !== cmtDocEl,
+    diag: cmtDiag,
+  };
+}
+
+/* 跨帧汇总 v2（2026-09-21 改走 chrome.storage 中继）。
+ * 评论 iframe（comment.do，www.lofter.com）与帖子页（xxx.lofter.com）不同源，
+ * 父帧读不到它的 DOM，只能让它自报。早先用 postMessage 广播，结果撞进页面
+ * 自己的 message 处理器（core.js / pt_page_control.js 把 e.data 当字符串
+ * 做 indexOf → "Uncaught TypeError: ceW.indexOf is not a function"）。
+ * content script 在任意帧都共享 chrome.storage，用它当中继完全不碰页面的
+ * 消息通道：
+ *   顶层帧探测 → 写 CMT_DIAG_REQ_KEY = probeId
+ *   各子帧 onChanged 收到 → lcCmtPublishSelf(probeId) 写入 CMT_DIAG_KEY[帧URL]
+ *   顶层帧监听 CMT_DIAG_KEY → 汇总写回 <html data-lc-probe-cmt>
+ * 每条诊断都带 probeId，只汇总本轮结果，跨次探测不串数据。 */
+let cmtProbeId = 0;
+
+function lcCmtPayload() {
+  return {
+    url: location.href.slice(0, 160),
+    isTop: window === window.top,
+    docSwapped: document.documentElement !== cmtDocEl,
+    diag: cmtDiag,
+  };
+}
+
+/* 本帧自报：写中继存储 + 顺手写本帧 <html data-lc-probe-cmt>（在子帧控制台
+ * 直接跑探针时也能立刻看到单帧结果） */
+function lcCmtPublishSelf(id) {
+  const pid = id || cmtProbeId || Date.now();
+  let payload = null;
+  try {
+    payload = Object.assign({ probeId: pid }, lcCmtPayload());
+  } catch (e) {
+    return;
+  }
+  try {
+    document.documentElement.dataset.lcProbeCmt = JSON.stringify(payload);
+  } catch (e) {}
+  try {
+    const key = String(payload.url || location.href).slice(0, 160);
+    chrome.storage.local.get(CMT_DIAG_KEY, (res) => {
+      const map = (res && res[CMT_DIAG_KEY]) || {};
+      map[key] = payload;
+      /* 只留最近 8 帧，避免存储无限增长 */
+      const keys = Object.keys(map);
+      if (keys.length > 8) {
+        keys.sort((a, b) => (map[a].probeId || 0) - (map[b].probeId || 0));
+        while (keys.length > 8) delete map[keys.shift()];
+      }
+      chrome.storage.local.set({ [CMT_DIAG_KEY]: map });
+    });
+  } catch (e) {}
+}
+
+/* 顶层帧：把本轮（probeId 相同）各帧的诊断汇总成数组。顶层帧自己那份用
+ * 内存里的 cmtDiag 现取（不必等存储往返），保证输出里一定有 #0 那行。 */
+function lcCmtRender(map) {
+  if (window !== window.top) return;
+  try {
+    const list = Object.keys(map || {})
+      .map((k) => map[k])
+      .filter((x) => x && x.probeId === cmtProbeId && !x.isTop)
+      .sort((a, b) => (b.diag && b.diag.bodies ? 1 : 0) - (a.diag && a.diag.bodies ? 1 : 0));
+    const merged = [
+      Object.assign({ probeId: cmtProbeId }, lcCmtPayload()),
+    ].concat(list);
+    document.documentElement.dataset.lcProbeCmt = JSON.stringify(
+      merged.length === 1 ? merged[0] : merged,
+    );
+  } catch (e) {}
+}
+
+function lcCmtReport() {
+  cmtProbeId = Date.now();
+  lcCmtPublishSelf(cmtProbeId);
+  if (window !== window.top) return;
+  /* 广播探测请求：各子帧监听到该键变化后自报（见 lcSetupCommentFilter） */
+  try {
+    chrome.storage.local.set({ [CMT_DIAG_REQ_KEY]: cmtProbeId });
+  } catch (e) {}
+}
+
+if (lcCmtGateOk() && !cmtProbeBound) {
+  cmtProbeBound = true;
+  /* 只监听自己的探测事件；页面自身的 message 通道一律不碰（v1 曾用
+   * postMessage 跨帧广播，会撞进页面的 core.js 处理器并抛 TypeError） */
+  try {
+    window.addEventListener('lc-probe-cmt', lcCmtReport);
+  } catch (e) {}
+}
+
+lcCmtArm();
+
+/* 前 20 秒每秒对一次 documentElement 引用（之后自动停掉，不留常驻定时器）：
+ * 文档没被换过时几乎零开销。 */
+let cmtArmTries = 0;
+const cmtArmTimer = setInterval(() => {
+  cmtArmTries += 1;
+  if (cmtArmTries > 20) {
+    clearInterval(cmtArmTimer);
+    return;
+  }
+  if (!lcCmtGateOk()) return;
+  if (document.documentElement !== cmtDocEl) {
+    lcCmtArm();
+    return;
+  }
+  /* 文档没换但样式表被抹掉（极端情况）也补挂一次 */
+  if (!document.getElementById(CMT_STYLE_ID)) lcCmtArm();
+}, 1000);
+
 if (window !== window.top) {
   const href = location.href;
 
@@ -10,6 +947,14 @@ if (window !== window.top) {
    * 编辑器变白底黑字（v1.1.1 实测回归）。这类帧一律不插手：
    * 编辑器暗色由父帧 applyLongpostEditorDark 负责，计数由 wc-frame.js 负责。 */
   if (/^about:/i.test(href) || /^about:/i.test(document.URL || '')) {
+    throw new Error('lc-iframe-exit');
+  }
+
+  /* 模板预览帧（主页设置 → 模板 → 预览）：预览必须展示模板原貌。
+   * 该帧是 *.lofter.com 子域，此前掉进评论区分支被 body{filter:invert}
+   * 整帧反转（浅色模板变暗色卡、图片反色，2026-09-21 实证）→
+   * 预览帧一律不插手，暗色/过滤等全部不生效。 */
+  if (window.name === 'theme_preview' || href.includes('themesettingproxy.html')) {
     throw new Error('lc-iframe-exit');
   }
 
@@ -526,28 +1471,24 @@ styleEl.textContent = `
           keyframes = `
             @keyframes lc-card-appear {
               from { opacity: 0; transform: translateY(24px); }
-              to   { opacity: 1; transform: translateY(0); }
             }`;
           break;
         case "fadeIn":
           keyframes = `
             @keyframes lc-card-appear {
               from { opacity: 0; }
-              to   { opacity: 1; }
             }`;
           break;
         case "scaleIn":
           keyframes = `
             @keyframes lc-card-appear {
               from { opacity: 0; transform: scale(0.92); }
-              to   { opacity: 1; transform: scale(1); }
             }`;
           break;
         case "slideIn":
           keyframes = `
             @keyframes lc-card-appear {
               from { opacity: 0; transform: translateX(-30px); }
-              to   { opacity: 1; transform: translateX(0); }
             }`;
           break;
       }
@@ -559,9 +1500,14 @@ styleEl.textContent = `
         .m-mlist:not(.lc-card-ready) {
           opacity: 0;
         }
-        /* 动画播放后的状态 */
+        /* 动画播放后的状态：终态写在基类（opacity:1、transform 缺省 none），
+           关键帧只定义 from。backwards 只填延迟期（防交错延迟闪终态），
+           播完不保留任何填帧值——不能用 forwards！Chrome 对 forwards 填帧
+           会永久保留合成层 transform 节点（即使终点是 none），该渲染面会让
+           卡面 backdrop-filter 采不到页面背景（浅色磨砂失效） */
         .m-mlist.lc-card-visible {
-          animation: lc-card-appear ${duration}s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          opacity: 1;
+          animation: lc-card-appear ${duration}s cubic-bezier(0.4, 0, 0.2, 1) backwards;
         }
       `);
     }
@@ -1344,6 +2290,117 @@ html body .g-bd .m-recom {
         ${SCOPE} li[class*="PdfC3wCQbp2WSs9sweR6Pg=="]:hover {
           transform: scale(1.02) !important;
         }` : ""}
+      `);
+    }
+
+    /* ── 黑名单设置页：圆角毛玻璃布局（浅色值；暗色的色值在下方反色区覆盖）── */
+    out.push(`
+      /* 站点外层 .g-bdc 自带 1px 灰 border-top，毛玻璃容器上方露白线，去掉；
+         顺手把整块容器加宽（原版约 990px，两列成员卡更舒展） */
+      .g-bdc:has(.m-blackset) {
+        border-top: 0 !important;
+        width: min(1280px, 96%) !important;
+        max-width: none !important;
+        margin: 0 auto !important;
+        box-sizing: border-box !important;
+      }
+      .g-mn:has(.m-blackset) {
+        background: rgba(255, 255, 255, 0.55) !important;
+        backdrop-filter: blur(16px) saturate(140%) !important;
+        -webkit-backdrop-filter: blur(16px) saturate(140%) !important;
+        border-radius: 16px !important;
+        border: 1px solid rgba(0, 0, 0, 0.08) !important;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08) !important;
+        padding: 8px 18px 16px !important;
+        box-sizing: border-box !important;
+      }
+      .g-mn:has(.m-blackset) .bsset {
+        background: rgba(255, 255, 255, 0.5) !important;
+        border: 1px solid rgba(0, 0, 0, 0.06) !important;
+        border-radius: 12px !important;
+        padding: 12px 14px !important;
+      }
+      .g-mn:has(.m-blackset) .bslist ul {
+        /* 成员两列：站点原生 50% 宽 float/inline-block 排列对卡片化样式
+           太脆弱（padding/border 一加就挤成单列），改 grid 硬排 */
+        display: grid !important;
+        grid-template-columns: 1fr 1fr !important;
+        gap: 10px 12px !important;
+        /* 站点 ul 自带定宽/负 margin，加宽容器后溢出毛玻璃两侧 → 钉回内容宽 */
+        width: 100% !important;
+        max-width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        box-sizing: border-box !important;
+      }
+      .g-mn:has(.m-blackset) .bslist ul li {
+        background: rgba(255, 255, 255, 0.6) !important;
+        border: 1px solid rgba(0, 0, 0, 0.06) !important;
+        border-radius: 12px !important;
+        padding: 10px 16px !important;
+        margin: 0 !important;
+        box-sizing: border-box !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        float: none !important;
+        /* 内部 flex 排版：站点原布局头像/昵称 float left、移出按钮
+           float right，加 padding 后按钮挤掉行悬到卡片外——flex 一劳永逸 */
+        display: flex !important;
+        align-items: center !important;
+        gap: 10px !important;
+      }
+      .g-mn:has(.m-blackset) .bslist ul li .w-img2 {
+        float: none !important;
+        flex-shrink: 0 !important;
+      }
+      .g-mn:has(.m-blackset) .bslist ul li .bsname {
+        float: none !important;
+        flex: 1 !important;
+        min-width: 0 !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+      }
+      .g-mn:has(.m-blackset) .bslist ul li .w-vsbtn {
+        float: none !important;
+        flex-shrink: 0 !important;
+        margin-left: auto !important;
+      }
+      .g-mn:has(.m-blackset) .bsin .w-inputxt {
+        border-radius: 10px !important;
+        border: 1px solid rgba(0, 0, 0, 0.12) !important;
+      }
+      .g-mn:has(.m-blackset) .w-vsbtn {
+        border-radius: 999px !important;
+      }
+    `);
+    /* ── 账号设置页：主题色适配（浅色值；暗色在下方块再统一）──
+       路径实证：/front/homesite/user-setting（探针 2026-09-20），兼容 /setting */
+    const onSettingPage = /\/(setting|front\/homesite\/user-setting)\b/.test(
+      location.pathname,
+    );
+    if (onSettingPage) {
+      const SA = s.theme.accent || "#667eea";
+      out.push(`
+        /* 站内通知/版权/性别勾选框：rc-checkbox 结构（input + .rc-checkbox-inner） */
+        .rc-checkbox-input:checked + .rc-checkbox-inner {
+          background-color: ${SA} !important;
+          border-color: ${SA} !important;
+        }
+        .rc-checkbox-input:focus + .rc-checkbox-inner {
+          border-color: ${SA} !important;
+        }
+        /* 「绑定邮箱账号/查看说明/修改兴趣」旁箭头：站点把 #4EB7BA
+           硬编码在 path 的 stroke 属性上，CSS stroke 属性可覆盖表示属性 */
+        svg path[stroke="#4EB7BA"] { stroke: ${SA} !important; }
+        /* 保存键：主色按钮中唯一不带 <a> 子元素的（黑名单/标签屏蔽/注销
+           按钮同类名但内含链接，浅色下保持站点灰底不动） */
+        button[class*="buttonColorPrimary"]:not(:has(a)) {
+          background: ${SA} !important;
+          border-color: ${SA} !important;
+          color: #fff !important;
+        }
       `);
     }
     if (isDarkMode()) {
@@ -2460,11 +3517,15 @@ document.querySelectorAll('main[class*="lc-gift-processed"]').forEach(card => {
       }, 1000);
     }
 
-    /* 新版页面：导航栏 — 强制清除所有层级背景 */
-    if (
-      (s.navbar.transparent || s.navbar.blur) &&
-      s.background.mode !== "off"
-    ) {
+    /* 新版页面：导航栏 — 强制清除所有层级背景
+       注意：本块与老管线 applyNavbar 一样**不看背景开关**——
+       背景为「关闭」时（站点默认白底）玻璃依然生效，
+       否则同一次点击在两个管线上表现不一致（老管线生效、新管线失效）。 */
+    const navHy =
+      settings.navbar.hyalite &&
+      window.Hyalite &&
+      Hyalite.supported();
+    if (s.navbar.blur || s.navbar.hyalite) {
       out.push(`
         /* 清除导航栏外层所有层级的背景 */
         #application.lofter-root-container [class*="box-web"],
@@ -2475,14 +3536,23 @@ document.querySelectorAll('main[class*="lc-gift-processed"]').forEach(card => {
           background-image: none !important;
         }
         
-        /* 导航栏实际容器（第3层 div）— 毛玻璃效果，与首页统一 */
+        /* 导航栏实际容器（第3层 div）— 毛玻璃效果，与首页统一。
+           hyalite 模式：blur 换成 var(--hyalite)（由 hyalite.js 写入），
+           并加底缘圆角 + 折射焦散自带的边缘阴影 */
         #application.lofter-root-container [class*="box-web"] > div:first-child > div:first-child {
           background: rgba(255, 255, 255, 0.35) !important;
           background-image: none !important;
-          backdrop-filter: blur(16px) !important;
+          ${
+            navHy
+              ? `backdrop-filter: var(--hyalite, blur(16px)) !important;
+          -webkit-backdrop-filter: var(--hyalite, blur(16px)) !important;
+          border-radius: 0 0 14px 14px !important;
+          box-shadow: var(--hyalite-edge, none) !important;`
+              : `backdrop-filter: blur(16px) !important;
           -webkit-backdrop-filter: blur(16px) !important;
+          box-shadow: none !important;`
+          }
           border-bottom: none !important;
-          box-shadow: none !important;
         }
         
         /* 导航栏内部包裹层也透明 */
@@ -2538,6 +3608,41 @@ document.querySelectorAll('main[class*="lc-gift-processed"]').forEach(card => {
         #application.lofter-root-container [class*="box-web"] a[class*="hOr4"] svg[class*="aZSNj"]:hover path,
         #application.lofter-root-container [class*="box-web"] a[class*="hOr4"]:hover svg[class*="aZSNj"] path {
           fill: ${s.theme.accent || "#667eea"} !important;
+        }
+        ${
+          navHy
+            ? `/* 自适应材质：lc-glass-dark 必须挂在玻璃条自身（box-web > div > div）。
+         不能挂外层 box-web——它是子串匹配，不同页面会命中页壳/页脚等
+         大容器，后代文字规则会把全页超链接刷白（查看更多页实证）。
+         文字/图标颜色走 CSS 变量：变量按元素解析、沿继承传递，
+         面板只需重定义变量即可让整棵子树回到深色，不参与优先级混战。
+         例外：面板内的强调色 tag（GpLmHKrgQS9DGUHQapUffw==，用户实测
+         取自搜索下拉「相关的文章」行）用 :not() 排除，保留站点自身强调色 */
+        #application.lofter-root-container [class*="box-web"] > div:first-child > div:first-child.lc-glass-dark {
+          background: rgba(22, 22, 26, 0.38) !important;
+          --lc-nav-ink: rgba(255, 255, 255, 0.92);
+          --lc-nav-fill: rgba(255, 255, 255, 0.85);
+        }
+        #application.lofter-root-container [class*="box-web"] > div:first-child > div:first-child.lc-glass-dark a:not([class*="GpLmHKrgQS9DGUHQapUffw=="]),
+        #application.lofter-root-container [class*="box-web"] > div:first-child > div:first-child.lc-glass-dark span:not([class*="GpLmHKrgQS9DGUHQapUffw=="]) {
+          color: var(--lc-nav-ink, rgba(255, 255, 255, 0.92)) !important;
+        }
+        #application.lofter-root-container [class*="box-web"] > div:first-child > div:first-child.lc-glass-dark svg path {
+          fill: var(--lc-nav-fill, rgba(255, 255, 255, 0.85)) !important;
+        }
+        ${
+          isDarkMode()
+            ? ""
+            : `/* 搜索下拉/更多下拉=面板：面板自带白底，深材质下必须保持深字。
+           锚点 class 由控制台实测得到（新版 = style-xx-content-web / -body-web，
+           与老管线同语义）；深色模式另有面板白字规则，故此处仅浅色模式生效 */
+        #application.lofter-root-container [class*="box-web"] > div:first-child > div:first-child.lc-glass-dark [class*="-content-web"],
+        #application.lofter-root-container [class*="box-web"] > div:first-child > div:first-child.lc-glass-dark [class*="-body-web"] {
+          --lc-nav-ink: rgba(0, 0, 0, 0.75);
+          --lc-nav-fill: rgba(0, 0, 0, 0.6);
+        }`
+        }`
+            : ""
         }
       `);
     }
@@ -2676,21 +3781,56 @@ document.querySelectorAll('main[class*="lc-gift-processed"]').forEach(card => {
    注意：#lofter-top-bar 带有内联 style="background:#1F1F1F"
     必须用 !important 才能覆盖内联样式
        ── */
-    if (s.navbar.transparent || s.navbar.blur) {
+    if (s.navbar.blur || s.navbar.hyalite) {
       out.push(`
         #lofter-top-bar {
           ${
-            s.navbar.transparent
-              ? "background: rgba(255,255,255,0.75) !important; background-image: none !important;"
-              : ""
-          }
-          ${
-            s.navbar.blur
-              ? "backdrop-filter: blur(16px) !important; -webkit-backdrop-filter: blur(16px) !important;"
-              : ""
+            s.navbar.hyalite
+              ? `background: rgba(255,255,255,0.42) !important;
+          background-image: none !important;
+          backdrop-filter: var(--hyalite, blur(16px)) !important;
+          -webkit-backdrop-filter: var(--hyalite, blur(16px)) !important;
+          box-shadow: var(--hyalite-edge, none) !important;
+          border-radius: 0 0 14px 14px !important;`
+              : `background: rgba(255,255,255,0.35) !important;
+          background-image: none !important;
+          backdrop-filter: blur(16px) !important;
+          -webkit-backdrop-filter: blur(16px) !important;`
           }
           border-bottom: none !important;
           transition: background 0.3s !important;
+        }
+        ${
+          s.navbar.hyalite
+            ? `/* 自适应材质（hyalite）：浅材质黑字 / 深材质白字。
+         不能刷 div——top-bar 子树里包含搜索下拉/其他下拉等白底面板，
+         无差别刷白会让面板文字不可读；只刷 a/span，面板单独豁免。
+         颜色统一走 CSS 变量（与新版管线同构）：变量沿继承传递，
+         面板只需重定义、强调色只需 :not() 排除，不参与优先级混战 */
+        #lofter-top-bar {
+          --lc-nav-ink: rgba(0, 0, 0, 0.75);
+          --lc-nav-fill: rgba(0, 0, 0, 0.6);
+        }
+        #lofter-top-bar.lc-glass-dark {
+          background: rgba(22, 22, 26, 0.38) !important;
+          --lc-nav-ink: rgba(255, 255, 255, 0.92);
+          --lc-nav-fill: rgba(255, 255, 255, 0.85);
+        }
+        /* 强调色 tag 放行：不覆盖站点自身强调色（面板是白底，站点色可读）。
+           两个哈希分别取自新/旧下拉实测与站内 tag 锚点，类名变更时优先查这里 */
+        #lofter-top-bar a:not([class*="GpLmHKrgQS9DGUHQapUffw=="]):not([class*="AV8Mt74pTEHQXrEBEKFaUg=="]),
+        #lofter-top-bar span:not([class*="GpLmHKrgQS9DGUHQapUffw=="]):not([class*="AV8Mt74pTEHQXrEBEKFaUg=="]) {
+          color: var(--lc-nav-ink, rgba(0, 0, 0, 0.75)) !important;
+        }
+        #lofter-top-bar svg path {
+          fill: var(--lc-nav-fill, rgba(0, 0, 0, 0.6)) !important;
+        }
+        /* 下拉面板豁免：面板保持白底深字 */
+        #lofter-top-bar [class*="-content-web"],
+        #lofter-top-bar [class*="-body-web"] {
+          --lc-nav-ink: rgba(0, 0, 0, 0.75);
+        }`
+            : ""
         }
       `);
     }
@@ -6837,6 +7977,64 @@ body#longpost-publish-page #alert-tip .icon-close {
   color: rgba(255,255,255,0.9) !important;
 }
 
+/* ── 黑名单设置页暗色 ──
+   实测该页不在 #main invert 反色区内（暗色盲区）：颜色直接写
+   暗色值（同 #alert-tip 方案），不要用预反色源值 */
+.g-mn:has(.m-blackset) {
+  background: rgba(31, 31, 25, 0.82) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35) !important;
+}
+.g-mn:has(.m-blackset) .bsset {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+.g-mn:has(.m-blackset) .bslist ul li {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+.g-mn:has(.m-blackset) .w-fttl,
+.g-mn:has(.m-blackset) .w-fttl a.back { color: rgba(255, 255, 255, 0.92) !important; }
+.g-mn:has(.m-blackset) .bsinfo { color: rgba(255, 255, 255, 0.72) !important; }
+.g-mn:has(.m-blackset) .bsset h4 { color: rgba(255, 255, 255, 0.85) !important; }
+.g-mn:has(.m-blackset) .bsname a { color: rgba(255, 255, 255, 0.92) !important; }
+/* 「黑名单设置」标题下站点分隔线 #ebebeb，暗色调暗 */
+.g-mn:has(.m-blackset) .g-box3 { border-bottom-color: rgba(255, 255, 255, 0.12) !important; }
+.g-mn:has(.m-blackset) .bsin .w-inputxt {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(255, 255, 255, 0.92) !important;
+}
+.g-mn:has(.m-blackset) .bsin .w-inputxt::placeholder {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+/* emoji：该页没有反色环境，全局 .lc-emoji-wrap 的 invert 抵消规则
+   在这里反而把 emoji 反色（亮变暗、暗变亮）→ 直接清零 */
+.g-mn:has(.m-blackset) .lc-emoji-wrap { filter: none !important; }
+
+/* ── 账号设置页暗色：主色元素统一用正常主题色（非暗色化）── */
+${
+  /\/(setting|front\/homesite\/user-setting)\b/.test(location.pathname)
+    ? `
+  .rc-checkbox-input:checked + .rc-checkbox-inner {
+    background-color: ${s.theme.accent || "#667eea"} !important;
+    border-color: ${s.theme.accent || "#667eea"} !important;
+  }
+  svg path[stroke="#4EB7BA"] { stroke: ${s.theme.accent || "#667eea"} !important; }
+  /* 保存键 + 主页设置/黑名单/标签屏蔽/注销账号或主页（暗色下统一正常主题色） */
+  button[class*="buttonColorPrimary"],
+  a[href*="type=setting"] {
+    background: ${s.theme.accent || "#667eea"} !important;
+    border-color: ${s.theme.accent || "#667eea"} !important;
+    color: #fff !important;
+    /* 主页设置的 <a> 铺满按钮但没有圆角，会把按钮的胶囊形盖成方形 */
+    border-radius: 999px !important;
+  }
+  button[class*="buttonColorPrimary"] a { color: #fff !important; }
+`
+    : ""
+}
+
 /* 新建回礼方案按钮：暗色主题色 */
 main.lc-gift-dark > div > button {
   color: ${s.theme.accent ? computeDarkAccent(s.theme.accent) : "#667eea"} !important;
@@ -7856,6 +9054,28 @@ body.p-body10 .g-sd a:hover:not(.w-sbtn):not(.cashbtn):not(#j-participate-act):n
   filter: invert(100%) hue-rotate(180deg) brightness(${(settings.darkMode.brightness || 90) / 100}) !important;
 }
 
+/* .postwrapper 整体反色会把博文照片/视频一起反了（模板预览帧实证），
+   img/video 反回正常，头像也随之恢复 */
+.postwrapper img,
+.postwrapper video,
+.box.wid700 img {
+  filter: invert(100%) hue-rotate(180deg) !important;
+}
+${
+  s.darkMode.feedTranslucent
+    ? `
+/* 信息流淡透底（实验）v2：容器整块透明（站点白底不再参与反色），
+   背景图直接铺在信息流底下；半透明深底只由卡片自绘 ::before 提供
+   （lcFeedCardBg，rgba(230,230,232,.65)→反相显示深色淡透）。
+   v1 给容器写 0.85 淡透会显形为一块磨砂大容器（2026-09-21 反馈），
+   卡片的 6% 净透过又被它吃掉——撤销容器层，卡片直接浮在背景图上 */
+#main {
+  background-color: transparent !important;
+}
+`
+    : ""
+}
+
 /* #rside 不能整体加 filter：filter 会让内部 position:fixed 的后代
    （站点 JS 滚动时给 slide-bar 内混淆类名 DIV 加的跟随定位）改为相对
    #rside 定位，滚动跟随失效。改为对直接子元素逐个反色。
@@ -7882,9 +9102,15 @@ body:has(.tag-header-w) #rside {
 
 /* 右侧栏创作者中心卡片：预反色深灰（反相显示 #1F1F19）。
    原靠暗色应用时 JS 注入内联色，站点滚动切换 fixed/重建面板会丢内联
-   样式回退白底反相成纯黑——改为 CSS 直接压住全模式规则的 #fff */
-#rside #slide-bar [class*="-box-web"] {
+   样式回退白底反相成纯黑——改为 CSS 直接压住全模式规则的 #fff。
+   ⚠️ 侧栏玻璃开启时必须整体让位：这是预反色值，反色让位后原样
+   显示成米白底（2026-09-21 截图实证「暗色+玻璃 → 白底卡」的成因） */
+${
+  lcSideGlassOn()
+    ? ""
+    : `#rside #slide-bar [class*="-box-web"] {
   background-color: rgb(225, 225, 219) !important;
+}`
 }
 
 /* 翻页按钮：反向 filter 恢复正常颜色 */
@@ -9507,7 +10733,9 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
           if (
             el.className &&
             typeof el.className === "string" &&
-            el.className.includes("box-web")
+            el.className.includes("box-web") &&
+            /* 侧栏玻璃卡片交还给 CSS（内联 !important 会盖掉玻璃膜） */
+            !el.classList.contains("lc-side-glass")
           ) {
             const rect = el.getBoundingClientRect();
             if (rect.width > 200 && rect.width < 350) {
@@ -9573,6 +10801,193 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         opacity: 1 !important;
       }
     `);
+
+    /* ========== 右侧栏液态玻璃（hyalite）==========
+     * 首页右侧栏的玻璃卡片。放在本函数最末是刻意的：暗色区先前的
+     * `#rside > * { filter: invert }` / `#rside #slide-bar [class*="-box-web"]`
+     * 都是 !important，只能靠「同源选择器抬特异性 + 表内后序」压过去。
+     * 反色必须整个让位：filter 会建立 backdrop root，玻璃只能采样到该祖先
+     * 内部的画面（近乎空白），折射直接失效（这一步是探针最容易漏的坑）。 */
+    /* 边缘折射是实验项（默认关）：backdrop-filter: url() 走软件光栅化，
+       常驻视口会拖慢全页动效。默认为纯 blur 磨砂——GPU 加速、开销低一档，
+       且不依赖 hyalite 库（任何支持 backdrop-filter 的浏览器都能用） */
+    const sideRefract = !!(settings.sidebar && settings.sidebar.refract);
+    const sideHy =
+      settings.sidebar &&
+      settings.sidebar.hyalite &&
+      (sideRefract ? !!(window.Hyalite && Hyalite.supported()) : true);
+    if (sideHy) {
+      out.push(`
+        /* ① 反色让位：滤镜祖先会让 backdrop-filter 采不到页面背景
+           （blur 同样受 backdrop root 限制，故与折射模式一并让位） */
+        #rside > *,
+        #rside img,
+        #rside .lc-emoji-wrap {
+          filter: none !important;
+        }
+
+        /* ② 玻璃卡片：半透明膜 + 磨砂/折射。
+           折射档用 var(--hyalite)（hyalite.js 写入）+ --hyalite-edge 边缘光；
+           纯磨砂档直接 blur(18px) saturate，用一层 inset 高光冒充玻璃边缘。
+           box-shadow 单列一层：变量缺失时用透明 inset 占位，
+           保证整条 box-shadow 仍是合法值（"X, none" 会整条失效） */
+        #rside #slide-bar [class*="-box-web"].lc-side-glass {
+          background: rgba(255, 255, 255, ${sideRefract ? "0.35" : "0.6"}) !important;
+          background-color: rgba(255, 255, 255, ${sideRefract ? "0.35" : "0.6"}) !important;
+          background-image: none !important;
+          backdrop-filter: ${
+            sideRefract
+              ? "var(--hyalite, blur(16px))"
+              : "blur(18px) saturate(150%)"
+          } !important;
+          -webkit-backdrop-filter: ${
+            sideRefract
+              ? "var(--hyalite, blur(16px))"
+              : "blur(18px) saturate(150%)"
+          } !important;
+          border: none !important;
+          overflow: hidden !important;
+          --lc-side-ink: rgba(0, 0, 0, 0.82);
+          --lc-side-fill: rgba(0, 0, 0, 0.62);
+          --lc-side-rim: 0 2px 10px rgba(0, 0, 0, 0.1);
+          box-shadow: var(--lc-side-rim), ${
+            sideRefract
+              ? "var(--hyalite-edge, inset 0 0 0 0 rgba(0, 0, 0, 0))"
+              : "inset 0 1px 0 rgba(255, 255, 255, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.22)"
+          } !important;
+        }
+
+        /* ③ 深材质（深色背景 / 暗色模式）：深膜 + 白字 */
+        #rside #slide-bar [class*="-box-web"].lc-side-glass.lc-glass-dark {
+          background: rgba(22, 22, 26, 0.38) !important;
+          background-color: rgba(22, 22, 26, 0.38) !important;
+          --lc-side-ink: rgba(255, 255, 255, 0.9);
+          --lc-side-fill: rgba(255, 255, 255, 0.85);
+          --lc-side-rim: 0 2px 12px rgba(0, 0, 0, 0.35);
+        }
+
+        /* ④ 文字/图标跟随材质：走变量（按元素解析、沿继承传递），
+           面板无需重定义；比逐条 !important 混战好维护 */
+        #rside #slide-bar .lc-side-glass,
+        #rside #slide-bar .lc-side-glass a,
+        #rside #slide-bar .lc-side-glass span,
+        #rside #slide-bar .lc-side-glass p,
+        #rside #slide-bar .lc-side-glass div,
+        #rside #slide-bar .lc-side-glass li,
+        #rside #slide-bar .lc-side-glass i,
+        #rside #slide-bar .lc-side-glass em,
+        #rside #slide-bar .lc-side-glass strong,
+        #rside #slide-bar .lc-side-glass b,
+        #rside #slide-bar .lc-side-glass time,
+        #rside #slide-bar .lc-side-glass label,
+        #rside #slide-bar .lc-side-glass h1,
+        #rside #slide-bar .lc-side-glass h2,
+        #rside #slide-bar .lc-side-glass h3,
+        #rside #slide-bar .lc-side-glass h4 {
+          color: var(--lc-side-ink, rgba(0, 0, 0, 0.8)) !important;
+        }
+        #rside #slide-bar .lc-side-glass svg path:not([fill="none"]) {
+          fill: var(--lc-side-fill, rgba(0, 0, 0, 0.62)) !important;
+        }
+        #rside #slide-bar .lc-side-glass svg path[stroke]:not([stroke="none"]) {
+          stroke: var(--lc-side-fill, rgba(0, 0, 0, 0.62)) !important;
+        }
+
+        /* ⑤ 强调色还原：原反色方案写的是预反色值 + brightness 补偿，
+           反色撤掉后要改回站点原色（否则显示为"脏色"） */
+        #rside #slide-bar .lc-side-glass p[class*="count-web"] {
+          color: #8EB902 !important;
+          filter: none !important;
+        }
+        #rside #slide-bar .lc-side-glass span[class*="listItemHot-web"] {
+          color: #FF6C93 !important;
+          filter: none !important;
+        }
+        ${
+          s.theme.accent
+            ? `#rside #slide-bar .lc-side-glass a:hover {
+          color: ${s.theme.accent} !important;
+        }`
+            : ""
+        }
+
+        /* ⑥ 暗材质下站点内层底色一概透明（创作者中心头部、菜单悬停白底
+           都是 hash 类，且标签类型不可枚举——div 清单漏过一次，改用 *）。
+           全部露出深色玻璃膜本身，即「和暗色模式一样的暗色底」 */
+        #rside #slide-bar .lc-side-glass.lc-glass-dark * {
+          background-color: transparent !important;
+        }
+        /* 结构容器连 background-image 一并清（渐变/图片白底）；
+           i/span 等内联元素不动 bg-image，防误杀雪碧图图标 */
+        #rside #slide-bar .lc-side-glass.lc-glass-dark div,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark li,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark a,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark ul,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark ol,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark dl,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark header,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark section,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark nav,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark aside,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark article,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark footer,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark main {
+          background-image: none !important;
+        }
+        /* 伪元素铺底（::before 白底头部/行） */
+        #rside #slide-bar .lc-side-glass.lc-glass-dark div::before,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark li::before,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark a::before,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark header::before,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark p::before,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark span::before,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark div::after,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark li::after,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark a::after,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark header::after {
+          background-color: transparent !important;
+        }
+        /* 行悬停高亮自给：只给最内层被悬停元素上白膜（:has 排除容器层） */
+        #rside #slide-bar .lc-side-glass.lc-glass-dark div:hover:not(:has(:hover)),
+        #rside #slide-bar .lc-side-glass.lc-glass-dark li:hover:not(:has(:hover)),
+        #rside #slide-bar .lc-side-glass.lc-glass-dark a:hover:not(:has(:hover)) {
+          background-color: rgba(255, 255, 255, 0.09) !important;
+        }
+        /* ⑥b 分割线暗化：站点边框是配浅色底设计的（创作者中心菜单分隔、
+           头部下沿线），深材质玻璃上呈刺眼实心白线。改低透明白细线——
+           与 inset 边缘光同族，保留分隔功能不破玻璃质感。
+           只动 border-color（不改宽度/样式，零布局风险）；浅材质不动，
+           站点浅灰线本来就配浅底 */
+        #rside #slide-bar .lc-side-glass.lc-glass-dark,
+        #rside #slide-bar .lc-side-glass.lc-glass-dark * {
+          border-color: rgba(255, 255, 255, 0.1) !important;
+        }
+
+        /* ⑦ 悬停放大性能：站点对菜单项做 transform 放大，而玻璃卡是
+           SVG 引用滤镜（软件光栅化），子项动画每帧拖整卡重绘 → 掉帧。
+           只提升「真正会做放大动画」的行元素——**不能图省事写 div**：
+           卡内几十个 div（含 hyalite 自插节点）会一次性常驻几十个合成层，
+           GPU 内存与每帧合成开销上升，全页其他动效一起变慢 */
+        #rside #slide-bar .lc-side-glass li,
+        #rside #slide-bar .lc-side-glass a,
+        #rside #slide-bar .lc-side-glass [class*="item"] {
+          will-change: transform;
+        }
+
+        /* ⑧ 浅色材质悬停仍偏慢的成因：站点悬停除 transform 外还带
+           background/box-shadow 过渡，每帧往目标值插值 → 玻璃卡软件
+           光栅化下整卡重绘。深材质下底色被钉成透明（两端同值）无绘制
+           所以不慢；浅材质保留站点悬停白底就会慢。把内层元素过渡限制
+           在 transform/opacity（走合成层），颜色/阴影瞬时切换不动画 */
+        #rside #slide-bar .lc-side-glass li,
+        #rside #slide-bar .lc-side-glass a,
+        #rside #slide-bar .lc-side-glass div,
+        #rside #slide-bar .lc-side-glass span,
+        #rside #slide-bar .lc-side-glass [class*="item"] {
+          transition-property: transform, opacity !important;
+        }
+      `);
+    }
 
     _cachedCSS = out.join("\n");
     _cachedCSSVer = _cssVersion;
@@ -10282,20 +11697,152 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
      浅暗统一改为自绘：透明化切片 → 伪元素画圆角矩形（左缘从内容区开始，长度
      缩短一个箭头区）+ 左侧尖角（有头像时）。
      暗色 rgb(225,225,219)（经 invert+hue-rotate 显示为 #1F1F19），浅色 #fff。 */
+  /* 暗色卡面取色：信息流淡透底（实验）开启时用半透明预反色值，
+     让卡面与容器一起透出背景图（alpha 不受 invert 影响，只反 RGB） */
+  function lcFeedCardBg() {
+    if (settings.darkMode && settings.darkMode.feedTranslucent) {
+      /* 用户可调不透明度（35%~92%）：invert/brightness 都不改 alpha，
+         滑杆值与显示值直映射；越界夹取防白字吃进亮背景 */
+      const a = Math.min(
+        0.92,
+        Math.max(0.35, Number(settings.darkMode.feedTransAlpha) || 0.65),
+      );
+      return `rgba(230, 230, 232, ${a})`;
+    }
+    return "rgb(225, 225, 219)";
+  }
+  /* 半透明卡面的 inset 高光描边（实验）：顶缘 1px 亮线 + 内侧 1px 微光圈，
+     给透明玻璃「厚度」。反色区内要写预反色值——黑色经 invert 显示为白，
+     且 brightness 乘 0 不变，alpha 原样保留；非淡透底返回 none 与旧观感一致 */
+  function lcFeedFaceShadow() {
+    if (settings.darkMode && settings.darkMode.feedTranslucent)
+      return "inset 0 1px 0 rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(0, 0, 0, 0.1)";
+    return "none";
+  }
   function ensureBubbleCards() {
-    let el = document.getElementById("lc-bubble-cards");
+    const el = document.getElementById("lc-bubble-cards");
     if (!settings.enabled) {
       if (el) el.remove();
       return;
     }
     startBubbleObserver();
-    if (!el) {
-      el = document.createElement("style");
-      el.id = "lc-bubble-cards";
-      (document.head || document.documentElement).appendChild(el);
-    }
     const dark = isDarkMode();
-    const color = dark ? "rgb(225, 225, 219)" : "#fff";
+    /* 浅色毛玻璃（实验）：无反色祖先 → backdrop-filter 能采到真实背景，
+       这是暗色反色区里做不到的（backdrop root 限制）。alpha 夹取 40%~85% */
+    const lightFrost =
+      !dark && settings.card && settings.card.lightFrost;
+    const frostAlpha = Math.min(
+      0.85,
+      Math.max(0.4, Number(settings.card && settings.card.frostAlpha) || 0.6),
+    );
+    const frostCSS = lightFrost
+      ? "backdrop-filter: blur(26px) saturate(150%) !important;\n" +
+        "        -webkit-backdrop-filter: blur(26px) saturate(150%) !important;"
+      : "";
+    /* 磨砂开启时的入场动画改造（两段式观感根治）：
+       ① .m-mlist 自身的 transform 是渲染面，挡卡面采样 → 容器动画置空，
+          入场位移改排到卡面子元素与卡面/箭头伪元素上（backdrop-filter
+          元素自身的 transform 不影响自己的采样）；
+       ② 卡面宿主元素自身 opacity≠1 同样成为 backdrop root（实证：只搬
+          transform 后仍有「半透明→磨砂」渐变）→ 卡面/箭头动画只含
+          transform（全程 opacity=1），内容层单独做透明度渐入 */
+    const cardDur = ((settings.card && settings.card.duration) || 500) / 1000;
+    const animMode = settings.card.animation || "none";
+    const faceFrom =
+      animMode === "floatUp"
+        ? "translateY(24px)"
+        : animMode === "scaleIn"
+          ? "scale(0.92)"
+          : animMode === "slideIn"
+            ? "translateX(-30px)"
+            : "";
+    const faceAdapt = !dark && settings.card && settings.card.faceAdapt;
+    const frostInCSS = lightFrost
+      ? `
+      .m-mlist.lc-card-visible {
+        animation: none !important;
+      }
+      ${
+        faceFrom
+          ? `.m-mlist.lc-card-visible > *,
+      .m-mlist.lc-card-visible > *::before,
+      .m-mlist.lc-card-visible > *::after {
+        animation: lc-face-appear ${cardDur}s cubic-bezier(0.4, 0, 0.2, 1) backwards;
+        animation-delay: var(--lc-face-delay, 0s);
+      }
+      @keyframes lc-face-appear {
+        from { transform: ${faceFrom}; }
+      }`
+          : ""
+      }
+      .m-mlist.lc-card-visible > * > * {
+        animation: lc-face-fade ${cardDur}s cubic-bezier(0.4, 0, 0.2, 1) backwards;
+        animation-delay: var(--lc-face-delay, 0s);
+      }
+      @keyframes lc-face-fade {
+        from { opacity: 0; }
+      }`
+      : "";
+    /* 自适应卡面材质：卡背后背景区域偏暗 → 卡面切深膜白字（与侧栏玻璃
+       同族语言）。JS 按 computed ::before 识别「画了卡面的卡片」并采样
+       打 .lc-face-dark（类名是构建 hash，只能这样圈定），CSS 按 per-card
+       类切换膜色与文字色。深膜保留磨砂模糊（frostCSS 不动）。
+       **必须按 scope 现算**（入参 sel）：旧实现把这个模板写在外层、
+       引用后面才声明的 pubBase 和 map 回调参数 sel —— faceAdapt 一开
+       就 `Cannot access 'pubBase' before initialization`（TDZ），
+       ensureBubbleCards 整段中断、样式表写入在抛错点之后永远走不到，
+       于是卡片整体回落 buildCSS 的通用 #fff 白实底（且旧表残留，
+       表现为「再开启无任何变化」）。 */
+    const lcFaceAdaptCSS = (sel) =>
+      faceAdapt
+        ? `
+      ${pubBase}.lc-face-dark::before,
+      ${sel}.lc-face-dark::before {
+        background: rgba(22, 22, 26, 0.55) !important;
+        background-color: rgba(22, 22, 26, 0.55) !important;
+      }
+      ${pubBase}.lc-face-dark::after,
+      ${sel}.lc-face-dark::after {
+        border-right-color: rgba(22, 22, 26, 0.55) !important;
+      }
+      ${pubBase}.lc-face-dark a,
+      ${pubBase}.lc-face-dark span,
+      ${pubBase}.lc-face-dark p,
+      ${pubBase}.lc-face-dark div,
+      ${pubBase}.lc-face-dark li,
+      ${pubBase}.lc-face-dark h1,
+      ${pubBase}.lc-face-dark h2,
+      ${pubBase}.lc-face-dark h3,
+      ${pubBase}.lc-face-dark h4,
+      ${pubBase}.lc-face-dark time,
+      ${pubBase}.lc-face-dark em,
+      ${pubBase}.lc-face-dark b,
+      ${pubBase}.lc-face-dark i,
+      ${sel}.lc-face-dark a,
+      ${sel}.lc-face-dark span,
+      ${sel}.lc-face-dark p,
+      ${sel}.lc-face-dark div,
+      ${sel}.lc-face-dark li,
+      ${sel}.lc-face-dark h1,
+      ${sel}.lc-face-dark h2,
+      ${sel}.lc-face-dark h3,
+      ${sel}.lc-face-dark h4,
+      ${sel}.lc-face-dark time,
+      ${sel}.lc-face-dark em,
+      ${sel}.lc-face-dark b,
+      ${sel}.lc-face-dark i {
+        color: rgba(255, 255, 255, 0.88) !important;
+      }
+      ${pubBase}.lc-face-dark a:hover,
+      ${sel}.lc-face-dark a:hover {
+        color: #fff !important;
+      }`
+      : "";
+    const color = dark
+      ? lcFeedCardBg()
+      : lightFrost
+        ? `rgba(255, 255, 255, ${frostAlpha})`
+        : "#fff";
     /* 首页卡片与站内其它卡片同圆角（浅色跟随用户设置，暗色走暗色卡片系统的 12px）；
        草稿页/审核中心固定 12px */
     const userRadius = ((settings.card && settings.card.radius) || 16) + "px";
@@ -10365,13 +11912,15 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         left: var(--lc-pub-left, 96px) !important;
         background: ${color} !important;
         border-radius: 12px !important;
-        box-shadow: none !important;
+        box-shadow: ${lcFeedFaceShadow()} !important;
+        ${frostCSS}
         z-index: -1 !important;
         pointer-events: none !important;
       }
       ${pubBase}:hover::before {
         transform: none !important;
-        box-shadow: none !important;
+        /* 悬停也保持卡面内阴影（高光描边）；同时继续压站点悬停阴影副作用 */
+        box-shadow: ${lcFeedFaceShadow()} !important;
       }
       ${pubBase}::after {
         content: "" !important;
@@ -10464,7 +12013,7 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
          暗色滤镜会把 #fff 反相成纯黑 #000000，统一改为 #1F1F19 预置反色值。
          用 html 前缀抬高特异性，保证不受样式表注入顺序影响。 */
       html #main > .m-mlist > .mlistcnt::before {
-        background: rgb(225, 225, 219) !important;
+        background: ${lcFeedCardBg()} !important;
       }
     `
         : "") +
@@ -10506,14 +12055,18 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         left: var(--lc-bubble-left, 21px) !important;
         background: ${color} !important;
         border-radius: ${radius} !important;
-        box-shadow: none !important;
+        box-shadow: ${lcFeedFaceShadow()} !important;
+        ${frostCSS}
         z-index: -1 !important;
         pointer-events: none !important;
       }
       ${sel}:hover::before {
         transform: none !important;
-        box-shadow: none !important;
+        /* 悬停也保持卡面内阴影（高光描边）；同时继续压站点悬停阴影副作用 */
+        box-shadow: ${lcFeedFaceShadow()} !important;
       }
+      ${frostInCSS}
+      ${lcFaceAdaptCSS(sel)}
       ${hover
         ? `/* 悬停轻微放大：scale 加在卡片整体上，矩形+尖角作为整体等比缩放不错位
          （通用规则只 scale ::before 矩形，会与尖角错位，已在上面禁掉） */
@@ -10580,7 +12133,22 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
       )
       .join("\n") +
     pubCss;
-    if (el.textContent !== css) el.textContent = css;
+    /* 先拼字符串再落 DOM：模板抛错时旧样式表原样保留（此前元素先建、
+       内容后填，抛错就留下一张空表 → 卡片整体回落通用 #fff 白实底，
+       且因为写入点永远到不了，旧表残留表现为「再开启无任何变化」） */
+    let sheet = el;
+    if (!sheet) {
+      sheet = document.createElement("style");
+      sheet.id = "lc-bubble-cards";
+      (document.head || document.documentElement).appendChild(sheet);
+    }
+    if (sheet.textContent !== css) sheet.textContent = css;
+    /* 卡面自适应材质：重建样式表后立即强制重采样。不能指望 observer——
+       第二次开启时 applyAll 各函数幂等直通，常常不产生任何 #main 变动，
+       observer 不触发，类名停留在「关闭时清理过的空状态」，表现为
+       「再开启没反应」。gate 自会处理关闭/暗色分支的清理；force 绕过
+       400ms 节流（本函数只在设置变更/首次注入时跑一次，不是热路径） */
+    lcSafe(() => lcUpdateFaceMaterial(true));
   }
 
   /* 草稿页/审核中心气泡 JS 侧处理（浅暗通用）：
@@ -10701,6 +12269,7 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
       _bubbleRaf = requestAnimationFrame(() => {
         _bubbleRaf = 0;
         fixDraftBubble();
+        lcSafe(lcUpdateFaceMaterial); /* 新卡片进场后补采样（内部 400ms 节流） */
       });
     });
     _bubbleObserver.observe(document.querySelector('#main') || document.body, { childList: true, subtree: true });
@@ -10830,12 +12399,22 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
 
     /* ---------- 暗色模式下卡片背景色修复 ---------- */
     // 右侧栏 box-web
-    document.querySelectorAll('#rside [class*="box-web"]').forEach(el => {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 100 && rect.height > 50) {
-        el.style.setProperty('background-color', 'rgb(225, 225, 219)', 'important');
-      }
-    });
+    // ⚠️ 侧栏玻璃开启时必须跳过：这是预反色值，反色让位后原样显示成
+    //    米白底（2026-09-21 探针实证：inline 样式优先级压住玻璃膜规则）。
+    //    且要回收旧 inline——关玻璃→开玻璃切换后残留值不会自己消失。
+    if (!lcSideGlassOn()) {
+      document.querySelectorAll('#rside [class*="box-web"]').forEach(el => {
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 100 && rect.height > 50) {
+          el.style.setProperty('background-color', 'rgb(225, 225, 219)', 'important');
+        }
+      });
+    } else {
+      document.querySelectorAll('#rside [class*="box-web"]').forEach(el => {
+        if (el.style.backgroundColor === 'rgb(225, 225, 219)')
+          el.style.removeProperty('background-color');
+      });
+    }
 
     /* ---------- 暗色模式下卡片背景色统一注入 ---------- */
     let darkCardStyle = document.getElementById('lc-dark-cards');
@@ -10856,8 +12435,9 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         content: "" !important;
         position: absolute !important;
         inset: 0 !important;
-        background: rgb(225, 225, 219) !important;
+        background: ${lcFeedCardBg()} !important;
         border-radius: 12px !important;
+        box-shadow: ${lcFeedFaceShadow()} !important;
         z-index: -1 !important;
         pointer-events: none !important;
       }
@@ -11918,6 +13498,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       document.querySelectorAll(".m-mlist.lc-card-visible").forEach((el) => {
         el.classList.remove("lc-card-visible");
         el.style.animationDelay = "";
+        el.style.removeProperty("--lc-face-delay");
         delete el.dataset.lcCardObserved;
       });
       return;
@@ -11943,11 +13524,13 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
             // 如果已经动画过了，跳过
             if (el.classList.contains("lc-card-visible")) return;
 
-            // 设置交错延迟
+            // 设置交错延迟（--lc-face-delay 同步给卡面 ::before 的模糊渐入动画错峰）
             if (stagger && idx > 0) {
               el.style.animationDelay = idx * staggerDelay + "s";
+              el.style.setProperty("--lc-face-delay", idx * staggerDelay + "s");
             } else {
               el.style.animationDelay = "";
+              el.style.setProperty("--lc-face-delay", "0s");
             }
 
             // 触发动画
@@ -11986,9 +13569,10 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         const rect = el.getBoundingClientRect();
         const isVisible = rect.top < window.innerHeight && rect.bottom > 0;
         if (isVisible && !el.classList.contains("lc-card-visible")) {
-          // 设置交错延迟
+          // 设置交错延迟（--lc-face-delay 同步给卡面 ::before 的模糊渐入动画错峰）
           if (stagger && idx > 0) {
             el.style.animationDelay = idx * staggerDelay + "s";
+            el.style.setProperty("--lc-face-delay", idx * staggerDelay + "s");
           }
           el.classList.add("lc-card-visible");
         }
@@ -12010,6 +13594,145 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   }
 
   /* ---------- 应用全部 ---------- */
+  /* ---------- 账号设置页（/front/homesite/user-setting）主题色 ----------
+   * 站点暗色皮肤用高特异性规则把主色按钮/勾选框盖回"暗色主题色"
+   * （实测 computed bg rgb(74,62,94)），CSS !important 缠斗不可靠 →
+   * inline style + !important（作者样式无法覆盖 inline important）。 */
+  function lcApplySettingPageTheme() {
+    if (!/\/(setting|front\/homesite\/user-setting)\b/.test(location.pathname))
+      return;
+    const A =
+      sanitizeColor(settings.theme && settings.theme.accent) || "#667eea";
+    const set = (el, prop, val) => {
+      if (el.style.getPropertyValue(prop) !== val)
+        el.style.setProperty(prop, val, "important");
+    };
+    /* 保存/主页设置/黑名单/标签屏蔽/注销账号或主页 */
+    document
+      .querySelectorAll(
+        'button[class*="buttonColorPrimary"], a[href*="type=setting"]',
+      )
+      .forEach((el) => {
+        set(el, "background", A);
+        set(el, "border-color", A);
+        set(el, "color", "#fff");
+        set(el, "border-radius", "999px");
+        /* 黑名单/标签屏蔽/注销的文字包在内部 <a> 里，白字要钉到 a 上，
+           否则被站点样式压成近似背景色（暗色下看似空白、浅色下黑字） */
+        if (el.querySelectorAll) {
+          el.querySelectorAll("a").forEach((a) => set(a, "color", "#fff"));
+        }
+      });
+    /* 勾选框：按当前状态上色/清理（取消勾选后 inline 不能残留） */
+    document.querySelectorAll(".rc-checkbox-inner").forEach((inner) => {
+      const box = inner.parentElement;
+      const input =
+        box && box.querySelector
+          ? box.querySelector("input.rc-checkbox-input")
+          : null;
+      if (input && input.checked) {
+        set(inner, "background-color", A);
+        set(inner, "border-color", A);
+      } else {
+        if (inner.style.getPropertyValue("background-color"))
+          inner.style.removeProperty("background-color");
+        if (inner.style.getPropertyValue("border-color"))
+          inner.style.removeProperty("border-color");
+      }
+    });
+    /* 「绑定邮箱账号/查看说明/修改兴趣」旁箭头：站点把 #4EB7BA 硬编码在
+       path 的 stroke 属性上；改色后打标记，换主题色也能跟随更新 */
+    document
+      .querySelectorAll('svg path[data-lc-accent], svg path[stroke="#4EB7BA"]')
+      .forEach((p) => {
+        if (p.getAttribute("stroke") !== A) p.setAttribute("stroke", A);
+        p.setAttribute("data-lc-accent", "1");
+      });
+    /* 暗色下卡片底部"半圈白边"：站点给卡片自带 border-bottom: 1px solid
+       #F5F5F5（近白，DevTools 实证），沿圆角拐弯形成半圈。类名是构建
+       hash 不可依赖 → 按计算值扫：亮色下边框压成暗色细线。
+       受信任等卡片要等接口数据才渲染，扫描时可能还不存在 → 延迟重扫 */
+    if (isDarkMode()) {
+      const lcDimLightBorders = () => {
+        document
+          .querySelectorAll('#application [class*="page-web"] div')
+          .forEach((el) => {
+            if (el.style.getPropertyValue("border-bottom-color")) return;
+            const cs = getComputedStyle(el);
+            if (
+              cs.borderBottomStyle !== "none" &&
+              parseFloat(cs.borderBottomWidth) > 0
+            ) {
+              const m = cs.borderBottomColor.match(
+                /rgba?\((\d+),\s*(\d+),\s*(\d+)/,
+              );
+              if (m && (+m[1] + +m[2] + +m[3]) / 3 > 180) {
+                set(el, "border-bottom-color", "rgba(255, 255, 255, 0.08)");
+              }
+            }
+          });
+      };
+      lcDimLightBorders();
+      [500, 1500, 3000, 6000].forEach((d) => setTimeout(lcDimLightBorders, d));
+    }
+    /* 卡片居中：站点外层容器固定宽溢出视口 + 内容层 margin 右 -44px
+       不对称。hash 前缀（style-14_8622 等）随构建变化不可依赖 →
+       用 box-web/page-web 后缀宽匹配，且只处理宽度异常的大容器 */
+    document.querySelectorAll('#application [class*="box-web"]').forEach((el) => {
+      /* 只治页面级大容器（原版固定 1100px）；小组件不碰。
+         不能用「溢出才治」判断：视口 ≥1100 时容器不溢出但近乎铺满 */
+      if (el.getBoundingClientRect().width < 600) return;
+      set(el, "width", "auto");
+      set(el, "min-width", "0");
+      /* 比内容卡大一圈的适度宽度；窄视口收窄到 100%，始终居中 */
+      set(el, "max-width", "min(1000px, 100%)");
+      set(el, "margin-left", "auto");
+      set(el, "margin-right", "auto");
+    });
+    document
+      .querySelectorAll('#application [class*="page-web"]')
+      .forEach((pw) => {
+        if (pw.getBoundingClientRect().width < innerWidth * 0.5) return;
+        set(pw, "margin-left", "auto");
+        set(pw, "margin-right", "auto");
+        set(pw, "max-width", "100%");
+        set(pw, "box-sizing", "border-box");
+        /* 只清负的右边距（内容层 -44px），不动正常间距；
+           内容层还写死 width:944px，一并改流式否则照样溢出 */
+        for (const child of pw.children) {
+          if (
+            child.nodeType === 1 &&
+            parseFloat(getComputedStyle(child).marginRight) < 0
+          ) {
+            set(child, "margin-right", "0");
+            set(child, "width", "auto");
+            set(child, "max-width", "100%");
+            set(child, "box-sizing", "border-box");
+          }
+        }
+      });
+  }
+
+  /* ---------- 模板预览页（/theme/xxx?type=setting）主题色 ----------
+   * 右上角「保存/保存并关闭」是 .btnbar 里的 a.w-sbtn，背景被暗色引擎
+   * 盖成 rgb(74,62,94)（探针实证：无 filter 祖先，非反转）→
+   * 同设置页套路：inline + !important 钉回主题色。 */
+  function lcApplyThemePageTheme() {
+    if (!/^\/theme\//.test(location.pathname)) return;
+    const A =
+      sanitizeColor(settings.theme && settings.theme.accent) || "#667eea";
+    const set = (el, prop, val) => {
+      if (el.style.getPropertyValue(prop) !== val)
+        el.style.setProperty(prop, val, "important");
+    };
+    document.querySelectorAll(".btnbar a.w-sbtn").forEach((el) => {
+      set(el, "background", A);
+      set(el, "border-color", A);
+      set(el, "color", "#fff");
+      set(el, "border-radius", "999px");
+    });
+  }
+
   function applyAll() {
     if (!settings.enabled) {
       let styleEl = document.getElementById(STYLE_ID);
@@ -12029,6 +13752,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       clearFouc();
       lcSafe(applyWordCounter); /* 总开关关闭 → 收掉字数角标与轮询 */
       lcSafe(applyFilter); /* 总开关关闭 → 摘掉过滤标记与提示 */
+      lcSafe(applySidebarGlass); /* 总开关关闭 → 摘掉侧栏玻璃（lcSideGlassOn 自会 false） */
       return;
     }
     lcSafe(applyFontFace);
@@ -12037,6 +13761,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     lcSafe(removeStubbornAds);
     lcSafe(applyDecorations);
     lcSafe(applyNavbar);
+    lcSafe(applySidebarGlass);
     lcSafe(clearFouc);
     lcSafe(applyDarkOverlay);
     lcSafe(injectPostTitles);
@@ -12053,6 +13778,8 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     lcSafe(applyFilter);
     lcSafe(initDraftManager);
     lcSafe(applyCustomPlaceholder);
+    lcSafe(lcApplySettingPageTheme);
+    lcSafe(lcApplyThemePageTheme);
   }
 
   /* ---------- MutationObserver（适配无限滚动） ---------- */
@@ -12108,6 +13835,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         lcSafe(applyFilter);
         lcSafe(applyCardAnimations);
         lcSafe(applyCustomPlaceholder);
+        lcSafe(applySidebarGlass); /* 侧栏卡片可能由 React 晚渲染 → 补挂玻璃 */
       }, CHAIN_DEBOUNCE);
   });
 
@@ -12363,7 +14091,9 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   let wcDebounce = 0;
   let wcMsgCounts = null; /* 跨域桥接上报的最新计数 {han, words, chars} */
 
-  const wcOn = () => !!(settings.enabled && settings.tools && settings.tools.wordCount);
+  /* 字数统计已去开关、默认启用：只受总开关控制（写长文章的人属刚需，
+   * 不写的人进不了长文章编辑器、完全无感）。忽略旧存储里的 wordCount:false */
+  const wcOn = () => !!settings.enabled;
 
   /* 统计口径：汉字按字、连续英文/数字按词（内部连接符不断词），标点计入总字符 */
   function wcCount(text) {
@@ -12697,18 +14427,39 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   const FILTER_CARD_SELECTOR = ".m-mlist";
   const FILTER_CSS = `
     [data-lc-filtered] { display: none !important; }
-    a.lc-mute-btn {
+    a.lc-mute-btn, a.lc-blk-btn {
       /* 跟着 float：作者行是全 float 排版（同字数角标那次教训），
        * 不浮动的 inline 元素会被后续浮动头像盖住 → 看似"缩到头像
        * 后面"且点不到。float 后按 DOM 序排在昵称/头像右侧同行 */
       float: left; position: relative; z-index: 5;
       display: inline-block; margin: 2px 0 0 6px; padding: 1px 7px;
       font-size: 11px; line-height: 1.6; border-radius: 999px;
-      color: inherit; opacity: 0.55; text-decoration: none;
+      color: inherit; text-decoration: none;
       border: 1px solid currentColor; vertical-align: middle;
-      cursor: pointer; user-select: none; transition: opacity 0.15s;
+      cursor: default; user-select: none;
+      /* 隐藏态：opacity+visibility 双保险（visibility 使其不可点/不挡操作）。
+       * 淡出延迟 0.3s：「拉黑」可能换行落到作者行盒子外，鼠标离开行后
+       * 需要时间挪过去；挪到按钮上后由下方按钮自身 :hover 接管保活。 */
+      opacity: 0; visibility: hidden;
+      transition: opacity 0.15s ease 0.3s, visibility 0s linear 0.3s;
     }
-    a.lc-mute-btn:hover { opacity: 1; }
+    /* 触发区 = 按钮的直接父容器（作者行），:has() 选父、不用猜行类名；
+     * 键盘聚焦同样唤出；悬停按钮自身（无论在不在行盒内）都保活 */
+    .m-mlist :has(> a.lc-mute-btn):hover a.lc-mute-btn,
+    .m-mlist :has(> a.lc-mute-btn):focus-within a.lc-mute-btn,
+    .m-mlist :has(> a.lc-blk-btn):hover a.lc-blk-btn,
+    .m-mlist :has(> a.lc-blk-btn):focus-within a.lc-blk-btn,
+    .m-mlist a.lc-mute-btn:hover,
+    .m-mlist a.lc-blk-btn:hover,
+    .m-mlist a.lc-mute-btn:focus-visible,
+    .m-mlist a.lc-blk-btn:focus-visible {
+      opacity: 0.55; visibility: visible; cursor: pointer;
+      transition-delay: 0s;
+    }
+    .m-mlist :has(> a.lc-mute-btn):hover a.lc-mute-btn:hover,
+    .m-mlist :has(> a.lc-blk-btn):hover a.lc-blk-btn:hover {
+      opacity: 1;
+    }
     #lc-filter-counter {
       position: fixed; left: 18px; bottom: 18px; z-index: 2147482000;
       padding: 4px 10px; border-radius: 999px; font-size: 12px; line-height: 1.5;
@@ -12770,32 +14521,151 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     return null;
   }
 
-  /* 卡片上的「隐藏」按钮：一键屏蔽作者（id 进配置，昵称仅展示） */
-  function filterEnsureMuteBtn(card, author) {
-    if (card.querySelector("a.lc-mute-btn")) return;
-    const btn = document.createElement("a");
-    btn.className = "lc-mute-btn";
-    btn.textContent = "隐藏";
-    /* 故意不设 href：设了 javascript:void(0) 会在浏览器状态栏常驻显示 */
-    btn.title = "屏蔽该用户的帖子（可在扩展面板撤销）";
-    btn.addEventListener(
-      "click",
-      (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!settings.filter) settings.filter = LC_clone(LC_DEFAULTS.filter);
-        if (!Array.isArray(settings.filter.users)) settings.filter.users = [];
-        if (settings.filter.users.some((u) => u.id === author.id)) return;
-        settings.filter.users.push({
-          id: author.id,
-          name: author.name || author.id,
+  /* ---------- 官方拉黑：复刻 LOFTER 设置页的 DWR 调用 ----------
+   * 2026-09-19 抓包确认（详见 lc-dwr.js 顶部注释）。
+   * 注意：仅 www.lofter.com（首页/标签页）同源可调；其它子域会跨域，
+   * Phase 2 评论区若在别的域用到，需改走 background 转发。
+   * 回复解析在 lc-dwr.js：手写解析器，绝不 eval 远端字符串。 */
+  let lcOfficialBlNames = new Set(); /* 官方黑名单里的 blogName 集合 */
+  let lcOfficialBlPromise = null; /* 防并发重复拉取 */
+
+  const lcOfficialDwr = LC_dwrCall;
+
+  /* 惰性拉一次官方黑名单（每页至多一次），用于「拉黑」按钮的初始状态 */
+  function lcOfficialBlReady() {
+    if (lcOfficialBlPromise) return lcOfficialBlPromise;
+    lcOfficialBlPromise = lcOfficialDwr("getBlacklistUserList", [
+      "number:200",
+      "number:0",
+    ])
+      .then((raw) => {
+        const names = [];
+        (Array.isArray(raw) ? raw : []).forEach((e) => {
+          if (e.blogInfo && e.blogInfo.blogName) {
+            const n = String(e.blogInfo.blogName).toLowerCase();
+            lcOfficialBlNames.add(n);
+            names.push(n);
+          }
         });
-        filterPersist();
-        applyFilter();
-      },
-      true,
-    );
-    author.link.insertAdjacentElement("afterend", btn);
+        /* 顺手写镜像：评论区过滤在任意帧读 storage，不依赖本帧能否调 DWR */
+        if (names.length) {
+          try {
+            chrome.storage.local.set(
+              {
+                lc_official_bl_v1: {
+                  names: Array.from(new Set(names)),
+                  ts: Date.now(),
+                },
+              },
+              () => {},
+            );
+          } catch (e2) {}
+        }
+      })
+      .catch(() => {
+        /* 读取失败不阻塞过滤功能，只是按钮初始态未知 */
+      });
+    return lcOfficialBlPromise;
+  }
+
+  /* 卡片作者旁的双动作按钮：「隐藏」= 插件本地屏蔽（无感）；
+   * 「拉黑」= 官方黑名单（服务端强隔离、对方可感知，两段确认） */
+  function filterEnsureMuteBtn(card, author) {
+    if (!card.querySelector("a.lc-mute-btn")) {
+      const btn = document.createElement("a");
+      btn.className = "lc-mute-btn";
+      btn.textContent = "隐藏";
+      /* 故意不设 href：设了 javascript:void(0) 会在浏览器状态栏常驻显示 */
+      btn.title = "屏蔽该用户的帖子（可在扩展面板撤销）";
+      btn.addEventListener(
+        "click",
+        (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!settings.filter) settings.filter = LC_clone(LC_DEFAULTS.filter);
+          if (!Array.isArray(settings.filter.users)) settings.filter.users = [];
+          if (settings.filter.users.some((u) => u.id === author.id)) return;
+          settings.filter.users.push({
+            id: author.id,
+            name: author.name || author.id,
+          });
+          filterPersist();
+          applyFilter();
+        },
+        true,
+      );
+      author.link.insertAdjacentElement("afterend", btn);
+    }
+    if (!card.querySelector("a.lc-blk-btn")) {
+      const blk = document.createElement("a");
+      blk.className = "lc-blk-btn";
+      blk.title = "加入 LOFTER 官方黑名单：TA 无法评论/私信你，动态与标签页不再显示 TA（对方可能感知）";
+      blk.addEventListener(
+        "click",
+        (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          /* 两段式确认：官方拉黑是对方可感知的重操作，防误触 */
+          if (blk.dataset.confirm !== "1") {
+            blk.dataset.confirm = "1";
+            blk.textContent = "确认拉黑？";
+            setTimeout(() => {
+              if (blk.dataset.confirm === "1") {
+                blk.dataset.confirm = "";
+                blk.textContent = "拉黑";
+              }
+            }, 3000);
+            return;
+          }
+          blk.dataset.confirm = "";
+          blk.textContent = "…";
+          /* 先落本地隐藏，再异步补官方拉黑——顺序不能反：
+           * 子域页面（*.lofter.com 的博文页）跨域调不通 DWR，此前失败
+           * 分支里什么都不写，表现为「点了拉黑，帖子与评论照旧可见」
+           * （2026-09-21 实测：屏蔽名单为空）。本地先写入后，无论官方
+           * 是否成功，帖子与评论都立刻不再显示；官方失败也不回滚。 */
+          if (!settings.filter) settings.filter = LC_clone(LC_DEFAULTS.filter);
+          if (!Array.isArray(settings.filter.users)) settings.filter.users = [];
+          if (!settings.filter.users.some((u) => u.id === author.id)) {
+            settings.filter.users.push({
+              id: author.id,
+              name: author.name || author.id,
+            });
+            filterPersist();
+          }
+          applyFilter();
+          lcOfficialDwr("addBlacklist", ["string:" + author.id, "number:0"])
+            .then(() => {
+              lcOfficialBlNames.add(author.id.toLowerCase());
+              blk.textContent = "已拉黑";
+            })
+            .catch((err) => {
+              blk.textContent = "已本地隐藏";
+              blk.title =
+                "官方拉黑失败（" +
+                String((err && err.message) || err) +
+                "）：已改为本地隐藏，帖子与评论都不再显示";
+              setTimeout(() => {
+                blk.textContent = "拉黑";
+              }, 2500);
+            });
+        },
+        true,
+      );
+      /* 初始态：官方黑名单加载完后，已在名单里的直接显示「已拉黑」 */
+      lcOfficialBlReady().then(() => {
+        if (lcOfficialBlNames.has(author.id.toLowerCase())) {
+          blk.textContent = "已拉黑";
+          blk.dataset.confirm = "";
+        } else if (!blk.textContent || blk.textContent === "拉黑") {
+          blk.textContent = "拉黑";
+        }
+      });
+      blk.textContent = "拉黑";
+      const muteBtn = card.querySelector("a.lc-mute-btn");
+      if (muteBtn) muteBtn.insertAdjacentElement("afterend", blk);
+      else author.link.insertAdjacentElement("afterend", blk);
+    }
   }
 
   /* 卡片上点「隐藏」后把 users 写回 storage；走 get→merge→set，
@@ -12865,8 +14735,11 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       } catch (e) {}
       filterRestoreDisplay(el);
     });
-    /* 「隐藏」按钮也一并收掉：否则 CSS 已清空，按钮会退化成无样式裸文字 */
-    document.querySelectorAll("a.lc-mute-btn").forEach((el) => el.remove());
+    /* 「隐藏/拉黑」按钮一并收掉：CSS 已清空，残留按钮会退化成无样式
+     * 裸文字（2026-09-21 实测：只删 mute 漏了 blk，「拉黑」常驻叠在头像上） */
+    document
+      .querySelectorAll("a.lc-mute-btn, a.lc-blk-btn")
+      .forEach((el) => el.remove());
     const c = document.getElementById(FILTER_COUNTER_ID);
     if (c) c.remove();
   }
@@ -12875,15 +14748,19 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   function applyFilter() {
     const f = settings.filter;
     const scope = filterScope();
-    const active =
-      !!(
-        settings.enabled &&
-        f &&
-        f.enabled &&
-        scope &&
-        f.scope &&
-        f.scope[scope]
-      ) && !!((f.keywords || []).length || (f.users || []).length);
+    /* scopeOk = 功能在当前页生效（决定「隐藏/拉黑」按钮与扫描是否运行）；
+     * 旧写法 active 还要求"至少一条关键词或一个用户"——列表为空时整个
+     * 模块直接进 off 分支，按钮也被 filterClearAll 收掉：开着过滤却
+     * 找不到「隐藏」按钮（2026-09-21 用户实测）。按钮与规则解耦后，
+     * 空规则时扫描照跑（命中为零、只挂按钮），语义才是"过滤已启用"。 */
+    const active = !!(
+      settings.enabled &&
+      f &&
+      f.enabled &&
+      scope &&
+      f.scope &&
+      f.scope[scope]
+    );
 
     let st = document.getElementById(FILTER_STYLE_ID);
     if (active) {
@@ -12974,26 +14851,574 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     }
   }
 
-  /* ---------- 导航栏透明/毛玻璃（对抗Lofter的JS内联覆盖）---------- */
+  /* ---------- 导航栏两档玻璃（低透毛玻璃 / 高透液态玻璃，对抗Lofter的JS内联覆盖）---------- */
   let navbarTimer = null;
+
+  /* ========== 导航栏液态玻璃（hyalite）+ 自适应材质 ==========
+   * 仅 Chromium 生效（Hyalite.supported() 门禁）；矮条带必须用小参数组
+   * settings.navbar.glass（bevel 会被钳到短边一半，大厚度会把整面背景拧花）。
+   * 材质切换只动 .lc-glass-dark 类，对应样式由 buildCSS 生成，避免整表重建。 */
+  const lcHyAttached = new Set(); // 已 attach 的导航栏元素（SPA 换新节点后重新 attach）
+
+  /* 新版管线定位真实导航条：[class*="box-web"] 是子串匹配，
+     不同页面会命中页壳（含全页内容）、页脚（box-web-15 等）等大容器
+     （查看更多页实证：类挂壳上 → 全页超链接被刷白）。
+     因此遍历所有匹配，取「第3层 div 存在且高度像导航条（28~140px）」的第一个 */
+  function lcFindNavBox() {
+    const boxes = document.querySelectorAll(
+      '#application.lofter-root-container [class*="box-web"]',
+    );
+    for (const box of boxes) {
+      const inner = box.querySelector(
+        ":scope > div:first-child > div:first-child",
+      );
+      if (!inner) continue;
+      const h = inner.getBoundingClientRect().height;
+      if (h >= 28 && h <= 140) return inner;
+    }
+    return null;
+  }
+
+  function lcNavHyEls() {
+    const els = [];
+    const bar = document.getElementById("lofter-top-bar");
+    if (bar) els.push(bar);
+    /* 新版管线：外层 box-web 的第 3 层 div 才是玻璃容器（与 buildCSS 选择器同构） */
+    const inner = lcFindNavBox();
+    if (inner) els.push(inner);
+    return els;
+  }
+
+  function lcHyDetachAll() {
+    if (!(window.Hyalite && Hyalite.detach)) return;
+    lcHyAttached.forEach((el) => {
+      try {
+        Hyalite.detach(el);
+      } catch (e) {
+        /* 忽略 */
+      }
+    });
+    lcHyAttached.clear();
+    /* 深材质类一并收掉，避免残留白字 */
+    document
+      .querySelectorAll(".lc-glass-dark")
+      .forEach((el) => el.classList.remove("lc-glass-dark"));
+  }
+
+  function lcHyAttachNav() {
+    if (!(window.Hyalite && Hyalite.supported && Hyalite.supported())) return;
+    const g = settings.navbar.glass || {};
+    const num = (v, d) => (typeof v === "number" && !isNaN(v) ? v : d);
+    const opts = {
+      bevel: num(g.bevel, 14),
+      thickness: num(g.thickness, 16),
+      slope: num(g.slope, 2.4),
+      shape: ["circle", "squircle", "lip"].includes(g.shape)
+        ? g.shape
+        : "squircle",
+      blur: num(g.blur, 0),
+      dispersion: num(g.dispersion, 1.2),
+      shade: num(g.shade, 0.4),
+      rim: num(g.rim, 1.6),
+      edgeW: num(g.edgeW, 5),
+      sat: num(g.sat, 0.9),
+      light: num(g.light, -140),
+    };
+    lcNavHyEls().forEach((el) => {
+      if (lcHyAttached.has(el)) return;
+      try {
+        Hyalite.attach(el, opts);
+      } catch (e) {
+        return;
+      }
+      lcHyAttached.add(el);
+      /* React 看门：重渲染重写 style 会抹掉 --hyalite，缺了就 refresh。
+         先比较再写，避免「观察→写→再触发」死循环 */
+      if (!el.dataset.lcHyGuard) {
+        el.dataset.lcHyGuard = "1";
+        new MutationObserver(() => {
+          if (!lcHyAttached.has(el)) return;
+          if (!el.style.getPropertyValue("--hyalite")) {
+            try {
+              Hyalite.refresh(el);
+            } catch (e) {
+              /* 忽略 */
+            }
+          }
+        }).observe(el, { attributes: true, attributeFilter: ["style"] });
+      }
+    });
+    /* SPA 换掉的旧节点出集合，防止无限膨胀 */
+    lcHyAttached.forEach((el) => {
+      if (!el.isConnected) lcHyAttached.delete(el);
+    });
+  }
+
+  /* ---- 亮度采样：优先用户背景图（cover 铺图复现），纯色/渐变解析，其余视作亮底 ---- */
+  const lcLumaCv = document.createElement("canvas");
+  lcLumaCv.width = 64;
+  lcLumaCv.height = 24;
+  let lcLumaImg = null;
+  let lcLumaImgKey = "";
+  const lcLin = (c) => {
+    c /= 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  const lcRelLuma = (rgb) =>
+    0.2126 * lcLin(rgb[0]) + 0.7152 * lcLin(rgb[1]) + 0.0722 * lcLin(rgb[2]);
+  function lcHexToRgb(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  function lcNavLuma(el) {
+    const b = settings.background || {};
+    if (b.mode === "image" && b.image && b.image.dataUrl) {
+      if (lcLumaImgKey !== b.image.dataUrl || !lcLumaImg) {
+        lcLumaImgKey = b.image.dataUrl;
+        lcLumaImg = new Image();
+        lcLumaImg.src = b.image.dataUrl;
+      }
+      if (!lcLumaImg.complete || !lcLumaImg.naturalWidth) return null; // 图未就绪：保持现状
+      const ctx = lcLumaCv.getContext("2d", { willReadFrequently: true });
+      const W = lcLumaCv.width,
+        H = lcLumaCv.height;
+      const ir = lcLumaImg.naturalWidth / lcLumaImg.naturalHeight;
+      const vr = innerWidth / innerHeight;
+      let dw, dh;
+      if (ir > vr) {
+        dh = innerHeight;
+        dw = dh * ir;
+      } else {
+        dw = innerWidth;
+        dh = dw / ir;
+      }
+      ctx.drawImage(
+        lcLumaImg,
+        (innerWidth - dw) / 2,
+        (innerHeight - dh) / 2,
+        dw,
+        dh,
+        0,
+        0,
+        W,
+        H,
+      );
+      const r = el.getBoundingClientRect();
+      const sx = Math.max(0, (r.left / innerWidth) * W);
+      const sy = Math.max(0, (r.top / innerHeight) * H);
+      const sw = Math.max(1, Math.min(W - sx, (r.width / innerWidth) * W) | 0);
+      const sh = Math.max(1, Math.min(H - sy, (r.height / innerHeight) * H) | 0);
+      const d = ctx.getImageData(sx | 0, sy | 0, sw, sh).data;
+      let sum = 0,
+        n = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        sum +=
+          0.2126 * lcLin(d[i]) +
+          0.7152 * lcLin(d[i + 1]) +
+          0.0722 * lcLin(d[i + 2]);
+        n++;
+      }
+      return n ? sum / n : 0.5;
+    }
+    if (b.mode === "color") {
+      const rgb = lcHexToRgb(b.color);
+      if (rgb) return lcRelLuma(rgb);
+    }
+    if (b.mode === "gradient" && b.gradient) {
+      const a = lcHexToRgb(b.gradient.from);
+      const c = lcHexToRgb(b.gradient.to);
+      if (a && c)
+        return lcRelLuma([
+          (a[0] + c[0]) / 2,
+          (a[1] + c[1]) / 2,
+          (a[2] + c[2]) / 2,
+        ]);
+    }
+    /* pattern/off 等其它模式：视作亮底（LOFTER 默认白） */
+    return 0.9;
+  }
+
+  function lcUpdateNavMaterial() {
+    const mode = settings.navbar.matMode || "auto";
+    const threshold =
+      typeof settings.navbar.matThreshold === "number"
+        ? settings.navbar.matThreshold
+        : 0.5;
+    /* 类一律挂玻璃条自身：老管线 = #lofter-top-bar，新管线 = box-web 第3层 div
+       （与 buildCSS 的 .lc-glass-dark 选择器同构，也避免挂到大容器上刷白全页） */
+    const targets = [];
+    const bar = document.getElementById("lofter-top-bar");
+    if (bar) targets.push(bar);
+    const inner = lcFindNavBox();
+    if (inner) targets.push(inner);
+    targets.forEach((el) => {
+      let dark;
+      if (mode === "dark" || (mode === "auto" && isDarkMode())) dark = true;
+      else if (mode === "light") dark = false;
+      else {
+        const L = lcNavLuma(el);
+        dark =
+          L === null ? el.classList.contains("lc-glass-dark") : L < threshold;
+      }
+      if (el.classList.contains("lc-glass-dark") !== dark)
+        el.classList.toggle("lc-glass-dark", dark);
+    });
+  }
+
+  /* ========== 右侧栏液态玻璃（hyalite）：首页 #rside > #slide-bar 内的卡片 ==========
+   * 与导航栏同一套引擎，差别有三：
+   *   1) 目标是竖长卡片，参数用 settings.sidebar.glass（bevel 22 而非 14）；
+   *   2) 玻璃元素必须落在「无 filter 祖先」的子树里——首页侧栏靠
+   *      `#rside > * { filter: invert }` 反色，filter 一存在就成了 backdrop
+   *      root，玻璃只能采到祖先内部的空白，折射全丢。故开关打开时该反色
+   *      由 CSS 让位（见 buildCSS 右侧栏玻璃块），改为深色玻璃 + 白字；
+   *   3) 卡片会被 React 重建，故同样挂「--hyalite 丢了就 refresh」看门。 */
+  const lcSideHyAttached = new Set();
+
+  function lcSideGlassOn() {
+    if (!(settings.enabled && settings.sidebar && settings.sidebar.hyalite))
+      return false;
+    /* 纯磨砂档不依赖 hyalite 库；只有折射档才要求 Hyalite.supported() */
+    if (!settings.sidebar.refract) return true;
+    return !!(window.Hyalite && Hyalite.supported && Hyalite.supported());
+  }
+
+  /* 卡片级元素：slide-bar 下的 *-box-web，且祖先里没有别的 *-box-web
+     （排除卡片内部的嵌套块）；尺寸过小的组件（图标、按钮）跳过 */
+  function lcSideGlassEls() {
+    const els = [];
+    document.querySelectorAll('#slide-bar [class*="-box-web"]').forEach((el) => {
+      const p = el.parentElement;
+      if (p && p.closest && p.closest('[class*="-box-web"]')) return;
+      const r = el.getBoundingClientRect();
+      if (r.width < 160 || r.height < 44) return;
+      els.push(el);
+    });
+    return els;
+  }
+
+  function lcSideHyDetachAll() {
+    if (!(window.Hyalite && Hyalite.detach)) {
+      lcSideHyAttached.clear();
+      return;
+    }
+    lcSideHyAttached.forEach((el) => {
+      try {
+        Hyalite.detach(el);
+      } catch (e) {
+        /* 忽略 */
+      }
+      el.classList.remove("lc-side-glass");
+      el.classList.remove("lc-glass-dark");
+    });
+    lcSideHyAttached.clear();
+  }
+
+  function lcSideHyAttach() {
+    /* 纯磨砂档（默认）：只打标记类给 CSS 用，不挂 hyalite ——
+       backdrop-filter: url() 在 Chromium 走软件光栅化，卡片常驻视口
+       会持续占用并拖慢全页动效；blur() 走 GPU，开销低一个量级 */
+    const refract = !!(settings.sidebar && settings.sidebar.refract);
+    if (!refract) {
+      if (lcSideHyAttached.size) lcSideHyDetachAll();
+      lcSideGlassEls().forEach((el) => el.classList.add("lc-side-glass"));
+      return;
+    }
+    if (!(window.Hyalite && Hyalite.supported && Hyalite.supported())) return;
+    const g = (settings.sidebar && settings.sidebar.glass) || {};
+    const num = (v, d) => (typeof v === "number" && !isNaN(v) ? v : d);
+    const opts = {
+      bevel: num(g.bevel, 22),
+      thickness: num(g.thickness, 30),
+      slope: num(g.slope, 2.6),
+      shape: ["circle", "squircle", "lip"].includes(g.shape)
+        ? g.shape
+        : "squircle",
+      blur: num(g.blur, 0.6),
+      dispersion: num(g.dispersion, 1.4),
+      shade: num(g.shade, 0.44),
+      rim: num(g.rim, 1.7),
+      edgeW: num(g.edgeW, 6),
+      sat: num(g.sat, 0.9),
+      light: num(g.light, -140),
+    };
+    lcSideGlassEls().forEach((el) => {
+      /* 标记类先挂：CSS 里的玻璃规则以它为锚，attach 前挂上避免闪白 */
+      el.classList.add("lc-side-glass");
+      if (lcSideHyAttached.has(el)) return;
+      try {
+        Hyalite.attach(el, opts);
+      } catch (e) {
+        return;
+      }
+      lcSideHyAttached.add(el);
+      if (!el.dataset.lcSideHyGuard) {
+        el.dataset.lcSideHyGuard = "1";
+        new MutationObserver(() => {
+          if (!lcSideHyAttached.has(el)) return;
+          if (!el.style.getPropertyValue("--hyalite")) {
+            try {
+              Hyalite.refresh(el);
+            } catch (e) {
+              /* 忽略 */
+            }
+          }
+        }).observe(el, { attributes: true, attributeFilter: ["style"] });
+      }
+    });
+    /* SPA 换掉的旧节点出集合，防无限膨胀 */
+    lcSideHyAttached.forEach((el) => {
+      if (!el.isConnected) lcSideHyAttached.delete(el);
+    });
+  }
+
+  /* 材质：默认 auto = 采样卡片背后亮度。与导航栏一致的取值规则——
+     暗色模式直接给深材质（此时背景多半是暗图/暗色，免采样抖动） */
+  function lcUpdateSideMaterial() {
+    const cfg = settings.sidebar || {};
+    const mode = cfg.matMode || "auto";
+    const threshold =
+      typeof cfg.matThreshold === "number" ? cfg.matThreshold : 0.5;
+    lcSideGlassEls().forEach((el) => {
+      let dark;
+      if (mode === "dark" || (mode === "auto" && isDarkMode())) dark = true;
+      else if (mode === "light") dark = false;
+      else {
+        const L = lcNavLuma(el);
+        dark =
+          L === null ? el.classList.contains("lc-glass-dark") : L < threshold;
+      }
+      if (el.classList.contains("lc-glass-dark") !== dark)
+        el.classList.toggle("lc-glass-dark", dark);
+    });
+  }
+
+  /* ---- 信息流卡面自适应材质（背景暗 → 深膜白字）---- */
+  /* 专用小画布：整图按 cover 铺满后按卡片视口矩形取样。
+     与 lcNavLuma 的区别是「每批只画一次图」——信息流卡片多，
+     逐卡 drawImage 全图太浪费；画布 64×64，getImageData 极廉价 */
+  let lcFaceCv = null;
+  let lcFaceCvKey = "";
+  /* 背景图版本号：图被重建（换图/导航侧重建共享 Image）后画布缓存必须
+     作废——旧 key 只含视口尺寸，换图后仍复用旧画布 → 采样亮度全错 */
+  let lcFaceCvVer = 0;
+  function lcFaceLuma(el) {
+    const b = settings.background || {};
+    if (b.mode === "color") {
+      const rgb = lcHexToRgb(b.color);
+      return rgb ? lcRelLuma(rgb) : 0.9;
+    }
+    if (b.mode === "gradient" && b.gradient) {
+      const a = lcHexToRgb(b.gradient.from);
+      const c = lcHexToRgb(b.gradient.to);
+      if (a && c)
+        return lcRelLuma([
+          (a[0] + c[0]) / 2,
+          (a[1] + c[1]) / 2,
+          (a[2] + c[2]) / 2,
+        ]);
+    }
+    if (!(b.mode === "image" && b.image && b.image.dataUrl)) return 0.9;
+    if (lcLumaImgKey !== b.image.dataUrl || !lcLumaImg) {
+      lcLumaImgKey = b.image.dataUrl;
+      lcLumaImg = new Image();
+      lcLumaImg.src = b.image.dataUrl;
+      lcFaceCvVer++;
+    }
+    /* 图刚换/刚加载完成时画布还是旧的：挂一次性 load 钩子补采样
+       （addEventListener 幂等，不与 lcNavLuma 的使用冲突） */
+    if (!lcLumaImg.__lcFaceLoadHook) {
+      lcLumaImg.__lcFaceLoadHook = true;
+      lcLumaImg.addEventListener("load", () =>
+        lcSafe(() => lcUpdateFaceMaterial(true)),
+      );
+    }
+    if (!lcLumaImg.complete || !lcLumaImg.naturalWidth) return null;
+    if (!lcFaceCv) {
+      lcFaceCv = document.createElement("canvas");
+      lcFaceCv.width = 64;
+      lcFaceCv.height = 64;
+    }
+    const key = lcFaceCvVer + "@" + innerWidth + "x" + innerHeight;
+    const ctx = lcFaceCv.getContext("2d", { willReadFrequently: true });
+    if (lcFaceCvKey !== key) {
+      const W = lcFaceCv.width,
+        H = lcFaceCv.height;
+      /* cover 可见区域裁切（图像自然像素坐标，与 CSS center/cover 同款）。
+         旧实现把视口尺寸直接当 drawImage 源矩形：大图只采到左上角区域、
+         sy 还会算出负值（顶部一条透明带），采样亮度系统性偏差 →
+         卡片该变深膜的不变、不该变的乱变 */
+      const nw = lcLumaImg.naturalWidth,
+        nh = lcLumaImg.naturalHeight;
+      const ir = nw / nh,
+        vr = innerWidth / innerHeight;
+      let cw, ch;
+      if (ir > vr) {
+        ch = nh;
+        cw = nh * vr;
+      } else {
+        cw = nw;
+        ch = nw / vr;
+      }
+      ctx.clearRect(0, 0, W, H);
+      ctx.drawImage(
+        lcLumaImg,
+        (nw - cw) / 2,
+        (nh - ch) / 2,
+        cw,
+        ch,
+        0,
+        0,
+        W,
+        H,
+      );
+      lcFaceCvKey = key;
+    }
+    const r = el.getBoundingClientRect();
+    const sx = Math.max(0, Math.min(63, (r.left / innerWidth) * 64));
+    const sy = Math.max(0, Math.min(63, (r.top / innerHeight) * 64));
+    const sw = Math.max(1, Math.min(64 - sx, (r.width / innerWidth) * 64) | 0);
+    const sh = Math.max(1, Math.min(64 - sy, (r.height / innerHeight) * 64) | 0);
+    if (sw < 1 || sh < 1 || r.width < 10) return null;
+    const d = ctx.getImageData(sx | 0, sy | 0, sw, sh).data;
+    let sum = 0,
+      n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] < 8) continue; /* 画布未被图片覆盖的区域（cover 铺不满时） */
+      sum +=
+        0.2126 * lcLin(d[i]) +
+        0.7152 * lcLin(d[i + 1]) +
+        0.0722 * lcLin(d[i + 2]);
+      n++;
+    }
+    return n ? sum / n : null;
+  }
+
+  let lcFaceMatLast = 0;
+  function lcFaceMatCleanup() {
+    document
+      .querySelectorAll(".lc-face-dark")
+      .forEach((el) => el.classList.remove("lc-face-dark"));
+  }
+  function lcUpdateFaceMaterial(force) {
+    if (
+      !settings.enabled ||
+      isDarkMode() ||
+      !(settings.card && settings.card.faceAdapt)
+    ) {
+      lcFaceMatCleanup();
+      return;
+    }
+    const now = Date.now();
+    if (!force && now - lcFaceMatLast < 400) return;
+    lcFaceMatLast = now;
+    document.querySelectorAll("#main .m-mlist > .mlistcnt").forEach((cnt) => {
+      /* 只处理画了卡面的卡片（按 computed ::before 识别） */
+      const cs = getComputedStyle(cnt, "::before");
+      if (cs.content === "none" || cs.backgroundColor === "rgba(0, 0, 0, 0)")
+        return;
+      const L = lcFaceLuma(cnt);
+      if (L === null) return; /* 背景图未就绪：保持现状 */
+      cnt.classList.toggle("lc-face-dark", L < 0.45);
+    });
+  }
+  /* 背景是 fixed 铺法：滚动会改变卡片背后的区域，需要滚动驱动重采样 */
+  if (!window.__lcFaceMatScroll) {
+    window.__lcFaceMatScroll = true;
+    window.addEventListener(
+      "scroll",
+      () => lcSafe(lcUpdateFaceMaterial),
+      { passive: true },
+    );
+  }
+
+  /* 快速看门：LOFTER 侧栏从「随流」切「粘滞跟随」时会重渲染卡片，
+     React 把 className 重置 → lc-side-glass/--hyalite 被洗掉，
+     防抖链补挂前的那段延迟就是「闪一下变回实底」。
+     专职 observer 只盯 #rside 的 class/子树变动，rAF 节流（同一帧
+     paint 前补回），现场即修；attach 幂等，重复触发无副作用 */
+  let lcSideWatchObs = null;
+  let lcSideWatchRaf = 0;
+  function lcSideWatchStart() {
+    const root = document.getElementById("rside");
+    if (!root || lcSideWatchObs) return;
+    lcSideWatchObs = new MutationObserver(() => {
+      if (lcSideWatchRaf) return;
+      lcSideWatchRaf = requestAnimationFrame(() => {
+        lcSideWatchRaf = 0;
+        if (!lcSideGlassOn()) return;
+        lcSafe(lcSideHyAttach);
+        lcSafe(lcUpdateSideMaterial);
+      });
+    });
+    lcSideWatchObs.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+  }
+  function lcSideWatchStop() {
+    if (lcSideWatchObs) {
+      lcSideWatchObs.disconnect();
+      lcSideWatchObs = null;
+    }
+    if (lcSideWatchRaf) {
+      cancelAnimationFrame(lcSideWatchRaf);
+      lcSideWatchRaf = 0;
+    }
+  }
+
+  let lcSideGlassLastMat = 0;
+  function applySidebarGlass() {
+    if (!lcSideGlassOn()) {
+      /* 关闭：收起玻璃与标记类，反色由 CSS 恢复（buildCSS 不再输出该块） */
+      lcSideWatchStop();
+      if (lcSideHyAttached.size) lcSideHyDetachAll();
+      document
+        .querySelectorAll(".lc-side-glass")
+        .forEach((el) => el.classList.remove("lc-side-glass"));
+      return;
+    }
+    lcSideHyAttach();
+    lcSideWatchStart();
+    /* 材质采样节流：400ms 一次足够跟上滚动/换图（与导航栏同频） */
+    const now = Date.now();
+    if (now - lcSideGlassLastMat >= 400) {
+      lcSideGlassLastMat = now;
+      lcSafe(lcUpdateSideMaterial);
+    }
+  }
+
   function applyNavbar() {
     if (navbarTimer) {
       clearInterval(navbarTimer);
       navbarTimer = null;
     }
 
-    const bar = document.getElementById("lofter-top-bar");
+    let bar = document.getElementById("lofter-top-bar");
+    const hyOn =
+      settings.enabled &&
+      settings.navbar.hyalite &&
+      window.Hyalite &&
+      Hyalite.supported &&
+      Hyalite.supported();
 
     /* 关闭时：清掉我们写的 style，让 Lofter 自己的 JS 恢复黑色 */
     if (
       !settings.enabled ||
-      (!settings.navbar.transparent && !settings.navbar.blur)
+      (!settings.navbar.blur && !settings.navbar.hyalite)
     ) {
+      lcHyDetachAll();
       if (bar) {
         bar.style.removeProperty("background");
         bar.style.removeProperty("background-image");
         bar.style.removeProperty("backdrop-filter");
         bar.style.removeProperty("-webkit-backdrop-filter");
+        bar.style.removeProperty("border-radius");
         bar.querySelectorAll("*").forEach((el) => {
           el.style.removeProperty("background");
           el.style.removeProperty("background-color");
@@ -13003,7 +15428,50 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     }
 
     function setNavStyle() {
-      const bar = document.getElementById("lofter-top-bar");
+      /* ---- hyalite 模式：外观交给 buildCSS 的 var(--hyalite) 规则，
+         这里只做结构保证（置顶/子层透明）、attach 与材质采样 ---- */
+      if (hyOn) {
+        if (bar) {
+          bar.style.setProperty("position", "fixed", "important");
+          bar.style.setProperty("top", "0", "important");
+          bar.style.setProperty("left", "0", "important");
+          bar.style.setProperty("width", "100%", "important");
+          bar.style.setProperty("z-index", "9999", "important");
+          /* 内联背景/模糊会污染玻璃外观，确保清干净。
+             必须连 background 一起清：毛玻璃档在本元素写过内联
+             `background: rgba(255,255,255,0.35) !important`，
+             内联 important 会压过样式表里的白膜/深膜规则（含 .lc-glass-dark），
+             表现为「从毛玻璃切到液态玻璃后仍是浅色白膜、材质自适应失效」。 */
+          bar.style.removeProperty("background");
+          bar.style.removeProperty("background-image");
+          bar.style.removeProperty("backdrop-filter");
+          bar.style.removeProperty("-webkit-backdrop-filter");
+          bar.style.removeProperty("border-bottom");
+          bar.style.removeProperty("border-radius");
+          bar.querySelectorAll("*").forEach((el) => {
+            if (getComputedStyle(el).backgroundColor === "rgb(31, 31, 31)") {
+              el.style.setProperty("background", "transparent", "important");
+              el.style.setProperty(
+                "background-color",
+                "transparent",
+                "important",
+              );
+            }
+          });
+        }
+        lcHyAttachNav();
+        /* 材质采样节流：400ms 一次足够跟上滚动/换图 */
+        const now = Date.now();
+        if (!setNavStyle._lastMat || now - setNavStyle._lastMat >= 400) {
+          setNavStyle._lastMat = now;
+          lcSafe(lcUpdateNavMaterial);
+        }
+        return;
+      }
+      /* 从 hyalite 切回普通模式：收掉玻璃与材质类 */
+      if (lcHyAttached.size) lcHyDetachAll();
+
+      bar = bar || document.getElementById("lofter-top-bar");
       if (!bar) return;
 
       /* 结果签名：状态与导航结构都没变时直接跳过，
@@ -13011,7 +15479,6 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       const navKey = [
         isDarkMode(),
         settings.navbar.blur,
-        settings.navbar.transparent,
         bar.childElementCount,
       ].join("|");
       if (navKey === setNavStyle._lastKey) return;
@@ -13038,22 +15505,17 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
           "important",
         );
 
-        /* 毛玻璃（仅在用户开启时） */
-        if (settings.navbar.blur) {
-          bar.style.setProperty(
-            "backdrop-filter",
-            "blur(16px) saturate(120%)",
-            "important",
-          );
-          bar.style.setProperty(
-            "-webkit-backdrop-filter",
-            "blur(16px) saturate(120%)",
-            "important",
-          );
-        } else {
-          bar.style.removeProperty("backdrop-filter");
-          bar.style.removeProperty("-webkit-backdrop-filter");
-        }
+        /* 毛玻璃（低透档；hyalite 不可用时也走到这里做兜底） */
+        bar.style.setProperty(
+          "backdrop-filter",
+          "blur(16px) saturate(120%)",
+          "important",
+        );
+        bar.style.setProperty(
+          "-webkit-backdrop-filter",
+          "blur(16px) saturate(120%)",
+          "important",
+        );
 
         /* 清除 Lofter 默认黑色背景子元素 */
         bar.querySelectorAll("*").forEach((el) => {
@@ -13067,38 +15529,30 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
           }
         });
       } else {
-        /* ===== 浅色模式：保持原有逻辑 ===== */
-        if (settings.navbar.transparent) {
-          const alpha = settings.navbar.blur ? "0.3" : "0.65";
-          bar.style.setProperty(
-            "background",
-            `rgba(255,255,255,${alpha})`,
-            "important",
-          );
-          bar.style.setProperty("background-image", "none", "important");
-          bar.querySelectorAll("*").forEach((el) => {
-            if (getComputedStyle(el).backgroundColor === "rgb(31, 31, 31)") {
-              el.style.setProperty("background", "transparent", "important");
-              el.style.setProperty(
-                "background-color",
-                "transparent",
-                "important",
-              );
-            }
-          });
-        }
-
-        if (settings.navbar.blur) {
-          bar.style.setProperty("backdrop-filter", "blur(16px)", "important");
-          bar.style.setProperty(
-            "-webkit-backdrop-filter",
-            "blur(16px)",
-            "important",
-          );
-        } else {
-          bar.style.removeProperty("backdrop-filter");
-          bar.style.removeProperty("-webkit-backdrop-filter");
-        }
+        /* ===== 浅色模式：毛玻璃（低透档，唯一非 hyalite 档）===== */
+        bar.style.setProperty(
+          "background",
+          "rgba(255,255,255,0.35)",
+          "important",
+        );
+        bar.style.setProperty("background-image", "none", "important");
+        bar.style.setProperty("backdrop-filter", "blur(16px)", "important");
+        bar.style.setProperty(
+          "-webkit-backdrop-filter",
+          "blur(16px)",
+          "important",
+        );
+        /* 清除 Lofter 默认黑色背景子元素 */
+        bar.querySelectorAll("*").forEach((el) => {
+          if (getComputedStyle(el).backgroundColor === "rgb(31, 31, 31)") {
+            el.style.setProperty("background", "transparent", "important");
+            el.style.setProperty(
+              "background-color",
+              "transparent",
+              "important",
+            );
+          }
+        });
       }
     }
 
@@ -13116,7 +15570,10 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   /* ---------- 加载配置 ---------- */
   function load() {
     chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
-      window.settings = LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {});
+      /* LC_migrateNav：老配置的 navbar.transparent 迁移为 blur（本批两档化） */
+      window.settings = LC_migrateNav(
+        LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {}),
+      );
       // 同步全局隐藏标志
       window.decorationsGloballyHidden =
         window.settings.decorationsVisible === false;
@@ -13128,7 +15585,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   chrome.storage.onChanged.addListener((c, area) => {
     if (area === "local" && c[LC_STORAGE_KEY]) {
       const newSettings = c[LC_STORAGE_KEY].newValue || {};
-      window.settings = LC_merge(LC_DEFAULTS, newSettings);
+      window.settings = LC_migrateNav(LC_merge(LC_DEFAULTS, newSettings));
       // 同步全局隐藏标志
       window.decorationsGloballyHidden =
         window.settings.decorationsVisible === false;
@@ -13148,6 +15605,52 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         applyDarkOverlay();
       }
     });
+
+  /* ---------- 控制台调试桥 ----------
+   * content script 跑在隔离世界：页面控制台直接读 settings 会报
+   * ReferenceError（2026-09-21 实测 VM302）。约定：控制台 dispatch
+   * 'lc-probe' 事件 → 这里把状态快照写进 <html data-lc-probe> →
+   * 控制台 JSON.parse 读回。DOM 事件跨世界可达，常驻开销可忽略。 */
+  document.documentElement.addEventListener("lc-probe", () => {
+    try {
+      const els = {};
+      [
+        "lc-style",
+        "lc-dark-cards",
+        "lc-dark-overlay",
+        "lc-filter-style",
+        "lc-filter-counter",
+        "lc-cmt-filter-style",
+      ].forEach((id) => {
+        const e = document.getElementById(id);
+        els[id] = e ? "有 len=" + e.textContent.length : "无";
+      });
+      const main = document.getElementById("main");
+      const f = settings.filter || {};
+      document.documentElement.dataset.lcProbe = JSON.stringify({
+        t: Date.now(),
+        enabled: settings.enabled,
+        darkMode: settings.darkMode,
+        filter: {
+          enabled: !!f.enabled,
+          scope: f.scope || null,
+          keywords: (f.keywords || []).length,
+          users: (f.users || []).length,
+        },
+        /* 评论区过滤诊断：ran=模块是否跑起来；cmti/bodies=DOM 命中数；
+         * links=解析出 lofter 用户 id 的链接数；matched=命中黑名单的
+         * id；items/marked=实际隐藏的条目数。对照即可判断是
+         * 选择器没命中、id 没匹配上，还是标记被 React 洗掉 */
+        cmt: cmtDiag,
+        els,
+        mainFilter: main ? getComputedStyle(main).filter : "(无#main)",
+      });
+    } catch (e) {
+      document.documentElement.dataset.lcProbe = JSON.stringify({
+        err: String(e),
+      });
+    }
+  });
 
   /* ---------- 清除注入的标题 ---------- */
   function removeTitles() {
@@ -14037,6 +16540,32 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     if (window.decorationsGloballyHidden) {
       return;
     }
+  });
+
+  /* ---------- DWR 中继（popup 直连 LOFTER DWR 会拿空响应） ----------
+   * popup 发来 {type:"lc-dwr", method, params}，这里同源代为执行。
+   * 只在顶层页面响应：lofter 顶层是 www.lofter.com，与 DWR 接口同源；
+   * 子域 iframe 向 www.lofter.com 属跨域（MV3 content script 无 CORS
+   * 豁免），且多 frame 同时响应会互相抢 sendResponse。 */
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!msg || msg.type !== "lc-dwr") return;
+    if (window.top !== window) return;
+    if (typeof LC_dwrCall !== "function") {
+      sendResponse({ ok: false, error: "lc-dwr.js 未加载" });
+      return true;
+    }
+    LC_dwrCall(msg.method, msg.params)
+      .then((data) =>
+        sendResponse({
+          ok: true,
+          data: data,
+          raw: String(LC_dwrCall.lastRaw || ""),
+        }),
+      )
+      .catch((e) =>
+        sendResponse({ ok: false, error: (e && e.message) || String(e) }),
+      );
+    return true; /* 异步 sendResponse */
   });
 })();
 
