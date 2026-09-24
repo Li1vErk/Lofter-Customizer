@@ -3,6 +3,16 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   let state = LC_clone(LC_DEFAULTS);
+  /* 悬浮面板首开防白闪（2026-09-23）：宿主 content.js 建 iframe 时带 lcDark=1，
+   * popup.html <head> 的同源外链 theme-boot.js 据此先给 <html> 挂 lc-pre-dark 顶住
+   * 第一帧。（最初写在内联 <script> 里，被 MV3 的 script-src 'self' 拦掉、防白闪
+   * 等于没做，详见 theme-boot.js 头部。）
+   * 真值（storage）到手后才撤这个预判标记、交给 body.dark 接管——撤早了会在
+   * 真值到达前露一帧浅色（正是要修的白闪），故用 loaded 门闩把撤销钉在真值之后。
+   * 必须声明在这里（IIFE 顶部）：storage 回调里要读写它，而回调注册点在 IIFE 中段，
+   * 声明若放在尾部（applyDarkFollow 旁）一旦中途抛错就成 TDZ —— 回调触发时直接
+   * ReferenceError（jsdom 里用 AudioContext 桩当场复现）。 */
+  let lcStateLoaded = false;
 
   let t = 0;
   function save() {
@@ -101,25 +111,76 @@
     $("gtotop-size-row").hidden = !state.gtotop || !state.gtotop.imageDataUrl;
   }
 
-  /* 同步装饰图编辑按钮的显示状态 */
+  /* 同步装饰图编辑按钮的显示状态。
+     2026-09-23 方案A扁平化后工具行 #dec-toolbar 吸顶且常驻（含「添加装饰图」），
+     空态只藏编辑类按钮，不再整行收起。 */
   function syncDecEditButtons(isEditing) {
     const hasDecs = (state.decorations || []).length > 0;
     const editBtn = $("dec-enter-edit");
     const exitBtn = $("dec-exit-edit");
     const toggleVisBtn = $("dec-toggle-visibility");
+    const editHint = $("dec-edit-hint");
+    const emptyTip = $("dec-empty-tip");
 
     if (!hasDecs) {
       editBtn.style.display = "none";
       exitBtn.style.display = "none";
       if (toggleVisBtn) toggleVisBtn.style.display = "none";
-    } else if (isEditing) {
-      editBtn.style.display = "none";
-      exitBtn.style.display = "";
-      if (toggleVisBtn) toggleVisBtn.style.display = "none";
+      if (editHint) editHint.style.display = "none";
+      if (emptyTip) emptyTip.style.display = "";       // 显示空态引导
     } else {
-      editBtn.style.display = "";
-      exitBtn.style.display = "none";
-      if (toggleVisBtn) toggleVisBtn.style.display = "";
+      if (emptyTip) emptyTip.style.display = "none";
+      // 拖拽操作提示只在编辑模式出现（紧挨「退出编辑」）
+      if (editHint) editHint.style.display = isEditing ? "" : "none";
+      if (isEditing) {
+        editBtn.style.display = "none";
+        exitBtn.style.display = "";
+        if (toggleVisBtn) toggleVisBtn.style.display = "none";
+      } else {
+        editBtn.style.display = "";
+        exitBtn.style.display = "none";
+        if (toggleVisBtn) toggleVisBtn.style.display = "";
+      }
+    }
+  }
+
+  /* 互动总开关（2026-09-24 恢复为显式开关，不再随子功能派生）：
+     关 = 纯静止贴图，面板不可展开；开 = 默认浮动呼吸 + 点击挤压，
+     emoji 粒子 / 音效 / 词卡开不开、开哪种，由用户自己在面板里选。
+     content.js 的呼吸动画与点击互动都门控在 interactive.enabled 上。
+
+     已有关闭的图（enabled=false）即便残留 particles/breathe 也不会被动点亮，
+     ——这正是"派生"逻辑取消后要保住的一条：总开关说了算。 */
+  function syncIaMaster(card, idx) {
+    const dec = state.decorations[idx];
+    if (!card || !dec || !dec.interactive) return;
+    const on = dec.interactive.enabled === true;
+
+    const pill = card.querySelector(`button[data-ia-master="${idx}"]`);
+    if (pill) {
+      pill.classList.toggle("on", on);
+      pill.classList.toggle("off", !on);
+      const label = pill.querySelector("span");
+      if (label) label.textContent = on ? "已开启" : "未开启";
+    }
+
+    const toggle = card.querySelector(`button[data-toggle-ia="${idx}"]`);
+    if (toggle) {
+      toggle.disabled = !on;
+      toggle.style.color = on ? "var(--lc-accent)" : "var(--lc-sub)";
+      toggle.style.cursor = on ? "pointer" : "default";
+    }
+
+    const offHint = card.querySelector(`span[data-ia-off-hint="${idx}"]`);
+    if (offHint) offHint.style.display = on ? "none" : "";
+
+    /* 关掉总开关时顺手收起面板，不留「开着却不可展开」的残留 */
+    if (!on) {
+      const panel = card.querySelector(`[data-ia-panel="${idx}"]`);
+      const arrow = card.querySelector(`[data-arrow="${idx}"]`);
+      if (panel) panel.style.display = "none";
+      if (arrow) arrow.style.transform = "rotate(0deg)";
+      card.dataset.interactiveOpen = "false";
     }
   }
 
@@ -201,6 +262,9 @@
       if (typeof dec.interactive.dialogueStack !== 'number' || dec.interactive.dialogueStack < 1 || dec.interactive.dialogueStack > 5) {
         dec.interactive.dialogueStack = 1;
       }
+
+      // 总开关不再重算（2026-09-24 起为显式开关）：缺失时上面的补全已兜成 false，
+      // 已有 true/false 一律沿用，避免"派生"把用户手动关掉的图重新点亮
     });
 
     arr.forEach((dec, idx) => {
@@ -211,21 +275,15 @@
 
       card.innerHTML = `
         <div style="display:flex;gap:10px;align-items:flex-start;">
-          <img src="${dec.dataUrl}" style="width:52px;height:52px;object-fit:contain;border-radius:6px;background:#eee;flex-shrink:0;" />
+          <img src="${dec.dataUrl}" style="width:52px;height:52px;object-fit:contain;border-radius:6px;flex-shrink:0;background:repeating-conic-gradient(rgba(128,128,128,.18) 0 25%,transparent 0 50%) 0 0/12px 12px,rgba(128,128,128,.08);" />
           <div style="flex:1;min-width:0;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
               <span style="font-size:12px;color:var(--lc-text);font-weight:500;">装饰 #${idx + 1}</span>
               <button class="btn" data-del="${idx}" style="padding:2px 8px;font-size:11px;flex-shrink:0;">删除</button>
             </div>
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-              <label class="dec-toggle" style="font-size:11px;cursor:pointer;">
-                <input type="checkbox" data-idx="${idx}" data-key="enabled" ${dec.enabled !== false ? 'checked' : ''} />
-                <span style="color:${dec.enabled !== false ? '#22c55e' : 'var(--lc-sub)'};font-weight:${dec.enabled !== false ? '500' : 'normal'};transition:color 0.2s;">显示</span>
-              </label>
-              <label class="dec-toggle" style="font-size:11px;cursor:pointer;">
-                <input type="checkbox" data-idx="${idx}" data-key="aboveCards" ${dec.aboveCards ? 'checked' : ''} />
-                <span style="color:${dec.aboveCards ? '#22c55e' : 'var(--lc-sub)'};font-weight:${dec.aboveCards ? '500' : 'normal'};transition:color 0.2s;">覆盖卡片</span>
-              </label>
+              <button type="button" class="lc-pill ${dec.enabled !== false ? 'on' : 'off'}" data-idx="${idx}" data-key="enabled"><i class="lc-dot"></i>显示</button>
+              <button type="button" class="lc-pill ${dec.aboveCards ? 'on' : 'off'}" data-idx="${idx}" data-key="aboveCards"><i class="lc-dot"></i>覆盖卡片</button>
             </div>
             <div style="display:flex;align-items:center;gap:6px;">
               <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">透明</span>
@@ -234,25 +292,26 @@
             </div>
           </div>
         </div>
-        <!-- 互动效果展开栏 -->
+        <!-- 互动效果展开栏：右侧总开关，关着时面板不可展开 -->
         <div style="margin-top:8px;border-top:1px solid var(--lc-line);padding-top:6px;">
-          <div style="display:flex;align-items:center;gap:8px;">
-            <button class="btn" data-toggle-ia="${idx}" type="button" style="padding:4px 0;font-size:12px;color:var(--lc-accent);background:transparent;border:none;text-align:left;display:flex;align-items:center;gap:4px;cursor:pointer;flex:1;">
-              <span data-arrow="${idx}" style="display:inline-block;transition:transform 0.2s;${isOpen ? 'transform:rotate(90deg);' : ''}">▶</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <button class="btn" data-toggle-ia="${idx}" type="button" ${ia.enabled ? '' : 'disabled'} style="padding:4px 0;font-size:12px;color:${ia.enabled ? 'var(--lc-accent)' : 'var(--lc-sub)'};background:transparent;border:none;text-align:left;display:flex;align-items:center;gap:4px;cursor:${ia.enabled ? 'pointer' : 'default'};flex:1;min-width:0;">
+              <span data-arrow="${idx}" style="display:inline-block;transition:transform 0.2s;${isOpen && ia.enabled ? 'transform:rotate(90deg);' : ''}">▶</span>
               <span>互动效果</span>
             </button>
-            <button class="btn" data-ia-toggle="${idx}" type="button" style="font-size:11px;flex-shrink:0;padding:2px 8px;border-radius:10px;transition:all 0.2s;cursor:pointer;border:none;${ia.enabled ? 'color:#22c55e;background:color-mix(in srgb,#22c55e 12%,var(--lc-card));font-weight:500;' : 'color:var(--lc-sub);background:var(--lc-soft);'}">${ia.enabled ? '已开启' : '未开启'}</button>
+            <span data-ia-off-hint="${idx}" style="font-size:11px;color:var(--lc-sub);${ia.enabled ? 'display:none;' : ''}">开启后可调</span>
+            <button type="button" class="lc-pill ${ia.enabled ? 'on' : 'off'}" data-ia-master="${idx}" title="开启后贴图会浮动呼吸、点击会挤压回弹，与非互动的静止贴图区分"><i class="lc-dot"></i><span>${ia.enabled ? '已开启' : '未开启'}</span></button>
           </div>
-          <div data-ia-panel="${idx}" style="${isOpen ? '' : 'display:none;'}padding-top:8px;">
-            <p class="hint" style="margin:0 0 8px 0;font-size:11px;color:var(--lc-sub);">开启后默认开启覆盖卡片（确保点击能响应）</p>
+          <div data-ia-panel="${idx}" style="${isOpen && ia.enabled ? '' : 'display:none;'}padding-top:8px;">
 
 <div style="margin-bottom:8px;display:flex;align-items:center;gap:6px;">
   <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">呼吸模式</span>
   <select data-idx="${idx}" data-ia-key="breatheMode" style="flex:1;padding:2px 6px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);">
-    <option value="float" ${(ia?.breatheMode || 'float') !== 'squish' ? 'selected' : ''}>浮动</option>
-    <option value="squish" ${(ia?.breatheMode || 'float') === 'squish' ? 'selected' : ''}>挤压</option>
+    <option value="float" ${ia.breathe !== false && (ia?.breatheMode || 'float') !== 'squish' ? 'selected' : ''}>浮动</option>
+    <option value="squish" ${ia.breathe !== false && (ia?.breatheMode || 'float') === 'squish' ? 'selected' : ''}>挤压</option>
+    <option value="off" ${ia.breathe === false ? 'selected' : ''}>关闭</option>
   </select>
-  <button class="btn" data-breathe-more="${idx}" type="button" style="padding:2px 8px;font-size:11px;background:var(--lc-soft);border:none;border-radius:6px;cursor:pointer;color:var(--lc-sub);">更多</button>
+  <button class="lc-link" data-breathe-more="${idx}" type="button">更多</button>
 </div>
 <div data-breathe-panel="${idx}" style="display:none;margin-bottom:10px;padding:8px;background:var(--lc-soft);border-radius:6px;">
   <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
@@ -272,10 +331,12 @@
 
             <div style="margin-bottom:10px;display:flex;align-items:center;gap:6px;">
   <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">点击热区</span>
+  <button type="button" class="help-dot" data-hint="dec-hit-help-${idx}" title="点击热区是什么？">?</button>
   <input type="range" data-idx="${idx}" data-ia-key="hitScale" min="20" max="100" value="${dec.hitScale ?? 100}" style="flex:1;min-width:0;height:4px;" />
   <span class="value" style="min-width:32px;font-size:11px;">${dec.hitScale ?? 100}%</span>
 </div>
-            <div data-ia-options="${idx}" style="${ia.enabled ? '' : 'display:none;'}padding-left:10px;border-left:2px solid var(--lc-line);">
+            <p class="hint collapsible plain" id="dec-hit-help-${idx}" style="margin:-6px 0 10px 0;">点击贴图时多大的范围能触发互动效果（挤压回弹、emoji 粒子等）。100%＝整张贴图都响应；调小后只有贴图中心的区域响应，点边缘会像没贴图一样直接点到网页。如果贴图挡住了页面按钮、经常误触发互动，把它调小即可。</p>
+            <div data-ia-options="${idx}">
 <div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px dashed var(--lc-line);">
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
                 <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">挤压强度</span>
@@ -292,28 +353,16 @@
               </div>
             </div>
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-                <label class="dec-toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
-                  <input type="checkbox" data-idx="${idx}" data-ia-key="particles" ${ia.particles ? 'checked' : ''} />
-                  <span style="color:${ia.particles ? '#22c55e' : 'var(--lc-sub)'};font-weight:${ia.particles ? '500' : 'normal'};transition:color 0.2s;">弹出emoji粒子</span>
-                </label>
-                <div style="display:flex;align-items:center;gap:8px;">
-                  <input type="text" data-idx="${idx}" data-ia-key="emojis" value="${(ia.emojis || []).join('')}" placeholder="" maxlength="12" style="width:70px;padding:3px 6px;border:1px solid var(--lc-line);border-radius:6px;font-size:16px;text-align:center;" />
-                  <span class="hint" style="margin:0;font-size:11px;color:var(--lc-sub);">填写1~3个emoji</span>
-                </div>
+                <button type="button" class="lc-pill ${ia.particles ? 'on' : 'off'}" data-idx="${idx}" data-ia-key="particles"><i class="lc-dot"></i>emoji 粒子</button>
+                <input type="text" data-idx="${idx}" data-ia-key="emojis" value="${(ia.emojis || []).join('')}" placeholder="可填1~3个" maxlength="12" style="width:78px;padding:3px 6px;border:1px solid var(--lc-line);border-radius:6px;font-size:16px;text-align:center;visibility:${ia.particles ? 'visible' : 'hidden'};" />
               </div>
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-                <label class="dec-toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
-                  <input type="checkbox" data-idx="${idx}" data-ia-key="sound" ${ia.sound ? 'checked' : ''} />
-                  <span style="color:${ia.sound ? '#22c55e' : 'var(--lc-sub)'};font-weight:${ia.sound ? '500' : 'normal'};transition:color 0.2s;">音效</span>
-                </label>
-                <button class="btn" data-sound-edit="${idx}" type="button" style="padding:2px 10px;font-size:11px;background:var(--lc-soft);border:none;border-radius:6px;cursor:pointer;color:var(--lc-accent);display:${ia.sound ? '' : 'none'};">更多设置</button>
+                <button type="button" class="lc-pill ${ia.sound ? 'on' : 'off'}" data-idx="${idx}" data-ia-key="sound"><i class="lc-dot"></i>音效</button>
+                <button class="lc-link" data-sound-edit="${idx}" type="button" style="display:${ia.sound ? '' : 'none'};">更多</button>
               </div>
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-                <label class="dec-toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
-                  <input type="checkbox" data-idx="${idx}" data-ia-key="dialogue" ${ia.dialogue ? 'checked' : ''} />
-                  <span style="color:${ia.dialogue ? '#22c55e' : 'var(--lc-sub)'};font-weight:${ia.dialogue ? '500' : 'normal'};transition:color 0.2s;">词卡弹窗</span>
-                </label>
-                <button class="btn" data-dialogue-edit="${idx}" type="button" style="padding:2px 10px;font-size:11px;background:var(--lc-soft);border:none;border-radius:6px;cursor:pointer;color:var(--lc-accent);">编辑词卡 (${(ia.dialogues || []).length})</button>
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <button type="button" class="lc-pill ${ia.dialogue ? 'on' : 'off'}" data-idx="${idx}" data-ia-key="dialogue"><i class="lc-dot"></i>词卡弹窗</button>
+                <button class="lc-link" data-dialogue-edit="${idx}" type="button" style="display:${ia.dialogue ? '' : 'none'};">编辑词卡 (${(ia.dialogues || []).length})</button>
               </div>
             </div>
           </div>
@@ -348,106 +397,77 @@
       });
     });
 
-    // 绑定显示/隐藏复选框
-    list.querySelectorAll('input[type="checkbox"][data-key]').forEach(input => {
-      input.addEventListener("change", (e) => {
-        const idx = +e.target.dataset.idx;
-        const key = e.target.dataset.key;
-        if (!state.decorations[idx]) return;
-        state.decorations[idx][key] = e.target.checked;
-        // 实时更新文字颜色
-        const span = e.target.nextElementSibling;
-        if (span) {
-          span.style.color = e.target.checked ? '#22c55e' : 'var(--lc-sub)';
-          span.style.fontWeight = e.target.checked ? '500' : 'normal';
-        }
-        save();
-      });
-    });
-
-    // 绑定互动效果 toggle
-    list.querySelectorAll('button[data-ia-toggle]').forEach(btn => {
+    // 绑定显示/覆盖卡片开关胶囊（undefined 视为开：关->开 写回 true）
+    list.querySelectorAll('.lc-pill[data-key]').forEach(btn => {
       btn.addEventListener("click", (e) => {
-        const idx = +e.currentTarget.dataset.iaToggle;
+        const idx = +e.currentTarget.dataset.idx;
+        const key = e.currentTarget.dataset.key;
         if (!state.decorations[idx]) return;
-        if (!state.decorations[idx].interactive) {
-          state.decorations[idx].interactive = { enabled: false, particles: false, emojis: ["\u2728"], sound: false, breathe: true };
-        }
-        const newVal = !state.decorations[idx].interactive.enabled;
-        state.decorations[idx].interactive.enabled = newVal;
-        // 如果正在开启互动效果，自动联动覆盖卡片 + 粒子和音效
-        if (newVal) {
-          state.decorations[idx].aboveCards = true;
-          state.decorations[idx].interactive.particles = true;
-          state.decorations[idx].interactive.sound = true;
-        }
-
-        // 实时更新按钮样式
-        const btnEl = e.currentTarget;
-        if (newVal) {
-          btnEl.textContent = "已开启";
-          btnEl.style.cssText = "font-size:11px;flex-shrink:0;padding:2px 8px;border-radius:10px;transition:all 0.2s;cursor:pointer;border:none;color:#22c55e;background:color-mix(in srgb,#22c55e 12%,var(--lc-card));font-weight:500;";
-        } else {
-          btnEl.textContent = "未开启";
-          btnEl.style.cssText = "font-size:11px;flex-shrink:0;padding:2px 8px;border-radius:10px;transition:all 0.2s;cursor:pointer;border:none;color:var(--lc-sub);background:var(--lc-soft);";
-        }
-
-        // 同步更新"覆盖卡片"开关的显示状态
-        const aboveCheckbox = list.querySelector(`input[data-idx="${idx}"][data-key="aboveCards"]`);
-        if (aboveCheckbox) {
-          aboveCheckbox.checked = state.decorations[idx].aboveCards;
-          const aboveSpan = aboveCheckbox.nextElementSibling;
-          if (aboveSpan) {
-            aboveSpan.style.color = aboveCheckbox.checked ? '#22c55e' : 'var(--lc-sub)';
-            aboveSpan.style.fontWeight = aboveCheckbox.checked ? '500' : 'normal';
-          }
-        }
-
-        // 同步更新 particles 和 sound 开关的显示状态
-        const particlesCheckbox = list.querySelector(`input[data-idx="${idx}"][data-ia-key="particles"]`);
-        if (particlesCheckbox) {
-          particlesCheckbox.checked = state.decorations[idx].interactive.particles;
-          const particlesSpan = particlesCheckbox.nextElementSibling;
-          if (particlesSpan) {
-            particlesSpan.style.color = particlesCheckbox.checked ? '#22c55e' : 'var(--lc-sub)';
-            particlesSpan.style.fontWeight = particlesCheckbox.checked ? '500' : 'normal';
-          }
-        }
-        const soundCheckbox = list.querySelector(`input[data-idx="${idx}"][data-ia-key="sound"]`);
-        if (soundCheckbox) {
-          soundCheckbox.checked = state.decorations[idx].interactive.sound;
-          const soundSpan = soundCheckbox.nextElementSibling;
-          if (soundSpan) {
-            soundSpan.style.color = soundCheckbox.checked ? '#22c55e' : 'var(--lc-sub)';
-            soundSpan.style.fontWeight = soundCheckbox.checked ? '500' : 'normal';
-          }
-        }
-
-        // 显示/隐藏子选项
-        const card = list.children[idx];
-        const optionsDiv = card.querySelector(`[data-ia-options="${idx}"]`);
-        if (optionsDiv) {
-          optionsDiv.style.display = newVal ? "" : "none";
-        }
+        const cur = key === "enabled" ? state.decorations[idx][key] !== false : !!state.decorations[idx][key];
+        state.decorations[idx][key] = !cur;
+        btn.classList.toggle("on", !cur);
+        btn.classList.toggle("off", cur);
         save();
       });
     });
 
-    // 绑定 particles 和 sound 复选框
-    list.querySelectorAll('input[type="checkbox"][data-ia-key]').forEach(input => {
-      input.addEventListener("change", (e) => {
-        const idx = +e.target.dataset.idx;
-        const key = e.target.dataset.iaKey;
-        if (!state.decorations[idx]) return;
-        if (!state.decorations[idx].interactive) {
-          state.decorations[idx].interactive = { enabled: false, particles: false, emojis: ["\u2728"], sound: false, breathe: true };
+    // 互动总开关胶囊（右侧「未开启/已开启」）：
+    // 开 = 默认浮动呼吸 + 点击挤压（与非互动的静止贴图区分）；关 = 拖回静止、面板收起不可展开
+    list.querySelectorAll('button[data-ia-master]').forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        const idx = +e.currentTarget.dataset.iaMaster;
+        const dec = state.decorations[idx];
+        if (!dec) return;
+        if (!dec.interactive) {
+          dec.interactive = { enabled: false, particles: false, emojis: ["\u2728"], sound: false, breathe: false };
         }
-        state.decorations[idx].interactive[key] = e.target.checked;
-        // 实时更新文字颜色
-        const span = e.target.nextElementSibling;
-        if (span) {
-          span.style.color = e.target.checked ? '#22c55e' : 'var(--lc-sub)';
-          span.style.fontWeight = e.target.checked ? '500' : 'normal';
+        const ia = dec.interactive;
+        ia.enabled = ia.enabled !== true;
+        if (ia.enabled) {
+          /* 开启即给「会动的静态图」：浮动呼吸 + 点击挤压。
+             呼吸模式若用户此前选过（浮动/挤压）就尊重，从未选过才补浮动 */
+          ia.breathe = true;
+          if (!['float', 'squish'].includes(ia.breatheMode)) ia.breatheMode = 'float';
+          ia.squeeze = true;
+        }
+        syncIaMaster(list.children[idx], idx);
+        save();
+      });
+    });
+
+    // 绑定互动子功能开关胶囊（emoji 粒子 / 音效 / 词卡弹窗）
+    // 总开关是上面那颗显式胶囊，这里的子功能开关不再反过来改写 enabled
+    list.querySelectorAll('.lc-pill[data-ia-key]').forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        const idx = +e.currentTarget.dataset.idx;
+        const key = e.currentTarget.dataset.iaKey;
+        const dec = state.decorations[idx];
+        if (!dec) return;
+        if (!dec.interactive) {
+          dec.interactive = { enabled: false, particles: false, emojis: ["\u2728"], sound: false, breathe: true };
+        }
+        const next = !dec.interactive[key];
+        dec.interactive[key] = next;
+        btn.classList.toggle("on", next);
+        btn.classList.toggle("off", !next);
+        const card = list.children[idx];
+        if (key === "particles") {
+          const box = card.querySelector(`input[data-idx="${idx}"][data-ia-key="emojis"]`);
+          if (box) box.style.visibility = next ? "visible" : "hidden";
+        }
+        if (key === "sound") {
+          const b = card.querySelector(`button[data-sound-edit="${idx}"]`);
+          if (b) b.style.display = next ? "" : "none";
+        }
+        if (key === "dialogue") {
+          const b = card.querySelector(`button[data-dialogue-edit="${idx}"]`);
+          if (b) b.style.display = next ? "" : "none";
+        }
+        // 点击类功能需要贴图能接到点击：覆盖卡片没开就顺手打开
+        if (next && (key === "particles" || key === "sound" || key === "dialogue") && !dec.aboveCards) {
+          dec.aboveCards = true;
+          const ab = card.querySelector('.lc-pill[data-key="aboveCards"]');
+          if (ab) { ab.classList.add("on"); ab.classList.remove("off"); }
         }
         save();
       });
@@ -618,7 +638,7 @@
         save();
       });
 
-      // 呼吸模式下拉框
+      // 呼吸模式下拉框（off = 关闭浮动呼吸，总开关仍开着，点击挤压照旧）
       list.querySelectorAll('select[data-ia-key="breatheMode"]').forEach(select => {
         select.addEventListener("change", (e) => {
           const idx = +e.target.dataset.idx;
@@ -626,7 +646,12 @@
           if (!state.decorations[idx].interactive) {
             state.decorations[idx].interactive = { enabled: false, particles: false, emojis: ["\u2728"], sound: false, breathe: true, squeezeStrength: 15, bounceStyle: 'elastic', breatheMode: 'float', breatheAmplitude: 30, breatheSpeed: 'normal' };
           }
-          state.decorations[idx].interactive.breatheMode = e.target.value;
+          if (e.target.value === "off") {
+            state.decorations[idx].interactive.breathe = false;
+          } else {
+            state.decorations[idx].interactive.breathe = true;
+            state.decorations[idx].interactive.breatheMode = e.target.value;
+          }
           save();
         });
       });
@@ -674,24 +699,6 @@
           btn.textContent = isHidden ? "收起" : "更多";
         });
       }
-    });
-
-    // 词卡弹窗开关
-    list.querySelectorAll('input[type="checkbox"][data-ia-key="dialogue"]').forEach(input => {
-      input.addEventListener("change", (e) => {
-        const idx = +e.target.dataset.idx;
-        if (!state.decorations[idx]) return;
-        if (!state.decorations[idx].interactive) {
-          state.decorations[idx].interactive = { enabled: false, particles: false, emojis: ["\u2728"], sound: false, breathe: true, squeezeStrength: 15, bounceStyle: 'elastic', breatheMode: 'float', breatheAmplitude: 30, breatheSpeed: 'normal', dialogue: false, dialogues: [] };
-        }
-        state.decorations[idx].interactive.dialogue = e.target.checked;
-        const span = e.target.nextElementSibling;
-        if (span) {
-          span.style.color = e.target.checked ? '#22c55e' : 'var(--lc-sub)';
-          span.style.fontWeight = e.target.checked ? '500' : 'normal';
-        }
-        save();
-      });
     });
 
     // 编辑词卡按钮
@@ -802,6 +809,7 @@
     $("card-radius").value = s.card.radius; $("card-radius-v").textContent = s.card.radius + "px";
     $("card-gap").value = s.card.gap; $("card-gap-v").textContent = s.card.gap + "px";
     $("card-shadow").checked = s.card.shadow;
+    $("card-hover-zoom").checked = s.card.hoverZoom !== false;
     $("card-light-frost").checked = !!s.card.lightFrost;
     $("card-face-adapt").checked = s.card.faceAdapt !== false;
     $("card-frost-alpha").value = Math.round((s.card.frostAlpha || 0.6) * 100);
@@ -880,6 +888,9 @@
     $("official-comments").checked = !!(
       s.official && s.official.hideInComments
     );
+
+    // 评论区增强（工具行总开关，默认开；控件本身默认熄灭）
+    $("comment-toolbar").checked = !(s.comment && s.comment.toolbar === false);
 
     renderDecorations();
 
@@ -1077,6 +1088,13 @@
   on("card-radius", "input", (e) => { state.card.radius = +e.target.value; $("card-radius-v").textContent = e.target.value + "px"; save(); });
   on("card-gap", "input", (e) => { state.card.gap = +e.target.value; $("card-gap-v").textContent = e.target.value + "px"; save(); });
   on("card-shadow", "change", (e) => { state.card.shadow = e.target.checked; save(); });
+  /* 悬停轻微放大（默认开）：关掉后 content.js 两条渲染路径都不再生成
+     悬停缩放规则（气泡卡整卡那条 + 通用兜底管线 ::before 那条） */
+  on("card-hover-zoom", "change", (e) => {
+    if (!state.card) state.card = LC_clone(LC_DEFAULTS.card);
+    state.card.hoverZoom = e.target.checked;
+    save();
+  });
   /* 浅色毛玻璃：滑杆仅开关开启时显示 */
   function syncCardFrost() {
     const row = $("card-frost-alpha-row");
@@ -1127,10 +1145,44 @@
   document.addEventListener("click", (e) => {
     const dot = e.target.closest && e.target.closest(".help-dot[data-hint]");
     if (!dot) return;
+    /* 有的 "?" 就写在 <label class="toggle"> 里面（如「悬停轻微放大」），
+       不拦默认行为的话点它会顺带把那个开关翻一下 */
+    e.preventDefault();
     const hint = document.getElementById(dot.getAttribute("data-hint"));
     if (!hint) return;
     const open = hint.classList.toggle("open");
     dot.classList.toggle("on", open);
+  });
+  /* Esc 转发：面板是宿主页里的 iframe，用户在面板内点过之后焦点留在 iframe
+     文档，宿主页的 Esc 监听收不到键盘事件（表现为面板内点过就关不掉，
+     2026-09-24 报）。仅在「作为 FAB 面板 iframe 嵌入」时（parent !== self）
+     捕获：先 blur 焦点元素（消掉按键的 focus 描框），再写 storage 中继键，
+     content.js 的 onChanged 收到就 closePanel。工具栏弹窗（顶层文档）不
+     转发——它按浏览器默认行为自己关，免得关弹窗顺手把网页上的面板也关了。 */
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || window.parent === window) return;
+    /* 弹窗开着时 ESC 只关弹窗，不关整个面板（deco-import-cancel 会 resolve(null)） */
+    const closers = {
+      "dialogue-modal-overlay": "dialogue-modal-close",
+      "sound-modal-overlay": "sound-modal-close",
+      "deco-pick-modal-overlay": "deco-pick-modal-close",
+      "deco-import-modal-overlay": "deco-import-cancel",
+    };
+    const openId = Object.keys(closers).find((id) => {
+      const el = document.getElementById(id);
+      return el && el.style.display === "flex";
+    });
+    if (openId) {
+      const c = $(closers[openId]);
+      if (c) c.click();
+      return;
+    }
+    if (document.activeElement && document.activeElement.blur) {
+      document.activeElement.blur();
+    }
+    try {
+      chrome.storage.local.set({ lc_panel_esc: Date.now() });
+    } catch (err) {}
   });
 
   on("dark-mode", "change", (e) => { state.darkMode.mode = e.target.value; syncDarkBrightness(); save(); });
@@ -1266,6 +1318,13 @@
   });
   on("filter-counter", "change", (e) => {
     ensureFilter().showCounter = e.target.checked;
+    save();
+  });
+  /* 评论区增强：工具行总开关（默认开；只看作者/排序的运行态由页面
+   * 上的 chip 控制，不进配置——状态不跨帖保留） */
+  on("comment-toolbar", "change", (e) => {
+    if (!state.comment) state.comment = LC_clone(LC_DEFAULTS.comment);
+    state.comment.toolbar = e.target.checked;
     save();
   });
   on("filter-keywords", "input", (e) => {
@@ -1588,8 +1647,11 @@
           soundFile: '',             // 自定义音频 data URL
           soundFileName: '',         // 自定义音频文件名（显示用）
 
-          // 呼吸动画（已有）
-          breathe: true,
+          // 呼吸动画
+          /* 默认关闭：新上传的贴图完全静止，要不要浮动、要不要互动由用户自己开。
+             总开关（enabled）开着时面板会默认给「浮动」，所以这里的 false 只影响
+             尚未开过互动的图，不会把新图点亮 */
+          breathe: false,
           breatheMode: 'float',
           breatheAmplitude: 30,
           breatheSpeed: 'normal',
@@ -1671,8 +1733,12 @@
     return data;
   }
 
-  function cfgExport(mods) {
+  function cfgExport(mods, decoIds) {
     const picked = cfgPick(mods);
+    /* 按张分享：只保留勾选的装饰图（decorationsVisible 不受影响） */
+    if (decoIds && Array.isArray(picked.decorations)) {
+      picked.decorations = picked.decorations.filter((d) => decoIds.includes(d.id));
+    }
     cfgDownload(
       `lofter-customizer-settings-${mods ? "part" : "all"}-${cfgDate()}.json`,
       {
@@ -1686,17 +1752,167 @@
     );
   }
 
-  on("cfg-export-all", "click", () => cfgExport(null));
+  /* 数据栏：模块勾选 → 导出按钮文案/可用态 + 已选计数
+     全选=「导出全部」，部分=「导出 N 个模块」，全不选=置灰 */
+  let cfgDecoPick = null; // null=全部；数组=勾选的装饰图 id（按张分享）
+  function syncCfgMods() {
+    const inputs = [...$("cfg-modules").querySelectorAll("input[data-mod]")];
+    const n = inputs.filter((i) => i.checked).length;
+    const btn = $("cfg-export-part");
+    const count = $("cfg-mod-count");
+    const tip = $("cfg-export-tip");
+    if (count) count.textContent = `已选 ${n}/${inputs.length}`;
+    if (!btn) return;
+    if (n === 0) {
+      btn.textContent = "导出模块";
+      btn.disabled = true;
+    } else if (n === inputs.length) {
+      btn.textContent = "导出全部";
+      btn.disabled = false;
+    } else {
+      btn.textContent = `导出 ${n} 个模块`;
+      btn.disabled = false;
+    }
+    /* 快捷链接取代静态提示：指向「你没在的那个极端」——
+       全选态=全不选，部分=全不选·全选，全不选态=全选 */
+    if (tip) {
+      tip.innerHTML = "";
+      const mk = (label) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "lc-link";
+        b.textContent = label;
+        return b;
+      };
+      if (n === 0) {
+        tip.appendChild(mk("全选"));
+      } else if (n === inputs.length) {
+        tip.appendChild(mk("全不选"));
+      } else {
+        tip.appendChild(mk("全不选"));
+        const sep = document.createElement("span");
+        sep.textContent = "·";
+        sep.style.color = "var(--lc-line)";
+        tip.appendChild(sep);
+        tip.appendChild(mk("全选"));
+      }
+    }
+    /* 「装饰」勾选且有装饰图时，显示按张选择入口 */
+    const pickRow = $("cfg-deco-pick-row");
+    if (pickRow) {
+      const decoChecked = inputs.some((i) => i.dataset.mod === "deco" && i.checked);
+      pickRow.style.display = decoChecked && (state.decorations || []).length ? "" : "none";
+    }
+    syncDecoPickLink();
+  }
+  $("cfg-modules").addEventListener("change", syncCfgMods);
+  /* 全不选/全选快捷链接（点击时按文案决定目标状态） */
+  $("cfg-export-tip").addEventListener("click", (e) => {
+    const t = e.target;
+    if (!t.classList || !t.classList.contains("lc-link")) return;
+    const val = t.textContent === "全不选" ? false : true;
+    [...$("cfg-modules").querySelectorAll("input[data-mod]")].forEach((i) => {
+      i.checked = val;
+    });
+    syncCfgMods();
+  });
+  syncCfgMods();
+
+  /* ---------- 装饰图按张导出选择 ---------- */
+  function syncDecoPickLink() {
+    const link = $("cfg-deco-pick");
+    if (!link) return;
+    const total = (state.decorations || []).length;
+    link.textContent = cfgDecoPick ? `已选 ${cfgDecoPick.length}/${total} 张 ›` : "全部 ›";
+  }
+
+  function decoShareLabel(d, i) {
+    const ia = d.interactive || {};
+    const tags = [];
+    if (Array.isArray(ia.dialogues) && ia.dialogues.length) tags.push("词卡×" + ia.dialogues.length);
+    if (ia.particles) tags.push("粒子");
+    if (ia.sound) tags.push("音效");
+    return `装饰 #${i + 1}` + (tags.length ? " · " + tags.join("·") : "");
+  }
+
+  function syncDecoPickCount() {
+    const boxes = [...$("deco-pick-modal-list").querySelectorAll("input")];
+    const n = boxes.filter((b) => b.checked).length;
+    $("deco-pick-count").textContent = `已选 ${n}/${boxes.length}`;
+    $("deco-pick-done").disabled = n === 0;
+  }
+
+  function openDecoPickModal() {
+    const list = $("deco-pick-modal-list");
+    list.innerHTML = "";
+    (state.decorations || []).forEach((d, i) => {
+      const lab = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.dataset.decId = d.id;
+      cb.checked = cfgDecoPick ? cfgDecoPick.includes(d.id) : true;
+      const img = document.createElement("img");
+      img.src = d.dataUrl;
+      img.alt = "";
+      const span = document.createElement("span");
+      span.textContent = decoShareLabel(d, i);
+      lab.append(cb, img, span);
+      list.appendChild(lab);
+    });
+    syncDecoPickCount();
+    $("deco-pick-modal-overlay").style.display = "flex";
+  }
+
+  on("cfg-deco-pick", "click", openDecoPickModal);
+  on("deco-pick-modal-close", "click", () => $("deco-pick-modal-overlay").style.display = "none");
+  on("deco-pick-all", "click", () => {
+    $("deco-pick-modal-list").querySelectorAll("input").forEach((b) => { b.checked = true; });
+    syncDecoPickCount();
+  });
+  on("deco-pick-none", "click", () => {
+    $("deco-pick-modal-list").querySelectorAll("input").forEach((b) => { b.checked = false; });
+    syncDecoPickCount();
+  });
+  on("deco-pick-modal-list", "change", syncDecoPickCount);
+  on("deco-pick-done", "click", () => {
+    const boxes = [...$("deco-pick-modal-list").querySelectorAll("input")];
+    const ids = boxes.filter((b) => b.checked).map((b) => b.dataset.decId);
+    cfgDecoPick = ids.length === boxes.length ? null : ids; // 全勾=回到「全部」，导出文件不带多余过滤
+    syncDecoPickLink();
+    $("deco-pick-modal-overlay").style.display = "none";
+  });
+  on("deco-pick-modal-overlay", "click", (e) => {
+    if (e.target === $("deco-pick-modal-overlay")) $("deco-pick-modal-overlay").style.display = "none";
+  });
+
+  /* ---------- 装饰图导入方式弹窗（覆盖 / 追加） ---------- */
+  function askDecoImportMode(incoming, current) {
+    return new Promise((resolve) => {
+      const ov = $("deco-import-modal-overlay");
+      $("deco-import-modal-desc").textContent =
+        `导入的配置包含 ${incoming} 张装饰图，你当前已有 ${current} 张。选择怎么处理：`;
+      const done = (v) => { ov.style.display = "none"; resolve(v); };
+      $("deco-import-append").onclick = () => done("append");
+      $("deco-import-override").onclick = () => done("override");
+      $("deco-import-cancel").onclick = () => done(null);
+      ov.onclick = (e) => { if (e.target === ov) done(null); };
+      ov.style.display = "flex";
+    });
+  }
 
   on("cfg-export-part", "click", () => {
-    const mods = [...$("cfg-modules").querySelectorAll("input[data-mod]")]
-      .filter((i) => i.checked)
-      .map((i) => i.dataset.mod);
+    const inputs = [...$("cfg-modules").querySelectorAll("input[data-mod]")];
+    const mods = inputs.filter((i) => i.checked).map((i) => i.dataset.mod);
     if (!mods.length) {
       alert("请先勾选至少一个模块。");
       return;
     }
-    cfgExport(mods);
+    const allSel = mods.length === inputs.length;
+    /* 勾了「装饰」且做了按张选择 → 即使全选也不走整份快照（要保留过滤） */
+    const decoIds =
+      mods.includes("deco") && Array.isArray(cfgDecoPick) ? cfgDecoPick : null;
+    /* 全选时走整份快照导出（文件名带 -all，_modules 记为 "all"） */
+    cfgExport(allSel && !decoIds ? null : mods, decoIds);
   });
 
   on("cfg-import", "click", () => $("cfg-import-file").click());
@@ -1738,12 +1954,25 @@
           .join("、")
       : "全部配置";
 
+    /* 装饰图冲突处理：双方都有装饰图时先问覆盖还是追加。
+       词卡/音效/粒子都是装饰图的属性，随图走，不存在单独导入 */
+    const incomingDecs = Array.isArray(data.decorations) ? data.decorations : [];
+    const affectsDeco = !mods || mods.includes("deco");
+    const currentDecsBefore = Array.isArray(state.decorations) ? state.decorations : [];
+    let decoMode = null;
+    if (affectsDeco && incomingDecs.length && currentDecsBefore.length) {
+      decoMode = await askDecoImportMode(incomingDecs.length, currentDecsBefore.length);
+      if (!decoMode) return;
+    }
+
     const lines = [
       `即将导入${scope}。`,
       "",
-      mods
-        ? "只覆盖上述模块的设置，未包含的项保持当前值不变。"
-        : "会覆盖当前全部设置（未包含的项回到默认值）。",
+      decoMode === "append"
+        ? "装饰图会追加到你现有的后面，其余项只覆盖文件包含的设置。"
+        : mods
+          ? "只覆盖上述模块的设置，未包含的项保持当前值不变。"
+          : "会覆盖当前全部设置（未包含的项回到默认值）。",
       "导入后需刷新 LOFTER 页面才会生效。",
     ];
     if (dropped.length) lines.push("", `已忽略无法识别的项：${dropped.join("、")}`);
@@ -1764,6 +1993,16 @@
       state = LC_migrateNav(LC_merge(LC_DEFAULTS, data));
     }
 
+    /* 追加模式：保留现有装饰图，导入的重新编 id 加在后面（防 id 撞车） */
+    if (decoMode === "append") {
+      const stamp = Date.now();
+      const inc = incomingDecs.map((d, i) => ({
+        ...LC_clone(d),
+        id: "dec_" + stamp + "_" + i + "_" + Math.random().toString(36).slice(2, 6),
+      }));
+      state.decorations = currentDecsBefore.concat(inc);
+    }
+
     render();
     initRanges();
     save();
@@ -1776,6 +2015,8 @@
     state = LC_migrateNav(LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {}));
     render();
     initRanges();
+    syncCfgMods(); // 装饰图计数/按张入口依赖加载后的 state.decorations，初渲染时还没到手
+    lcStateLoaded = true; // 真值已到手，可以撤首开防白闪的预判标记了
     applyDarkFollow(state); // 面板暗色跟随（函数声明提升，定义在 IIFE 尾部）
 
     // 向当前网页查询是否在装饰图编辑模式
@@ -2240,6 +2481,7 @@
       "dark",
       mode === "manual" || (mode === "auto" && darkMq.matches),
     );
+    if (lcStateLoaded) document.documentElement.classList.remove("lc-pre-dark");
   }
   darkMq.addEventListener("change", () => applyDarkFollow(state));
   /* 面板常驻 iframe：存储被别人改了（FAB/快捷键/另一处面板）要回灌 state。
@@ -2259,6 +2501,7 @@
         touched = true;
       }
     }
+    lcStateLoaded = true; // 外部改动即说明存储可读，同上
     applyDarkFollow(state);
     if (touched) render();
   });
