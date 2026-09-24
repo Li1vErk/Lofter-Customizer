@@ -4,6 +4,12 @@
 <head data-page-node-id="SJoZ2GPBYGmEcyXTJtgSsq">
   <meta charset="UTF-8" data-page-node-id="C6GFIDFFvjlPdCghA4pY0l" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="tGRy2ejSH86hSqnANCCbZQ" />
+  <!-- 悬浮面板首开防白闪：逻辑在同源外链 theme-boot.js。
+       不能写成内联 <script>——MV3 扩展页默认 CSP 是 script-src 'self'，内联脚本会被
+       浏览器直接拒绝执行（第一版就是这么废掉的，详见 theme-boot.js 头部注释）。
+       它必须留在 <head>、且在任何 <body> 内容之前，parser-blocking 才能保证
+       第一帧之前执行完毕。 -->
+  <script src="theme-boot.js"></script>
   <style>
     /* ============================================================
 面板主题色：固定蓝紫（与头部渐变同族，不跟随设置的主题色——
@@ -29,8 +35,12 @@
       --lc-danger: #e74c3c;
     }
 
-    /* 面板暗色跟随（popup.js 按 深色模式设置+系统深浅 切 body.dark，判据同 content.js） */
-    body.dark {
+    /* 面板暗色跟随（popup.js 按 深色模式设置+系统深浅 切 body.dark，判据同 content.js）
+       html.lc-pre-dark body 是同值别写：悬浮面板首开时 popup.js 还没读到 storage，
+       由 <head> 里同源外链的 theme-boot.js 按宿主给的预判先顶上，避免第一帧露浅色
+       （防白闪；内联写法会被 MV3 的 script-src 'self' 拦掉，详见该文件） */
+    body.dark,
+    html.lc-pre-dark body {
       --lc-bg: #1b1b22;
       --lc-card: #26262e;
       --lc-soft: #30303a;
@@ -73,16 +83,37 @@
       overflow-x: hidden;
     }
 
-    /* 纵向细滚动条（只在 main 内出现） */
-    main::-webkit-scrollbar { width: 6px; }
-    main::-webkit-scrollbar-track { background: transparent; }
-    main::-webkit-scrollbar-thumb {
+    /* 纵向细滚动条（main 主滚动区 + 装饰图列表 #dec-list 内滚，同款 6px）
+       注：#dec-list 的 max-height/overflow-y 是行内样式（popup.html 正文），
+       浏览器只按选择器找滚动条样式——不给它单独列一份，它就会落回 OS 默认宽条。 */
+    main::-webkit-scrollbar,
+    #dec-list::-webkit-scrollbar { width: 6px; }
+    main::-webkit-scrollbar-track,
+    #dec-list::-webkit-scrollbar-track { background: transparent; }
+    main::-webkit-scrollbar-thumb,
+    #dec-list::-webkit-scrollbar-thumb {
       border-radius: 3px;
       background: color-mix(in srgb, var(--lc-accent) 40%, #fff);
     }
-    main::-webkit-scrollbar-thumb:hover {
+    main::-webkit-scrollbar-thumb:hover,
+    #dec-list::-webkit-scrollbar-thumb:hover {
       background: color-mix(in srgb, var(--lc-accent) 62%, #fff);
     }
+
+    /* 装饰卡开关胶囊：开=主题色+描边+状态点，关=灰（与「更多/编辑词卡」动作链接区分层级） */
+    .lc-pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;flex-shrink:0;
+      padding:2px 10px 2px 8px;border-radius:10px;cursor:pointer;border:1px solid transparent;
+      transition:all .2s;background:none;font-family:inherit}
+    .lc-pill .lc-dot{width:5px;height:5px;border-radius:50%;background:currentColor;flex-shrink:0}
+    .lc-pill.on{color:var(--lc-accent);background:color-mix(in srgb,var(--lc-accent) 20%,transparent);
+      border-color:color-mix(in srgb,var(--lc-accent) 55%,transparent);font-weight:500}
+    body.dark .lc-pill.on{color:#cfc6ff}
+    .lc-pill.off{color:var(--lc-sub);background:var(--lc-soft);border-color:var(--lc-line)}
+    /* 动作文字链接（更多/编辑词卡）：纯文字+›，视觉上低开关一级 */
+    .lc-link{background:none;border:none;padding:2px 1px;font-size:11px;color:var(--lc-sub);
+      cursor:pointer;flex-shrink:0;font-family:inherit;transition:color .2s}
+    .lc-link:hover{color:var(--lc-accent)}
+    .lc-link::after{content:" ›"}
 
     /* ---------- 头部：渐变 + 星球（伪元素 SVG）+ 手写体副标题 ---------- */
     .head {
@@ -281,6 +312,32 @@
       padding: 2px 14px 12px;
       margin: 12px 0 0;
       box-shadow: 0 1px 3px rgba(80, 70, 160, 0.05);
+    }
+
+    /* 装饰页吸顶工具行（2026-09-23 方案A：去容器扁平化）。
+       负 margin 撑满 pane 左右内边距，滚动时列表从它下面穿过；
+       top:0 相对 main 滚动口吸附，编辑位置/隐藏装饰图/添加装饰图随时可点。 */
+    #dec-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 0 -14px 10px;
+      padding: 8px 14px 9px;
+      background: var(--lc-bg);
+      border-bottom: 1px solid var(--lc-line);
+    }
+
+    /* 问号钉在工具行右侧（340px 宽排不下四个元素，flex 会把 ? 挤到第二排）。
+       sticky 本身是定位上下文，absolute 直接锚定工具行垂直居中。 */
+    #dec-toolbar .help-dot {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
     }
 
     .grp-title {
@@ -548,6 +605,16 @@
       transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
     }
 
+    /* 装饰图导出选择弹窗里的行（复用 chip 风格，带缩略图） */
+    .lc-mods label img {
+      width: 26px;
+      height: 26px;
+      object-fit: contain;
+      border-radius: 4px;
+      background: var(--lc-card);
+      flex-shrink: 0;
+    }
+
     .lc-mods input[type="checkbox"] {
       display: inline-block;
       appearance: none;
@@ -562,6 +629,41 @@
       cursor: pointer;
       flex-shrink: 0;
       transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    /* 数据栏：导出/导入动作行 */
+    .lc-mod-count {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--lc-sub);
+    }
+
+    .lc-export-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .lc-import-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-top: 1px solid var(--lc-line);
+      padding-top: 12px;
+    }
+
+    /* .btn 同优先级但声明在后面会覆盖背景/边框，这里提到 0-2-0 压住它 */
+    .btn.btn-primary {
+      background: var(--lc-accent);
+      border-color: var(--lc-accent);
+      color: #fff;
+    }
+
+    .btn.btn-primary:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
     }
 
     .lc-mods input[type="checkbox"]::after {
@@ -599,10 +701,6 @@
     }
 
     /* 数据栏按钮行：右对齐，按钮不撑满 */
-    .lc-btn-row {
-      justify-content: flex-end;
-    }
-
     /* ---------- 底栏 ---------- */
     .foot {
       padding: 12px 16px;
@@ -785,9 +883,9 @@
       <div class="grp-card"><div class="grp-title">字体</div>
       <div class="row" data-page-node-id="BGL1lYJuqw5kFN2PYjj7aO"><label data-page-node-id="4PHNb3Pb1iro3GIDVolvrU">字体名<button type="button" class="help-dot" title="什么是字体名？" data-hint="font-family-hint" data-page-node-id="4PHNb3Pb1iro3GIDVolvrU">?</button></label><input type="text" id="font-family" placeholder="例：PingFang SC, 霞鹜文楷" data-page-node-id="Yu9E3POr3hdVVV25cbWFzU" />
       </div>
-      <p class="hint collapsible" id="font-family-hint" data-page-node-id="zHintFontFamily">填本机已安装的字体名（右键字体文件"安装"后进入 C:\Windows\Fonts，未安装的不生效）；可填多个、逗号分隔，找不到时依次回退。部分字体（如京華老宋体）注册名只有英文（KingHwa_OldSong），中文名无效时请填英文名</p>
+      <p class="hint collapsible" id="font-family-hint" data-page-node-id="zHintFontFamily">填本机已安装的字体名——没装的填了不生效（字体文件右键"安装"后会进入 C:\Windows\Fonts）。可填多个、用逗号分隔，找不到的会依次往后选。个别字体只有英文名（如京華老宋体写 KingHwa_OldSong），填中文不生效时请填英文名。</p>
       <div class="row" data-page-node-id="tiZnWzg2uQ2mPBorrpDqwk"><label data-page-node-id="09fIjlMkV8bwr2vUeID3nm">字体预置</label><select id="font-preset" data-page-node-id="ZXEVt9ilWBxYJ45WgM1bLV"></select></div>
-      <p class="hint" data-page-node-id="09fIjlMkV8bwr2vUeID3nm-h">一键填入常见开源字体的名字，同样需要本机已安装该字体</p>
+      <p class="hint" data-page-node-id="09fIjlMkV8bwr2vUeID3nm-h">一键填入常见字体名，同样需要本机已装该字体</p>
       <div class="row" data-page-node-id="tTaWNtqFE14TnKs6L3FQbO"><label data-page-node-id="17CZj2T12Pgvz2btektx7V">文字大小 <span class="value" id="font-scale-v" data-page-node-id="WItEBaoGGgB4hBY5Nj11Yt"></span></label><input type="range"
           id="font-scale" min="100" max="140" data-page-node-id="up95nFMC0jTlcOJitLMlvo" /></div>
       </div>
@@ -795,23 +893,20 @@
 
     <!-- 装饰 -->
     <section class="pane" data-pane="deco" data-page-node-id="SAsbrXKxkA2jzqMtgtanqM">
-      <div class="grp-card">
-        <div class="grp-title">装饰图</div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;" data-page-node-id="4cmpVPakBpELYiTUcHLnn6">
-          <button id="dec-enter-edit" class="btn" style="display:none;" data-page-node-id="VdkhlYTBZhSOO6L4U2z2D8">编辑位置</button>
-          <button id="dec-toggle-visibility" class="btn" style="display:none;" data-page-node-id="tFAYVW1Iw2FIj4jSs6bwwW">隐藏装饰图</button>
-          <button class="btn" id="dec-exit-edit" type="button"
-            style="padding:2px 10px;font-size:11px;display:none;" data-page-node-id="eWO8CV6uBqM0vgt86RN5cr">退出编辑</button>
-        </div>
-        <p class="hint" style="margin:0 0 10px 0;" data-page-node-id="Hlsp5d52MBW8Vg5Gld1T8F">点击"编辑位置"后，可在网页上直接拖拽移动、拖拽边角缩放</p>
-        <div id="dec-list"
-          style="display:flex;flex-direction:column;gap:10px;max-height:320px;overflow-y:auto;padding-right:4px;" data-page-node-id="Y80QiDwOkvCd1VjTYaaYjm"></div>
-        <div style="margin-top:8px;" data-page-node-id="Yr4IcTTAxHTs333X0PlwBQ">
-          <input type="file" id="dec-file" accept="image/*" hidden multiple data-page-node-id="88bbCXKPyGaTw2H8z6c6bO" />
-          <button class="btn" id="dec-file-btn" type="button" data-page-node-id="xKMGdZmiCbheIEVvNGjyrD">+ 添加装饰图</button>
-        </div>
-        <p class="hint" style="margin-left:0;margin-top:6px;" data-page-node-id="tGZEpdbSAV2vZxMUBVBzR2">支持 PNG/GIF；可添加多张，各自调整位置、大小和图层</p>
+      <div id="dec-toolbar" data-page-node-id="4cmpVPakBpELYiTUcHLnn6">
+        <button id="dec-enter-edit" class="btn" style="display:none;" data-page-node-id="VdkhlYTBZhSOO6L4U2z2D8">编辑位置</button>
+        <button id="dec-toggle-visibility" class="btn" style="display:none;" data-page-node-id="tFAYVW1Iw2FIj4jSs6bwwW">隐藏装饰图</button>
+        <button id="dec-exit-edit" class="btn" type="button"
+          style="padding:2px 10px;font-size:11px;display:none;" data-page-node-id="eWO8CV6uBqM0vgt86RN5cr">退出编辑</button>
+        <input type="file" id="dec-file" accept="image/*" hidden multiple data-page-node-id="88bbCXKPyGaTw2H8z6c6bO" />
+        <button class="btn" id="dec-file-btn" type="button" data-page-node-id="xKMGdZmiCbheIEVvNGjyrD">＋ 添加装饰图</button>
+        <button type="button" class="help-dot" data-hint="deco-toolbar-help" title="装饰图怎么用？">?</button>
       </div>
+      <p class="hint collapsible plain" id="deco-toolbar-help" style="margin:-2px 0 10px 0;"><b>添加装饰图</b>：选本地图片贴到博客页面；<b>编辑位置</b>：在网页上拖拽摆放、拖角缩放；<b>隐藏装饰图</b>：一键藏起全部（卡片上的「显示」只管单张）。新贴的图默认静止；想让它浮动、可点，打开该卡片右下角的「未开启」开关。</p>
+      <p class="hint" id="dec-edit-hint" style="margin:0 0 10px 0;display:none;" data-page-node-id="Hlsp5d52MBW8Vg5Gld1T8F">已在编辑模式：在网页上直接拖拽移动、拖拽边角缩放，完成后点「退出编辑」</p>
+      <div id="dec-list"
+        style="display:flex;flex-direction:column;gap:10px;" data-page-node-id="Y80QiDwOkvCd1VjTYaaYjm"></div>
+      <p class="hint" id="dec-empty-tip" style="display:none;text-align:center;margin:14px 0 0;">还没有装饰图，点上方「＋ 添加装饰图」添加第一张</p>
     </section>
 
     <!-- 卡片 -->
@@ -823,9 +918,11 @@
       <div class="row" data-page-node-id="exyCZpCMgm5wtywKrs5Xhq"><label data-page-node-id="s0zkfSiqVtlypiPDPaG5BQ">卡片间距 <span class="value" id="card-gap-v" data-page-node-id="6Xo4DLKDX2UeTUkdV6QUZY"></span></label><input type="range" id="card-gap"
           min="15" max="30" data-page-node-id="8txne18CMaONeHMZb2MrWD" /></div>
       <label class="toggle" data-page-node-id="qNnHKBilADvhjRm8l5vKFc"><span data-page-node-id="HFxdEGHxOPwNRl9UIAohrl">卡片阴影</span><input type="checkbox" id="card-shadow" data-page-node-id="5Fk3pITBoEtF2twY5ousyT" /></label>
+      <label class="toggle"><span>悬停轻微放大<button type="button" class="help-dot" data-hint="card-hover-zoom-help" title="悬停放大说明">?</button></span><input type="checkbox" id="card-hover-zoom" /></label>
+      <p class="hint collapsible plain" id="card-hover-zoom-help">鼠标停在博文卡片上时，整张卡片轻微放大。关掉只影响这一项，其他外观都不变。</p>
       </div>
       <div class="grp-card"><div class="grp-title">卡片材质<button type="button" class="help-dot" data-hint="card-mat-help" title="卡片材质说明">?</button></div>
-      <p class="hint collapsible plain" id="card-mat-help">两档材质各自独立、随主题生效：<b>暗色·半透明底</b>——信息流卡片改为半透明深色底，背景图直接透出（卡片间隙也会露背景），卡面自带一圈微弱高光描边；<b>浅色·毛玻璃</b>（实验）——首页卡片改为半透明白＋真磨砂（背景透过卡面被模糊），卡隙同样露背景，若悬停/滚动掉帧请关掉；<b>卡面自适应材质</b>——采样卡片背后背景亮度，偏暗时卡面自动切深膜白字（与右侧栏玻璃深材质同族）。开启毛玻璃后，卡片出现动画期间可能看到从半透明到磨砂的瞬间过渡，属正常现象。</p>
+      <p class="hint collapsible plain" id="card-mat-help"><b>暗色 · 半透明底</b>：卡片变半透明深色底，透出背景图。<br><b>浅色 · 毛玻璃</b>（实验）：卡片改成半透明白＋磨砂，背景透过卡面变模糊；掉帧就关掉。<br><b>卡面自适应材质</b>：卡面颜色自动适配背景明暗。</p>
       <label class="toggle"><span>暗色 · 半透明底</span><input type="checkbox" id="dark-feed-translucent" /></label>
       <div class="row" id="dark-feed-trans-row" style="display:none;"><label>卡面不透明度 <span class="value"
             id="dark-feed-trans-v"></span></label><input type="range" id="dark-feed-trans-alpha" min="35" max="92" /></div>
@@ -860,7 +957,7 @@
     <!-- 导航 -->
     <section class="pane" data-pane="nav" data-page-node-id="RCoxgKQ5V739iASt25aqq2">
       <div class="grp-card"><div class="grp-title">导航栏<button type="button" class="help-dot" data-hint="nav-help" title="导航栏玻璃说明">?</button></div>
-      <p class="hint collapsible plain" id="nav-help">两个开关互斥（开一个自动关另一个），且需先开启自定义背景才生效。毛玻璃：磨砂遮住背后内容；液态玻璃：边缘折射+焦散（仅 Chromium），深色背景自动切白字。</p>
+      <p class="hint collapsible plain" id="nav-help">两个开关互斥（开一个自动关另一个），需先开启自定义背景才生效。毛玻璃：背后内容变模糊；液态玻璃：边缘有折射光感（仅 Chrome / Edge 支持），深色背景自动切白字。</p>
       <label class="toggle" data-page-node-id="YrVF9sw8GyY0AZmYEbfRA1"><span data-page-node-id="yHd59tfyMbPM7MMesCqplK">导航栏毛玻璃（低透）</span><input type="checkbox" id="nav-blur" data-page-node-id="C2sXwPE2lp94jDC3fXkmIB" /></label>
       <label class="toggle"><span>导航栏液态玻璃（高透·折射）</span><input type="checkbox" id="nav-hyalite" /></label>
       <div class="row" id="nav-mat-row" style="display:none;"><label>玻璃材质</label><select id="nav-mat-mode">
@@ -869,10 +966,10 @@
         <option value="dark">深色材质（白字）</option>
       </select></div>
       <div class="row" data-page-node-id="H2ZtLFCSEXUug1ahlEcdEK"><label data-page-node-id="7ciKvUFPTImaCsIfbAEo8R">主题色</label><input type="color" id="th-accent" data-page-node-id="jhl4UyNW5PVF4eDAEomKtG" /></div>
-      <p class="hint" data-page-node-id="zUCFOj21Hy3IsaOz0K2d3Q">影响链接、悬停色等</p>
+      <p class="hint" data-page-node-id="zUCFOj21Hy3IsaOz0K2d3Q">影响链接、按钮和勾选框等可交互元素的颜色（含悬停高亮）</p>
       </div>
       <div class="grp-card"><div class="grp-title">右侧栏<button type="button" class="help-dot" data-hint="side-help" title="右侧栏玻璃说明">?</button></div>
-      <p class="hint collapsible plain" id="side-help">把首页右侧栏的卡片换成玻璃卡片。默认「磨砂」：半透明膜＋18px 模糊，走 GPU 加速、开销低；开「边缘折射」才用 hyalite 的折射＋焦散＋边缘光（仅 Chromium，滤镜在 Chromium 走软件光栅化，会拖慢全页其他动效，故默认关）。开启后这一栏的暗色不再靠反色实现，而是深色玻璃＋白字，卡内站点底色会被清成透明。</p>
+      <p class="hint collapsible plain" id="side-help">把右侧栏的卡片换成玻璃卡片（只在首页和「查看更多」页生效）。默认「磨砂」：卡片半透明、背后内容变模糊。「边缘折射」才有边缘光感，但很吃性能、可能拖慢整页，所以默认关闭（仅 Chrome / Edge 支持）。</p>
       <label class="toggle"><span>右侧栏玻璃（磨砂）</span><input type="checkbox" id="sidebar-hyalite" /></label>
       <div class="row" id="side-mat-row" style="display:none;"><label>玻璃材质</label><select id="side-mat-mode">
         <option value="auto">自动适应背景</option>
@@ -914,7 +1011,7 @@
         <textarea id="filter-keywords" rows="4"
           style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);resize:vertical;"
           placeholder="一行一个关键词，也可以用逗号分隔"></textarea>
-        <p class="hint collapsible plain" id="filter-keywords-help" style="margin:4px 0 12px 0;">多个关键词写法：一行一个，或用中/英文逗号分隔，命中任一个即隐藏。匹配标题、正文与标签，不区分大小写。关键词只作用于帖子卡片；评论区只按「已屏蔽用户」隐藏，不做关键词匹配（评论正文短，关键词误杀率不可控）。</p>
+        <p class="hint collapsible plain" id="filter-keywords-help" style="margin:4px 0 12px 0;">多个关键词写法：一行一个，或用中/英文逗号分隔，命中任一个即隐藏。匹配标题、正文与标签，不区分大小写。关键词只作用于帖子卡片；评论区只按「已屏蔽用户」隐藏，不做关键词匹配。</p>
         <div class="row" style="margin-bottom:8px;"><label style="flex:0 0 auto;">已屏蔽用户<button type="button" class="help-dot" data-hint="filter-users-help" title="怎么屏蔽用户？">?</button></label><span class="hint" id="filter-user-count" style="margin:0;">0</span></div>
         <p class="hint collapsible plain" id="filter-users-help" style="margin:4px 0 12px 0;">在首页/标签页帖子的作者名旁点「隐藏」即可屏蔽该用户；被屏蔽的用户在这里移除。</p>
         <div id="filter-users"
@@ -925,7 +1022,7 @@
         </label>
       </div>
       <div class="grp-card"><div class="grp-title">官方黑名单<button type="button" class="help-dot" data-hint="official-help" title="什么是官方黑名单？">?</button></div>
-        <p class="hint collapsible plain" id="official-help" style="margin:4px 0 12px 0;">官方拉黑由 LOFTER 服务端执行：动态与标签页不再显示对方内容，对方也无法评论/私信你（对方可能感知，App 端进你主页会看到提示）。插件本地隐藏则完全无感，两者互不替代。</p>
+        <p class="hint collapsible plain" id="official-help" style="margin:4px 0 12px 0;">拉黑由 LOFTER 官方执行：动态和标签页不再显示对方内容，对方也无法评论/私信你；但对方可能感知到（在 App 里进你主页会看到提示）。插件本地的「隐藏」完全无感，两者不通用。</p>
         <div style="display:flex;gap:6px;">
           <input id="official-add-input" type="text" placeholder="粘贴对方主页链接或 ID"
             style="flex:1;min-width:0;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);">
@@ -940,10 +1037,15 @@
           <span>评论区也隐藏黑名单用户</span>
           <input type="checkbox" id="official-comments" />
         </label>
-        <p class="hint plain">开启后，评论区里黑名单成员的评论会被隐藏（帖子详情页、首页/标签页、独立评论 iframe 均生效）。开关一开立即刷新，无需重新加载页面。</p>
+      </div>
+      <div class="grp-card"><div class="grp-title">评论区增强</div>
+        <label class="toggle">
+          <span>评论工具行（只看作者 / 排序）</span>
+          <input type="checkbox" id="comment-toolbar" />
+        </label>
       </div>
       <div class="grp-card"><div class="grp-title">路线图</div>
-        <p class="hint plain" data-page-node-id="lcFuncRoadmap">评论区增强、表情快捷输入、文章导出等功能会陆续加入本栏，每项都是独立开关、默认关闭。</p>
+        <p class="hint plain" data-page-node-id="lcFuncRoadmap">表情快捷输入（文字版）、文章导出等功能会陆续加入本栏，每项都是独立开关。</p>
       </div>
     </section>
 
@@ -974,31 +1076,30 @@
       </div>
       </div>
 
-      <div class="grp-card"><div class="grp-title">数据</div>
-        <div class="row" data-page-node-id="lcExpRow">
-          <label data-page-node-id="lcExpLabel">导出配置</label>
-          <button class="btn" id="cfg-export-all" type="button" data-page-node-id="lcExpAll">导出全部</button>
+      <div class="grp-card"><div class="grp-title">数据<span class="lc-mod-count" id="cfg-mod-count" data-page-node-id="lcModCount">已选 6/6</span></div>
+        <div class="lc-mods" id="cfg-modules" style="margin-bottom:8px;" data-page-node-id="lcMods">
+          <label><input type="checkbox" data-mod="display" checked data-page-node-id="lcMod1" />显示</label>
+          <label><input type="checkbox" data-mod="deco" checked data-page-node-id="lcMod2" />装饰</label>
+          <label><input type="checkbox" data-mod="card" checked data-page-node-id="lcMod3" />卡片</label>
+          <label><input type="checkbox" data-mod="nav" checked data-page-node-id="lcMod4" />导航</label>
+          <label><input type="checkbox" data-mod="func" checked data-page-node-id="lcMod6" />功能</label>
+          <label><input type="checkbox" data-mod="misc" checked data-page-node-id="lcMod5" />其他</label>
         </div>
-        <div class="row" data-page-node-id="lcModRow">
-          <label data-page-node-id="lcModLabel">选择模块</label>
-          <div class="lc-mods" id="cfg-modules" data-page-node-id="lcMods">
-            <label><input type="checkbox" data-mod="display" checked data-page-node-id="lcMod1" />显示</label>
-            <label><input type="checkbox" data-mod="deco" checked data-page-node-id="lcMod2" />装饰</label>
-            <label><input type="checkbox" data-mod="card" checked data-page-node-id="lcMod3" />卡片</label>
-            <label><input type="checkbox" data-mod="nav" checked data-page-node-id="lcMod4" />导航</label>
-            <label><input type="checkbox" data-mod="func" checked data-page-node-id="lcMod6" />功能</label>
-            <label><input type="checkbox" data-mod="misc" checked data-page-node-id="lcMod5" />其他</label>
-          </div>
+        <p class="hint plain" style="margin-bottom:12px;" data-page-node-id="lcExpHint">勾选要导出的栏目，与面板标签一一对应，方便只恢复某一栏。</p>
+        <div class="lc-export-row" data-page-node-id="lcExpPartRow">
+          <button class="btn btn-primary" id="cfg-export-part" type="button" data-page-node-id="lcExpPart">导出全部</button>
+          <span id="cfg-export-tip" style="display:inline-flex;align-items:center;gap:4px;" data-page-node-id="lcExpTip"></span>
         </div>
-        <div class="row lc-btn-row" data-page-node-id="lcExpPartRow">
-          <button class="btn" id="cfg-export-part" type="button" data-page-node-id="lcExpPart">导出勾选模块</button>
+        <div class="lc-export-row" id="cfg-deco-pick-row" style="display:none;" data-page-node-id="lcDecoPickRow">
+          <span class="hint plain" style="margin:0;" data-page-node-id="lcDecoPickLabel">要分享的装饰图</span>
+          <button class="lc-link" id="cfg-deco-pick" type="button" data-page-node-id="lcDecoPick">全部 ›</button>
         </div>
-        <p class="hint" data-page-node-id="lcExpHint">模块与面板栏目一一对应，方便只恢复某一栏。默认全选。</p>
-        <div class="row lc-btn-row" data-page-node-id="lcImpRow">
+        <div class="lc-import-row" data-page-node-id="lcImpRow">
           <input type="file" id="cfg-import-file" accept="application/json,.json" hidden data-page-node-id="lcImpFile" />
           <button class="btn" id="cfg-import" type="button" data-page-node-id="lcImpBtn">导入配置…</button>
+          <button type="button" class="help-dot" data-hint="cfg-import-help" title="导入说明" data-page-node-id="lcImpHelp">?</button>
         </div>
-        <p class="hint" data-page-node-id="lcImpHint">导入会覆盖对应模块的现有设置（会先弹确认框）。导出文件是纯 JSON 文本，不含任何上传行为，可自行留存或分享。</p>
+        <p class="hint collapsible plain" id="cfg-import-help" data-page-node-id="lcImpHint2">导入会覆盖对应模块的现有设置，覆盖前会先弹确认框；装饰图可选择覆盖或追加。文件只保存在你电脑上、不会上传；图片、词卡和自定义音效都内嵌在导出的配置文件里，对方无需原文件。</p>
       </div>
 
       <div class="grp-card"><div class="grp-title">关于</div>
@@ -1151,6 +1252,49 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- ===== 装饰图导出选择弹窗 ===== -->
+  <div id="deco-pick-modal-overlay"
+    style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10000;align-items:center;justify-content:center;">
+    <div
+      style="background:var(--lc-card);border-radius:12px;width:320px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.15);overflow:hidden;">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--lc-line);">
+        <span style="font-size:14px;font-weight:500;color:var(--lc-text);">选择要分享的装饰图</span>
+        <button id="deco-pick-modal-close" type="button"
+          style="background:none;border:none;font-size:18px;color:var(--lc-sub);cursor:pointer;line-height:1;">&times;</button>
+      </div>
+      <div id="deco-pick-modal-list" class="lc-mods" style="flex:1;overflow-y:auto;padding:12px 16px;min-height:80px;align-content:flex-start;">
+        <!-- 装饰图勾选列表动态填充 -->
+      </div>
+      <div style="padding:12px 16px;border-top:1px solid var(--lc-line);background:var(--lc-soft);display:flex;align-items:center;gap:8px;">
+        <button id="deco-pick-all" type="button" class="lc-link">全选</button>
+        <button id="deco-pick-none" type="button" class="lc-link">全不选</button>
+        <span id="deco-pick-count" style="font-size:11px;color:var(--lc-sub);margin-left:auto;"></span>
+        <button id="deco-pick-done" type="button" class="btn"
+          style="padding:4px 14px;font-size:12px;background:var(--lc-accent);color:#fff;border:none;">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 装饰图导入方式弹窗（覆盖 / 追加） ===== -->
+  <div id="deco-import-modal-overlay"
+    style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10001;align-items:center;justify-content:center;">
+    <div
+      style="background:var(--lc-card);border-radius:12px;width:300px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.15);overflow:hidden;">
+      <div style="padding:14px 16px 6px;">
+        <span style="font-size:14px;font-weight:500;color:var(--lc-text);">装饰图导入方式</span>
+      </div>
+      <div style="padding:0 16px 12px;font-size:12px;color:var(--lc-sub);line-height:1.6;" id="deco-import-modal-desc">
+        <!-- 动态填充：文件 N 张 / 当前 M 张 -->
+      </div>
+      <div style="padding:0 16px 14px;display:flex;flex-direction:column;gap:8px;">
+        <button id="deco-import-append" type="button" class="btn"
+          style="padding:8px 12px;font-size:13px;background:var(--lc-accent);color:#fff;border:none;">追加（保留现有，加在后面）</button>
+        <button id="deco-import-override" type="button" class="btn" style="padding:8px 12px;font-size:13px;">覆盖（清掉现有，只留导入的）</button>
+        <button id="deco-import-cancel" type="button" class="btn" style="padding:6px 12px;font-size:12px;border:none;background:none;">取消</button>
+      </div>
+    </div>
   </div>
 
   <script src="defaults.js"></script>
