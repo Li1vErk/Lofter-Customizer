@@ -286,9 +286,9 @@
               <button type="button" class="lc-pill ${dec.aboveCards ? 'on' : 'off'}" data-idx="${idx}" data-key="aboveCards"><i class="lc-dot"></i>覆盖卡片</button>
             </div>
             <div style="display:flex;align-items:center;gap:6px;">
-              <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">透明</span>
+              <span style="font-size:11px;color:var(--lc-sub);flex-shrink:0;">不透明度</span>
               <input type="range" data-idx="${idx}" data-key="opacity" min="10" max="100" value="${dec.opacity ?? 100}" style="flex:1;min-width:0;height:4px;" />
-              <span class="value" style="min-width:28px;font-size:11px;">${dec.opacity ?? 100}</span>
+              <span class="value" style="min-width:34px;font-size:11px;">${dec.opacity ?? 100}%</span>
             </div>
           </div>
         </div>
@@ -392,7 +392,7 @@
         if (!state.decorations[idx]) return;
         let val = +e.target.value;
         state.decorations[idx].opacity = val;
-        e.target.nextElementSibling.textContent = val;
+        e.target.nextElementSibling.textContent = val + "%";
         save();
       });
     });
@@ -815,6 +815,18 @@
     $("card-frost-alpha").value = Math.round((s.card.frostAlpha || 0.6) * 100);
     $("card-frost-alpha-v").textContent = Math.round((s.card.frostAlpha || 0.6) * 100) + "%";
     syncCardFrost();
+    /* 迁移（2026-09-26）：卡片材质主开关（总门禁）。老配置无此键 →
+       任一子项开着即回填 true，行为与升级前完全一致；新配置默认 false。
+       主开关只做门禁，不抹子设置——关了再开，各自调节原样回来 */
+    if (s.card.material === undefined) {
+      s.card.material = !!(
+        s.card.lightFrost ||
+        (s.darkMode && s.darkMode.feedTranslucent) ||
+        s.card.faceAdapt !== false
+      );
+    }
+    $("card-material").checked = !!s.card.material;
+    syncCardMat();
     // 卡片动画
     $("card-animation").value = s.card.animation || 'none';
     $("card-duration").value = s.card.duration || 500; $("card-duration-v").textContent = (s.card.duration || 500) + "ms";
@@ -834,6 +846,7 @@
     $("font-preset").value = s.font.preset;
     $("font-scale").value = s.font.scale; $("font-scale-v").textContent = s.font.scale + "%";
     $("font-family").value = s.font.family;
+    fontChipsRender();
 
     // 暗色
     $("dark-mode").value = s.darkMode.mode || 'off';
@@ -889,7 +902,8 @@
       s.official && s.official.hideInComments
     );
 
-    // 评论区增强（工具行总开关，默认开；控件本身默认熄灭）
+    // 评论区增强（工具行总开关，默认开；控件本身默认熄灭。
+    // 表情快捷输入跟随本开关，不单列）
     $("comment-toolbar").checked = !(s.comment && s.comment.toolbar === false);
 
     renderDecorations();
@@ -1100,6 +1114,58 @@
     const row = $("card-frost-alpha-row");
     if (row) row.style.display = state.card && state.card.lightFrost ? "" : "none";
   }
+  /* 卡片材质主开关联动：只更新进阶调节入口的可用态（主开关开着→
+   * 主题色可点；关着→灰字禁用+「开启后可调」提示并收起面板）。
+   * 开主开关不自动展开——展开与否由用户自己决定 */
+  function syncCardMat() {
+    const on = !!(state.card && state.card.material);
+    const btn = $("card-mat-more");
+    const arrow = $("card-mat-arrow");
+    const hint = $("card-mat-off-hint");
+    if (btn) {
+      btn.disabled = !on;
+      btn.style.color = on ? "var(--lc-accent)" : "var(--lc-sub)";
+      btn.style.cursor = on ? "pointer" : "default";
+    }
+    if (hint) hint.style.display = on ? "none" : "";
+    if (!on) {
+      const detail = $("card-mat-detail");
+      if (detail) detail.style.display = "none";
+      if (arrow) arrow.style.transform = "";
+    }
+  }
+  on("card-material", "change", (e) => {
+    if (!state.card) state.card = LC_clone(LC_DEFAULTS.card);
+    state.card.material = e.target.checked;
+    /* 首次开启且毛玻璃/半透明底都没定制过 → 按默认组合一次全亮
+       （自适应材质+毛玻璃+半透明底；faceAdapt 默认即真，不作为信号） */
+    if (
+      e.target.checked &&
+      !state.card.lightFrost &&
+      !(state.darkMode && state.darkMode.feedTranslucent)
+    ) {
+      state.card.lightFrost = true;
+      state.card.faceAdapt = true;
+      if (!state.darkMode) state.darkMode = LC_clone(LC_DEFAULTS.darkMode);
+      state.darkMode.feedTranslucent = true;
+      $("card-light-frost").checked = true;
+      $("card-face-adapt").checked = true;
+      $("dark-feed-translucent").checked = true;
+      syncFeedTrans();
+      syncCardFrost();
+    }
+    syncCardMat();
+    save();
+  });
+  on("card-mat-more", "click", () => {
+    if (!(state.card && state.card.material)) return;
+    const detail = $("card-mat-detail");
+    const arrow = $("card-mat-arrow");
+    if (!detail) return;
+    const open = detail.style.display !== "none";
+    detail.style.display = open ? "none" : "";
+    if (arrow) arrow.style.transform = open ? "" : "rotate(90deg)";
+  });
   on("card-light-frost", "change", (e) => {
     if (!state.card) state.card = LC_clone(LC_DEFAULTS.card);
     state.card.lightFrost = e.target.checked;
@@ -1138,9 +1204,104 @@
     const inp = $("font-family");
     if (inp) inp.value = fam;
     save();
+    fontChipsRender();
   });
   on("font-scale", "input", (e) => { state.font.scale = +e.target.value; $("font-scale-v").textContent = e.target.value + "%"; save(); });
-  on("font-family", "input", (e) => { state.font.family = e.target.value.trim(); save(); });
+  on("font-family", "input", (e) => { state.font.family = e.target.value.trim(); save(); fontChipsRender(); });
+
+  /* ---------- 字体名状态条：解析输入框的字体列表 → 逐个探测本机可用性。
+     生效中 = 列表里第一个可用的（和 CSS font-family 的逐个回退一致）；
+     点已装的 chip 把它置顶换为主字体。popup 与 LOFTER 页面看到的是
+     同一套系统字体，所以这里的结果就是网页上的实际结果 ---------- */
+  let fontChipsExpanded = false;
+
+  function fontChipsNames() {
+    return ($("font-family").value || "").split(/[，,]/).map((s) => s.trim()).filter(Boolean);
+  }
+
+  /* 单个字体名是否本机可用：量宽法（名称不存在时两基线同宽 ⇒ 判不可用）。
+     不能用 document.fonts.check 快筛——它只查网页字体集（FontFaceSet），
+     对系统字体会把不存在的 family 名误判成已装（DFMing-UB-HKP-BF 实测误报） */
+  function fontNameAvailable(name) {
+    const probe = document.createElement("span");
+    probe.textContent = "測試测试Abc123, ";
+    probe.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap;font-size:32px;";
+    document.body.appendChild(probe);
+    let ok = false;
+    for (const base of ["monospace", "serif"]) {
+      probe.style.fontFamily = base;
+      const w0 = probe.offsetWidth;
+      probe.style.fontFamily = JSON.stringify(name) + ", " + base;
+      if (probe.offsetWidth !== w0) { ok = true; break; }
+    }
+    probe.remove();
+    return ok;
+  }
+
+  function fontChipsRender() {
+    const bar = $("font-chips-bar"), chips = $("font-chips");
+    if (!bar || !chips) return;
+    const names = fontChipsNames();
+    if (!names.length) { bar.style.display = "none"; chips.style.display = "none"; return; }
+    bar.style.display = "flex";
+    const states = names.map((name) => ({ name, ok: fontNameAvailable(name) }));
+    const active = states.find((s) => s.ok);
+    const off = !!(state.font && state.font.off);
+    $("font-chips-summary").textContent = off
+      ? "已停用自定义字体（正文用系统默认），点任意已装字体恢复"
+      : active
+        ? "生效中：" + active.name
+        : "本机一个都没识别到，正文用系统默认字体";
+    chips.innerHTML = "";
+    /* 生效中独占第一行，其余按输入顺序排在后面：切换主字体时
+       「其他字体」的相对顺序不变，chip 不会跳来跳去 */
+    const rowOn = document.createElement("div"), rowRest = document.createElement("div");
+    rowOn.className = "fc-row"; rowRest.className = "fc-row";
+    states.forEach((s) => {
+      const el = document.createElement("span");
+      el.className = "font-chip" + (s === active ? " on" : s.ok ? " avail" : " miss");
+      const dot = document.createElement("i"); dot.className = "fc-dot";
+      const nameEl = document.createElement("span"); nameEl.className = "fc-name"; nameEl.textContent = s.name;
+      const badge = document.createElement("span"); badge.className = "fc-badge";
+      badge.textContent = s === active ? (off ? "已停用" : "生效中") : s.ok ? "已装" : "未装";
+      el.append(dot, nameEl, badge);
+      if (s === active) {
+        /* 点生效中的 chip = 停用自定义字体回系统默认；字体名列表保留，
+           再点一次（或点任意已装字体）即恢复 */
+        el.style.cursor = "pointer";
+        if (off) {
+          el.className = "font-chip paused";
+          el.title = "点击恢复使用自定义字体";
+          el.addEventListener("click", () => { state.font.off = false; save(); fontChipsRender(); });
+        } else {
+          el.title = "点击停用自定义字体，正文回系统默认（字体名列表保留）";
+          el.addEventListener("click", () => { state.font.off = true; save(); fontChipsRender(); });
+        }
+      } else if (s.ok) {
+        el.style.cursor = "pointer";
+        el.title = off ? "已安装，点击恢复使用并切换为主字体" : "已安装，点击切换为主字体";
+        el.addEventListener("click", () => {
+          const rest = fontChipsNames().filter((n) => n !== s.name);
+          const inp = $("font-family");
+          inp.value = [s.name, ...rest].join(", ");
+          inp.dispatchEvent(new Event("input", { bubbles: true }));
+          state.font.off = false;
+          save();
+          fontChipsExpanded = true;
+          fontChipsRender();
+        });
+      } else {
+        el.title = "本机读不到这个名称：可能没装，也可能该字体只有英文名（如京華老宋体 → KingHwa_OldSong）";
+      }
+      (s === active ? rowOn : rowRest).appendChild(el);
+    });
+    if (rowOn.firstChild) chips.appendChild(rowOn);
+    if (rowRest.firstChild) chips.appendChild(rowRest);
+    chips.style.display = fontChipsExpanded ? "block" : "none";
+    $("font-chips-arrow").style.transform = fontChipsExpanded ? "rotate(90deg)" : "";
+  }
+
+  on("font-chips-toggle", "click", () => { fontChipsExpanded = !fontChipsExpanded; fontChipsRender(); });
   /* "?"帮助图标（通用）：点击展开/收起 data-hint 指向的说明段落 */
   document.addEventListener("click", (e) => {
     const dot = e.target.closest && e.target.closest(".help-dot[data-hint]");
@@ -1254,6 +1415,7 @@
     if (!state.filter.scope) state.filter.scope = { home: true, tag: true };
     if (!Array.isArray(state.filter.keywords)) state.filter.keywords = [];
     if (!Array.isArray(state.filter.users)) state.filter.users = [];
+    if (!Array.isArray(state.filter.tags)) state.filter.tags = [];
     return state.filter;
   }
 
@@ -1272,7 +1434,7 @@
               `<button class="btn" data-filter-unmute="${i}" type="button" style="padding:1px 8px;font-size:11px;flex-shrink:0;">移除</button></div>`,
           )
           .join("")
-      : `<p class="hint" style="margin:0;">暂无。在帖子作者名旁点「隐藏」即可添加。</p>`;
+      : `<p class="hint" style="margin:0;">暂无。在帖子作者名或用户评论旁点「隐藏」即可添加。</p>`;
   }
 
   on("filter-users", "click", (e) => {
@@ -1286,16 +1448,26 @@
 
   /* 页面上点「隐藏」→ storage 变化 → 打开着的面板要实时反映出来，
    * 不能等重开面板（面板常驻期间收不到自己的渲染周期）。
-   * 只同步 users 列表：keywords textarea 可能正被用户编辑，不能覆盖 */
+   * 只同步 users/tags 列表：keywords textarea 可能正被用户编辑，不能覆盖 */
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local" || !changes.lc_settings_v1) return;
       const nf = changes.lc_settings_v1.newValue?.filter;
-      if (!nf || !Array.isArray(nf.users)) return;
+      if (!nf) return;
       const cur = ensureFilter();
-      if (JSON.stringify(cur.users) === JSON.stringify(nf.users)) return;
-      cur.users = nf.users;
-      renderFilterUsers();
+      if (Array.isArray(nf.users)) {
+        if (JSON.stringify(cur.users) !== JSON.stringify(nf.users)) {
+          cur.users = nf.users;
+          renderFilterUsers();
+        }
+      }
+      /* 页面卡片上点 tag「屏蔽」→ 打开着的面板 tag 列表实时反映 */
+      if (Array.isArray(nf.tags)) {
+        if (JSON.stringify(cur.tags) !== JSON.stringify(nf.tags)) {
+          cur.tags = nf.tags;
+          if (lcOffMode === "tag") renderTagBlockList();
+        }
+      }
     });
   } catch (e) {}
 
@@ -1348,6 +1520,11 @@
   let lcOfficialList = []; /* {id, blogId, blogName, nick, ava} */
   let lcOfficialLoading = false;
 
+  /* 卡片模式：同一张卡、同一个输入框，在「拉黑用户（官方 DWR）」与
+   * 「屏蔽 tag（本地 filter.tags）」间切换——两个名单的日常管理动作
+   * 相同（输入→添加→列表移除），合并一张卡免得面板越拉越长 */
+  let lcOffMode = "user";
+
   const lcDwr = LC_dwrCall;
 
   function lcOfficialBlogName(input) {
@@ -1392,6 +1569,9 @@
   function renderOfficialList() {
     const box = $("official-list");
     if (!box) return;
+    /* tag 模式下列表由 renderTagBlockList 接管：异步刷新官方名单完成时
+     * 不能覆盖 tag 列表的计数与内容 */
+    if (lcOffMode === "tag") return;
     $("official-count").textContent = lcOfficialLoading
       ? "读取中…"
       : lcOfficialList.length + " 人";
@@ -1432,8 +1612,101 @@
 
   on("official-toggle", "click", () => {
     lcOfficialExpanded = !lcOfficialExpanded;
-    renderOfficialList();
+    if (lcOffMode === "tag") renderTagBlockList();
+    else renderOfficialList();
   });
+
+  /* ---------- 模式切换 + tag 屏蔽名单 ---------- */
+  function renderOfficialMode() {
+    const tag = lcOffMode === "tag";
+    const input = $("official-add-input");
+    const btn = $("official-add-btn");
+    if (input) input.placeholder = tag
+      ? "输入 tag 名称，或粘贴 tag 页链接"
+      : "粘贴对方主页链接或 ID";
+    if (btn) btn.textContent = tag ? "屏蔽" : "拉黑";
+    const lbl = $("official-list-label");
+    if (lbl) lbl.textContent = tag ? "已屏蔽 tag" : "黑名单成员";
+    const help = $("official-help");
+    if (help) help.style.display = tag ? "none" : "";
+    const tagHelp = $("official-tag-help");
+    if (tagHelp) tagHelp.style.display = tag ? "" : "none";
+    const addHint = $("official-add-hint");
+    if (addHint) addHint.style.display = tag ? "none" : "";
+    const cRow = $("official-comments-row");
+    if (cRow) cRow.style.display = tag ? "none" : "";
+    if (tag) renderTagBlockList();
+    else renderOfficialList();
+  }
+
+  on("official-mode", "change", () => {
+    const checked = document.querySelector("#official-mode input:checked");
+    lcOffMode = checked && checked.value === "tag" ? "tag" : "user";
+    renderOfficialMode();
+  });
+
+  /* tag 名归一化：接受裸名或 tag 页链接（/tag/<名>[/new|/total]），
+   * 从 href 段解码出原名（与 content.js 卡片匹配同一口径：href 比
+   * 卡片文案稳，不受大小写/改写影响） */
+  function lcTagNormalize(input) {
+    let s = String(input || "").trim();
+    if (!s) return "";
+    const m = s.match(/\/tag\/([^\/?#]+)/);
+    if (m) {
+      try {
+        s = decodeURIComponent(m[1]);
+      } catch (e2) {
+        s = m[1];
+      }
+    }
+    return s.trim();
+  }
+
+  function renderTagBlockList() {
+    const box = $("official-list");
+    if (!box) return;
+    const f = ensureFilter();
+    const tags = f.tags || [];
+    $("official-count").textContent = tags.length + " 个";
+    const toggleBtn = $("official-toggle");
+    if (toggleBtn) toggleBtn.textContent = lcOfficialExpanded ? "收起" : "展开";
+    if (!lcOfficialExpanded) {
+      box.style.display = "none";
+      box.innerHTML = "";
+      return;
+    }
+    box.style.display = "";
+    box.innerHTML = tags.length
+      ? tags
+          .map(
+            (t, i) =>
+              `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-soft);">` +
+              `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(t).replace(/[<>&"]/g, "")}</span>` +
+              `<button class="btn" data-tag-unblock="${i}" type="button" style="padding:1px 8px;font-size:11px;flex-shrink:0;">移除</button></div>`,
+          )
+          .join("")
+      : `<p class="hint" style="margin:0;">暂无。悬停帖子卡片上的 tag 点「屏蔽」，或在这里输入。</p>`;
+  }
+
+  function lcTagAdd() {
+    const input = $("official-add-input");
+    const name = lcTagNormalize(input.value);
+    if (!name) {
+      input.value = "";
+      input.placeholder = "请输入 tag 名称或 tag 页链接";
+      return;
+    }
+    const f = ensureFilter();
+    if (f.tags.some((t) => String(t).toLowerCase() === name.toLowerCase())) {
+      lcOfficialToast("tag「" + name + "」已在屏蔽名单");
+      return;
+    }
+    f.tags.push(name);
+    renderTagBlockList();
+    save();
+    lcOfficialToast("已屏蔽 tag「" + name + "」");
+    input.value = "";
+  }
 
   /* 官方黑名单镜像到 storage（lc_official_bl_v1）：评论过滤（content.js
    * 任意帧）据此隐藏黑名单成员的评论。popup 能调 DWR，页面帧未必
@@ -1507,8 +1780,13 @@
     lcOfficialPersist();
   }
 
-  /* 拉黑是对方可感知的强动作：两段式确认（第一次点变成「确认拉黑？」，3 秒内再点才执行） */
+  /* 拉黑是对方可感知的强动作：两段式确认（第一次点变成「确认拉黑？」，3 秒内再点才执行）。
+   * tag 屏蔽是本地可逆操作：不确认，一键生效（面板/页面都可随时移除） */
   on("official-add-btn", "click", async (e) => {
+    if (lcOffMode === "tag") {
+      lcTagAdd();
+      return;
+    }
     const btn = e.currentTarget;
     const name = lcOfficialBlogName($("official-add-input").value);
     if (!name) {
@@ -1559,6 +1837,14 @@
   });
 
   on("official-list", "click", async (e) => {
+    const tb = e.target.closest("[data-tag-unblock]");
+    if (tb) {
+      const f = ensureFilter();
+      f.tags.splice(+tb.dataset.tagUnblock, 1);
+      renderTagBlockList();
+      save();
+      return;
+    }
     const b = e.target.closest("[data-official-unblk]");
     if (!b) return;
     if (b.dataset.confirm !== "1") {
@@ -1691,12 +1977,24 @@
     { id: "display", label: "显示", keys: ["darkMode", "background", "font", "theme", "enabled"] },
     { id: "deco", label: "装饰", keys: ["decorations", "decorationsVisible"] },
     { id: "card", label: "卡片", keys: ["card", "tidy"] },
-    { id: "nav", label: "导航", keys: ["navbar", "searchPlaceholder", "gtotop"] },
-    { id: "func", label: "功能", keys: ["tools", "filter", "official"] },
+    /* sidebar（右侧栏玻璃）UI 在导航栏 pane 里，comment（评论区增强）
+       UI 在功能 pane 里——两个键必须登记在对应模块下，否则导入时
+       会被白名单当脏数据剔除（20260926 用户导入实测丢右侧栏磨砂） */
+    { id: "nav", label: "导航", keys: ["navbar", "sidebar", "searchPlaceholder", "gtotop"] },
+    { id: "func", label: "功能", keys: ["tools", "filter", "official", "comment"] },
+    /* 表情：自定义表情包存在独立存储键（不在 lc_settings_v1 里），
+     * 用 raw 声明要一起带走的原始 storage 键——用户一条条攒出来的
+     * 资产，换机/重装必须能带走 */
+    { id: "emoji", label: "表情", keys: [], raw: ["lc_emoji_v1"] },
     { id: "misc", label: "其他", keys: ["shortcutsEnabled", "panel"] },
   ];
+  const LC_RAW_KEYS = LC_MODULES.flatMap((m) => m.raw || []);
   /* 允许写入 storage 的键白名单：导入时剔除非本扩展的键，避免脏数据进配置 */
-  const LC_KNOWN_KEYS = new Set(LC_MODULES.flatMap((m) => m.keys));
+  const LC_KNOWN_KEYS = new Set(
+    LC_MODULES.flatMap((m) => m.keys).concat(LC_RAW_KEYS),
+  );
+  /* 原始键的本地副本：打开面板时读一次，导出直接取、导入后回写缓存 */
+  let lcRawCache = {};
 
   function cfgDate() {
     const d = new Date();
@@ -1719,15 +2017,22 @@
     setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
 
-  /* 从当前 state 里挑出指定模块的键；mods 为 null 表示整份快照 */
+  /* 从当前 state 里挑出指定模块的键；mods 为 null 表示整份快照。
+     原始键（自定义表情）来自 lcRawCache，与 settings 一起装进 data */
   function cfgPick(mods) {
     const data = {};
-    if (!mods) return LC_clone(state);
+    if (!mods) {
+      Object.assign(data, LC_clone(state), LC_clone(lcRawCache));
+      return data;
+    }
     mods.forEach((id) => {
       const m = LC_MODULES.find((x) => x.id === id);
       if (!m) return;
       m.keys.forEach((k) => {
         if (state[k] !== undefined) data[k] = LC_clone(state[k]);
+      });
+      (m.raw || []).forEach((k) => {
+        if (lcRawCache[k] !== undefined) data[k] = LC_clone(lcRawCache[k]);
       });
     });
     return data;
@@ -1941,7 +2246,16 @@
 
     const dropped = Object.keys(data).filter((k) => !LC_KNOWN_KEYS.has(k));
     dropped.forEach((k) => delete data[k]);
-    if (!Object.keys(data).length) {
+    /* 原始键（自定义表情）先摘出来：它不属于 settings，直接落 storage，
+       绝不能跟着 LC_merge 混进 lc_settings_v1 */
+    const rawIn = {};
+    LC_RAW_KEYS.forEach((k) => {
+      if (k in data) {
+        rawIn[k] = data[k];
+        delete data[k];
+      }
+    });
+    if (!Object.keys(data).length && !Object.keys(rawIn).length) {
       alert("导入失败：文件中没有本扩展认识的设置项。");
       return;
     }
@@ -1975,9 +2289,23 @@
           : "会覆盖当前全部设置（未包含的项回到默认值）。",
       "导入后需刷新 LOFTER 页面才会生效。",
     ];
+    if (
+      (!mods || mods.includes("emoji")) &&
+      rawIn["lc_emoji_v1"]
+    ) {
+      const cur = lcRawCache["lc_emoji_v1"];
+      const curN = cur && Array.isArray(cur.custom) ? cur.custom.length : 0;
+      lines.push(
+        "",
+        curN
+          ? `自定义表情会被文件里的那份整体替换（你现在有 ${curN} 个包）。`
+          : "会导入文件里的自定义表情包。",
+      );
+    }
     if (dropped.length) lines.push("", `已忽略无法识别的项：${dropped.join("、")}`);
     if (!confirm(lines.join("\n") + "\n\n继续？")) return;
 
+    const hasSettings = Object.keys(data).length > 0;
     if (mods) {
       const patch = {};
       mods.forEach((id) => {
@@ -1989,7 +2317,7 @@
       });
       /* LC_merge 对数组是整体替换（装饰图列表按导入值覆盖），符合预期 */
       state = LC_migrateNav(LC_merge(state, patch));
-    } else {
+    } else if (hasSettings) {
       state = LC_migrateNav(LC_merge(LC_DEFAULTS, data));
     }
 
@@ -2006,13 +2334,23 @@
     render();
     initRanges();
     save();
+    /* 自定义表情：原始键直接落 storage（content.js 与 popup 都读同一份），
+       本地缓存同步更新，避免连续导入两次时用的是旧缓存 */
+    if ((!mods || mods.includes("emoji")) && Object.keys(rawIn).length) {
+      chrome.storage.local.set(LC_clone(rawIn));
+      Object.assign(lcRawCache, LC_clone(rawIn));
+    }
     alert("导入完成。刷新 LOFTER 页面后生效。");
   });
 
   buildFontOptions();
-  chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
+  chrome.storage.local.get([LC_STORAGE_KEY].concat(LC_RAW_KEYS), (res) => {
     /* LC_migrateNav：老配置「导航栏透明」迁移为毛玻璃（本批两档化） */
     state = LC_migrateNav(LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {}));
+    /* 原始键（自定义表情）本地缓存：导出取它、导入回写它 */
+    LC_RAW_KEYS.forEach((k) => {
+      if (res[k] !== undefined) lcRawCache[k] = res[k];
+    });
     render();
     initRanges();
     syncCfgMods(); // 装饰图计数/按张入口依赖加载后的 state.decorations，初渲染时还没到手

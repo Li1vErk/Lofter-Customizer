@@ -88,7 +88,31 @@ const cmtDiag = {
   seamBorder: 0,
   onlyAuthor: false,
   frameHost: '',
+  /* 各评论区块解析出的楼主 id（wantDiag 窗口内才刷新）：与 sample
+   * 对读可判断「只看作者」全空的定位错误——host 是浏览者自己=表单
+   * 头像漏排除；host 是导航来源博客=referrer 污染；host 为空=卡片
+   * 结构里找不到作者位 */
+  areaHosts: [],
+  /* tick 自身开销滚动计数（5s 窗口）：tick 次数 / 累计耗时，探针直读，
+   * 用于实证「自激循环是否断净 / 单次 tick 在大文档上花多少」 */
+  tickN: 0,
+  tickMs: 0,
 };
+/* 重诊断窗口时间戳：lcCmtPublishSelf（探针入口）置位，cmtApply 在
+ * 15s 内才跑全文档诊断扫描（平时只做轻量计数，见 wantDiag） */
+let cmtDiagFresh = 0;
+/* tick 计数累积器 */
+const cmtPerf = { t0: 0, n: 0, ms: 0 };
+
+/* www.lofter.com 下的功能路径首段不是博客 id：/tag/、/lpost/、/post/、
+ * /d/ 等取出来是 'tag'/'lpost' 这类功能词。曾把 tag 卡片里「老福鸽儿」
+ * 标签链接解析成楼主 id='tag'（真机 2026-09-24：只看作者全空——所有
+ * 评论作者都 ≠ 'tag'，全体隐藏且 chip 正常点亮）。作者链接一律是博客
+ * 子域形式，www 域下这些路径词直接判空 */
+const CMT_WWW_PATH_WORDS = new Set([
+  'tag', 'lpost', 'post', 'd', 'view', 'igoto', 'mentionredirect',
+  'search', 'new', 'activity', 'apps', 'api', 'www',
+]);
 
 function cmtUserId(a) {
   try {
@@ -97,7 +121,9 @@ function cmtUserId(a) {
     if (u.hostname !== 'www.lofter.com' && u.hostname !== 'lofter.com') {
       return u.hostname.split('.')[0] || '';
     }
-    return u.pathname.split('/').filter(Boolean)[0] || '';
+    const seg = u.pathname.split('/').filter(Boolean)[0] || '';
+    if (CMT_WWW_PATH_WORDS.has(seg)) return '';
+    return seg;
   } catch (e) {
     return '';
   }
@@ -598,7 +624,12 @@ function cmtApply() {
     st.id = CMT_STYLE_ID;
     (document.head || document.documentElement).appendChild(st);
   }
-  st.textContent = on || onlyOn
+  /* 等值不写：textContent 赋非空值时哪怕内容一字不差，DOM 规范也是
+   * 「先删光子节点再插新文本节点」，必产生 childList 变异 → 观察器唤醒
+   * → 120ms 后再 tick → 再重写……自激 tick 循环（tag 页主线程被永久
+   * 打断，展开/收起卡顿、表情面板迟钝的真凶；真机 2026-09-24 实锤：
+   * 节流+其他守卫全上了仍卡，就剩这一处每 tick 必写） */
+  const filterCss = on || onlyOn
     ? '[data-lc-cmt-filtered] { display: none !important; }\n' +
       '.' +
       CMT_COLLAPSE_CLASS +
@@ -610,10 +641,12 @@ function cmtApply() {
       CMT_SEAM_HIDE_CLASS +
       ' { display: none !important; }'
     : '';
+  if (st.textContent !== filterCss) st.textContent = filterCss;
 
-  /* 幂等全量重算：先撤销上一轮的隐藏（含内联样式还原），再按当前名单重打 */
-  cmtHidden.forEach((el) => cmtUnhide(el));
-  cmtHidden.clear();
+  /* 重诊断查询（.cmti 计数 / 链采样 / 结构自省等 5 轮全文档扫描）只在
+   * 探针要数据的 15s 窗口内跑：平时每 tick 白扫 tag 页大文档，是展开
+   * 动画期间 8Hz tick 的固定开销。探针入口 lcCmtPublishSelf 会置时间戳 */
+  const wantDiag = Date.now() - cmtDiagFresh < 15000;
   cmtDiag.scope = on;
   cmtDiag.onlyAuthor = onlyOn;
   cmtDiag.frameHost = cmtFrameHost || '';
@@ -621,39 +654,63 @@ function cmtApply() {
   cmtDiag.official = cmtOfficialNames.size;
   cmtDiag.useOfficial = useOfficial;
   cmtDiag.err = '';
-  cmtDiag.cmti = document.querySelectorAll('.cmti').length;
-  cmtDiag.bodies = document.querySelectorAll('.bcmtlstf, .cmthot').length;
-  cmtDiag.avatars = document.querySelectorAll(CMT_AVATAR_SEL).length;
   cmtDiag.style = !!document.getElementById(CMT_STYLE_ID);
   cmtDiag.trace = [];
   cmtDiag.unresolved = 0;
-  /* 条目结构自省：从第一个正文锚点向上列 5 层 tag.className，用于核对
-   * 真实容器类名（换结构时不至于只能靠猜）。 */
-  cmtDiag.chain = [];
-  try {
-    let cel = document.querySelector('.bcmtlstf, .cmthot');
-    for (let i = 0; cel && i < 5; i++, cel = cel.parentElement) {
-      cmtDiag.chain.push(cmtTagOf(cel));
-    }
-  } catch (e) {}
-
-  /* 作者 id 采样：名单为空（blocked=0）时也能从探针判断「选择器与 id
-   * 解析是否正常」——若 sample 非空说明链接抓得到，只是没人被屏蔽。 */
-  const sample = [];
-  try {
-    document
-      .querySelectorAll(
-        '.cmti .cmtusr a[href], .cmti .w-img2 a[href], [class*="cmtusr"] a[href]',
-      )
-      .forEach((a) => {
-        if (sample.length >= 5) return;
-        const sid = cmtUserId(a);
-        if (sid && sample.indexOf(sid) < 0) sample.push(sid);
+  if (wantDiag) {
+    cmtDiag.cmti = document.querySelectorAll('.cmti').length;
+    cmtDiag.bodies = document.querySelectorAll('.bcmtlstf, .cmthot').length;
+    cmtDiag.avatars = document.querySelectorAll(CMT_AVATAR_SEL).length;
+    cmtDiag.areaHosts = [];
+    try {
+      document.querySelectorAll('[data-lc-cmt-area]').forEach((r) => {
+        cmtDiag.areaHosts.push(cmtAreaHost.get(r) || '');
       });
-  } catch (e) {}
-  cmtDiag.sample = sample;
+    } catch (e) {}
+    /* 被隐藏行的作者 id（前 6 行）：与 areaHosts 对读即可判定「只看
+     * 作者」误杀类型——host 错（host 不在评论区作者集合里）还是行
+     * 作者 id 解析错（隐藏行作者与 host 本该相等） */
+    cmtDiag.hiddenAuthors = [];
+    try {
+      let hn = 0;
+      cmtHidden.forEach((el) => {
+        if (hn >= 6) return;
+        hn += 1;
+        const a = el.querySelector('a[href]');
+        cmtDiag.hiddenAuthors.push(a ? cmtUserId(a) : '');
+      });
+    } catch (e) {}
+    /* 条目结构自省：从第一个正文锚点向上列 5 层 tag.className，用于核对
+     * 真实容器类名（换结构时不至于只能靠猜）。 */
+    cmtDiag.chain = [];
+    try {
+      let cel = document.querySelector('.bcmtlstf, .cmthot');
+      for (let i = 0; cel && i < 5; i++, cel = cel.parentElement) {
+        cmtDiag.chain.push(cmtTagOf(cel));
+      }
+    } catch (e) {}
+
+    /* 作者 id 采样：名单为空（blocked=0）时也能从探针判断「选择器与 id
+     * 解析是否正常」——若 sample 非空说明链接抓得到，只是没人被屏蔽。 */
+    const sample = [];
+    try {
+      document
+        .querySelectorAll(
+          '.cmti .cmtusr a[href], .cmti .w-img2 a[href], [class*="cmtusr"] a[href]',
+        )
+        .forEach((a) => {
+          if (sample.length >= 5) return;
+          const sid = cmtUserId(a);
+          if (sid && sample.indexOf(sid) < 0) sample.push(sid);
+        });
+    } catch (e) {}
+    cmtDiag.sample = sample;
+  }
 
   if ((!on || !blocked.size) && !onlyOn) {
+    /* 关闭路径：全部隐藏撤销还原（主路径走差量，不走这里） */
+    cmtHidden.forEach((el) => cmtUnhide(el));
+    cmtHidden.clear();
     cmtDiag.links = 0;
     cmtDiag.matched = [];
     cmtDiag.items = 0;
@@ -679,7 +736,11 @@ function cmtApply() {
     }
   };
 
-  /* A) 新式 .cmti 条目：只认作者名 / 头像位置的链接 */
+  /* A) 新式 .cmti 条目：行级首链决策——每行只由它的第一个有效作者链
+   * 接决定藏/留。回复行（「A 回复了 B：…」）里被回复者的链接也在作者
+   * 名容器内，若每个链接各判各的，作者本人的回复行会被「回复目标 ≠
+   * 楼主」误杀（真机 2026-09-24：作者的回复在只看作者下消失） */
+  const decidedRows = new Set();
   guard(() => {
     document
       .querySelectorAll('.cmti .cmtusr a[href], .cmti .w-img2 a[href]')
@@ -688,43 +749,87 @@ function cmtApply() {
         if (!id) return;
         linkIds.push(id);
         const item = a.closest('.cmti');
-        if (!wantHide(id, item)) return;
+        if (item && decidedRows.has(item)) return; /* 本行已判，后链不再看 */
+        if (!wantHide(id, item)) {
+          if (item) decidedRows.add(item);
+          return;
+        }
         matched.push(id);
-        if (item) items.add(item);
+        if (item) {
+          decidedRows.add(item);
+          items.add(item);
+        }
       });
   });
 
-  /* B) 旧式 / 评论区 iframe 条目：全量扫链接，靠 cmtIsAuthorLink 判定
-   * 作者位置（新式 .cmti 由上面那条更严的位置限定分支处理）。 */
+  /* B) 旧式 / 评论区 iframe 条目：扫链接，靠 cmtIsAuthorLink 判定
+   * 作者位置（新式 .cmti 由上面那条更严的位置限定分支处理）。
+   * 扫描范围收敛：评论区都标了 data-lc-cmt-area（cmtTbSync 先跑），
+   * 只扫这些根内的链接——tag 页全文档几千条链接每 tick 扫一遍是展开
+   * 动画掉帧的大头；没有任何标记根时（工具行关、纯过滤模式）退回
+   * 全文档扫，保持旧覆盖面 */
   guard(() => {
-    document.querySelectorAll('a[href]').forEach((a) => {
-      if (a.closest('.cmti')) return; /* 已由新式分支处理 */
-      if (!cmtIsAuthorLink(a)) return;
-      const id = cmtUserId(a);
-      if (!id) return;
-      linkIds.push(id);
-      const item = cmtFindItem(a);
-      if (!wantHide(id, item)) return;
-      matched.push(id);
-      if (!item) {
-        /* 命中名单却收敛不到条目容器：记逐层计数，供诊断定位 */
-        cmtDiag.unresolved += 1;
-        if (cmtDiag.trace.length < 2) {
-          cmtDiag.trace.push({ id, chain: cmtTraceChain(a) });
+    const decidedB = new Set(); /* 行级首链决策（同 A 分支，防回复目标误杀） */
+    const scanLinks = (root) => {
+      root.querySelectorAll('a[href]').forEach((a) => {
+        if (a.closest('.cmti')) return; /* 已由新式分支处理 */
+        if (!cmtIsAuthorLink(a)) return;
+        const id = cmtUserId(a);
+        if (!id) return;
+        linkIds.push(id);
+        const item = cmtFindItem(a);
+        if (item && decidedB.has(item)) return;
+        if (!wantHide(id, item)) {
+          if (item) decidedB.add(item);
+          return;
         }
-      } else if (cmtIsRowAuthor(a, item)) {
-        items.add(item);
-      }
-    });
+        matched.push(id);
+        if (!item) {
+          /* 命中名单却收敛不到条目容器：记逐层计数，供诊断定位 */
+          cmtDiag.unresolved += 1;
+          if (cmtDiag.trace.length < 2) {
+            cmtDiag.trace.push({ id, chain: cmtTraceChain(a) });
+          }
+        } else if (cmtIsRowAuthor(a, item)) {
+          decidedB.add(item);
+          items.add(item);
+        }
+      });
+    };
+    const areas = document.querySelectorAll('[data-lc-cmt-area]');
+    if (areas.length) {
+      areas.forEach((r) => scanLinks(r));
+    } else {
+      scanLinks(document);
+    }
   });
 
+  /* 差量隐藏：只写「该藏还没藏」「该露还没露」的行。此前是每 tick 先
+   * 撤销全部隐藏再重打——只要有行真被藏住（只看作者 / 屏蔽命中），
+   * 每 tick 必产生成批 style 变异 → 观察器 → 再 tick……自激循环第二
+   * 处（真机 2026-09-24：面板打开快、关闭/只看作者/从旧到新触发慢，
+   * 正是「点击后有行被藏 → 循环启动 → 之后一切操作都钝」） */
+  const units = new Set();
   items.forEach((el) => {
     /* 抬到行单位再整行隐藏：否则残留行容器的上边框会与下一行叠成粗线
      * （见 cmtRowUnit 注释） */
     const unit = cmtRowUnit(el);
     if (unit !== el) cmtDiag.lifted += 1;
-    cmtHide(unit);
-    cmtHidden.add(unit);
+    units.add(unit);
+  });
+  const dropUnits = [];
+  cmtHidden.forEach((el) => {
+    if (!units.has(el) || !el.isConnected) {
+      cmtUnhide(el);
+      dropUnits.push(el);
+    }
+  });
+  dropUnits.forEach((el) => cmtHidden.delete(el));
+  units.forEach((unit) => {
+    if (!cmtHidden.has(unit)) {
+      cmtHide(unit);
+      cmtHidden.add(unit);
+    }
   });
   cmtCollapseSync(); /* 隐藏后收缩残留空白（定高容器不随内容变矮） */
   cmtSeamSync(); /* 隐藏后：分割线元素/行边框叠加 → 间隙只留一条线 */
@@ -744,17 +849,20 @@ function cmtApply() {
  * - 落位：评论输入框正上方，宽度对齐输入框——表情按钮右缘 = 输入框
  *   右缘，「发布」上方刻意留白（工具行整行属于输入框，不属于发布键）。
  *   输入框与发布键同行的场景（首页/tag 页）量测后用 margin-right 让位。
- * - 无外框融入样式：未激活 = 灰字无边框（颜色运行时取，取不到 #999），
- *   hover 提亮；激活 = 浅底胶囊（强调色 12% 透明底 + 同色文字）。
- *   强调色从评论区作者链接 getComputedStyle 实时取——不写死色值，
- *   天然抗混淆类名改版，自动兼容暗色管线与不同主页模板背景。
+ * - 无外框融入样式：未激活 = 灰字无边框（中性灰，反色后自然可读，
+ *   故不需要预反色处理），hover 提亮；激活 = 浅底胶囊（强调色 12%
+ *   透明底 + 同色文字）。
+ *   强调色固定为插件面板同款蓝紫 #7c80d2（2026-09-24 与作者对齐：
+ *   选中态与 popup 面板统一；此前取的是站点作者链接色，改掉了）。
+ *   暗色下工具行位于反色区内，写预反色值（见 cmtTbApplyAccent）。
  * - 排序「从旧到新」走 CSS column-reverse（零 DOM 改写，天然抗 React
  *   重渲染），只作用于已加载的评论；「查看更多」追加的更旧评论会被
  *   一并纳入反转、视觉出现在顶部，与「从旧到新」语义一致。
  *   外缘线补偿：站点若用 first-child 规则压掉首行上边框，反转后视觉
  *   顶行（DOM 末行）会出现多余线 → 运行时检测并把 DOM 末行上边框归零。
  * - 状态不跨帖保留：锚定的输入框全部换新（翻到另一帖）即复位。
- * - 表情快捷输入本批只放按钮占位（右缘对齐输入框），面板下批实现。
+ * - 表情快捷输入（#9）：右缘对齐输入框的入口按钮 + 面板，见下方
+ *   「表情快捷输入」段；开关跟随本工具行总开关，不单列。
  * - 楼主 id 分层探测：帧级（博客子域 / comment.do referrer / URL 参数）
  *   → 区块级 DOM（评论区块向上找第一个非评论区博客链接 = 帖子作者位）。
  *   找不到时「只看作者」置灰，绝不瞎猜（误把别人当楼主比不支持更糟）。 */
@@ -789,7 +897,12 @@ function cmtEnhanceOn() {
 
 /* 帧级楼主 id：主页查看全文 / 主页文章页的子域即楼主；comment.do 独立
  * 帧从 referrer（宿主帖子页通常是 xxx.lofter.com/lpost/...）与 URL 参数
- * 兜底。帧内不变，只算一次。 */
+ * 兜底。帧内不变，只算一次。
+ * 关键限定：referrer/URL 参数兜底只允许在「文章帧」上用（路径含
+ * lpost/post/d/comment.do）——首页/tag/发现这类 www 顶级页一帧几十个
+ * 各不相干的卡片，没有统一楼主；若从博客页导航过来，referrer 还会把
+ * 那个博客域名带进来污染整页（真机 2026-09-24：tag 页「只看作者」全
+ * 空，正是 referrer 里残留的博客域被当成了全页楼主） */
 function cmtFrameHostDetect() {
   if (cmtFrameHostTried) return cmtFrameHost;
   cmtFrameHostTried = true;
@@ -799,6 +912,10 @@ function cmtFrameHostDetect() {
       cmtFrameHost = m[1].toLowerCase();
       return cmtFrameHost;
     }
+    const isArticleFrame =
+      /\/(lpost|post|d)\//.test(location.pathname) ||
+      /comment\.do/i.test(location.pathname + location.search);
+    if (!isArticleFrame) return cmtFrameHost;
     const r = String(document.referrer || '').match(
       /^https?:\/\/([a-z0-9-]+)\.lofter\.com/i,
     );
@@ -821,8 +938,11 @@ function cmtFrameHostDetect() {
 
 /* 区块级楼主 id：从评论区块向上找第一个「不在评论列表里」的博客链接
  * （帖子卡片/文章容器的作者位）。首页/tag 页一帧多卡片，各区块各算各。
- * @提及/引用回链与评论列表内的链接全部排除。 */
-function cmtHostFromDom(root) {
+ * @提及/引用回链与评论列表内的链接全部排除；skipEl（评论表单块）内的
+ * 链接也排除——输入框旁挂的是浏览者自己的头像链接，不排除就会把
+ * 「你自己」解析成楼主，只看作者时除了你自己的评论全被藏掉（真机
+ * 2026-09-24：作者明明评论过，开启后仍全空）。 */
+function cmtHostFromDom(root, skipEl) {
   try {
     let el = root;
     for (
@@ -834,6 +954,7 @@ function cmtHostFromDom(root) {
       for (let j = 0; j < links.length; j++) {
         const a = links[j];
         if (cmtIsMention(a)) continue;
+        if (skipEl && skipEl.contains(a)) continue;
         if (
           a.closest('.cmti, .bcmti, .bcmt-item, [class*="cmtlst"], [class*="cmtipt"]')
         ) {
@@ -868,19 +989,23 @@ function cmtTbEnsureStyle() {
     st.id = CMT_TB_STYLE_ID;
     (document.head || document.documentElement).appendChild(st);
   }
-  st.textContent =
+  const css =
     /* position+z-index：负 margin-bottom 把输入框包裹层提到工具行下半截
      * 之上（DOM 顺序靠后＝绘制更上），透明但会吃掉 chip 下半的点击——
      * 抬一层让工具行整行可点（真机已踩：只有文字偏上位置能点中） */
     '.lc-cmt-tb{display:flex;align-items:center;gap:2px;margin:0 0 1px;font-size:12px;line-height:1;' +
     'position:relative;z-index:1;visibility:hidden;}' +
+    /* 浅锚（0 评论卡片）：工具行上方是站点 isay 气泡展开容器的
+     * padding/margin，负 margin 抵消之，让工具行贴近上方分割线。
+     * 经验值 -20px：宁少勿多——过量会把表情图标顶进分割线里 */
+    '.lc-cmt-tb.lc-tb-shallow{margin-top:-20px;}' +
     '.lc-cmt-tb .lc-chip{appearance:none;-webkit-appearance:none;background:transparent;border:0;' +
     'padding:3px 9px;margin:0;border-radius:999px;font-family:inherit;font-size:12px;line-height:1.5;' +
     'color:var(--lc-cmt-muted,#8f8f8f);cursor:pointer;transition:color .15s,background-color .15s;}' +
     '.lc-cmt-tb.lc-ovh-l .lc-chip:first-child{margin-left:-9px;}' + /* 文字对齐输入框左缘（框已对齐，9px 是 chip 内边距）；仅当左缘有余量，贴视口边会裁切 */
     '.lc-cmt-tb .lc-chip:hover{color:var(--lc-cmt-strong,#5c5c5c);}' +
-    '.lc-cmt-tb .lc-chip.lc-on{color:var(--lc-cmt-accent,#4a90d9);' +
-    'background:var(--lc-cmt-accent-bg,rgba(74,144,217,.12));}' +
+    '.lc-cmt-tb .lc-chip.lc-on{color:var(--lc-cmt-accent,#7c80d2);' +
+    'background:var(--lc-cmt-accent-bg,rgba(124,128,210,.12));}' +
     '.lc-cmt-tb .lc-chip.lc-dis{opacity:.45;cursor:default;}' +
     '.lc-cmt-tb .lc-chip.lc-dis:hover{color:var(--lc-cmt-muted,#8f8f8f);}' +
     '.lc-cmt-tb .lc-emoji{margin-left:auto;appearance:none;-webkit-appearance:none;background:transparent;' +
@@ -890,33 +1015,71 @@ function cmtTbEnsureStyle() {
      * 图标右缘正好落在输入框右缘上，不再被 iframe 视口裁切 */
     '.lc-cmt-tb.lc-ovh-r .lc-emoji{margin-right:-4px;padding-right:2px;}' +
     '.lc-cmt-tb .lc-emoji:hover{color:var(--lc-cmt-strong,#5c5c5c);}' +
+    '.lc-cmt-tb .lc-emoji.lc-on{color:var(--lc-cmt-strong,#5c5c5c);}' +
     '.lc-cmt-tb .lc-emoji svg{width:16px;height:16px;display:block;}' +
+    /* 最近表情行（2026-09-26，输入框正下方，模拟 App 端）：文字 chip。
+     * 单行 nowrap + 超出即藏尾（个数按行宽自适应，名字长就少放）——
+     * 不换行，换行会把评论区高度顶得一跳一跳。margin-top 负值上贴：
+     * 官方表单块自带下边距，正值会显得离输入框很远（20260926b 真机） */
+    '.lc-cmt-eprow{display:flex;flex-wrap:nowrap;align-items:center;gap:4px;margin-top:-6px;overflow:hidden;font-size:12px;}' +
+    '.lc-cmt-eprow .lc-ep-rchip{appearance:none;-webkit-appearance:none;background:transparent;' +
+    'border:1px solid rgba(140,140,150,.38);border-radius:999px;color:inherit;font:inherit;' +
+    'font-size:12px;line-height:1;padding:4px 9px;cursor:pointer;white-space:nowrap;flex:0 0 auto;opacity:.85;}' +
+    '.lc-cmt-eprow .lc-ep-rchip:hover{background:rgba(130,130,150,.14);opacity:1;}' +
+    /* 深膜适配（2026-09-26 用户反馈）：浅色模式下卡面自适应材质切深膜
+     * 后，工具行/快捷行的浅色模式深灰字在深底上看不见。靠 .lc-face-dark
+     * 祖先选择器换肤（3 类权重 > 基础 2 类，无需 !important）；lc-on 的
+     * 主题色在深膜上本来可见，保持不动（accent 变量由 cmtTbApplyAccent
+     * 按反相状态算好） */
+    '.lc-face-dark .lc-cmt-tb .lc-chip{color:rgba(255,255,255,.78);}' +
+    '.lc-face-dark .lc-cmt-tb .lc-chip:hover{color:#fff;}' +
+    '.lc-face-dark .lc-cmt-tb .lc-chip.lc-dis,.lc-face-dark .lc-cmt-tb .lc-chip.lc-dis:hover{color:rgba(255,255,255,.4);}' +
+    '.lc-face-dark .lc-cmt-tb .lc-emoji{color:rgba(255,255,255,.85);}' +
+    '.lc-face-dark .lc-cmt-tb .lc-emoji:hover,.lc-face-dark .lc-cmt-tb .lc-emoji.lc-on{color:#fff;}' +
+    '.lc-face-dark .lc-cmt-eprow .lc-ep-rchip{border-color:rgba(255,255,255,.35);color:rgba(255,255,255,.88);}' +
+    '.lc-face-dark .lc-cmt-eprow .lc-ep-rchip:hover{background:rgba(255,255,255,.14);color:#fff;}' +
     /* 排序：CSS 反转，零 DOM 改写。list-style 一并压掉（UL 在 flex 下
      * 的 marker 盒会顶出列表外） */
     '.' + CMT_REV_CLASS +
     '{display:flex !important;flex-direction:column-reverse !important;list-style:none !important;}' +
     /* 外缘线补偿：站点压掉首行上边框时，反转后视觉顶行（DOM 末行）
      * 会多出一条线 → 归零。是否需要由运行时检测决定（见 cmtSortSync） */
-    '.' + CMT_REV_COMP_CLASS + ' > *:last-child{border-top-width:0 !important;}';
+    '.' + CMT_REV_COMP_CLASS + ' > *:last-child{border-top-width:0 !important;}' +
+    /* 页面级 toast（快捷「隐藏」的反馈/撤销） */
+    '.lc-cmt-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);' +
+    'z-index:2147483000;background:rgba(30,30,34,.92);color:rgba(255,255,255,.92);' +
+    'font-size:13px;line-height:1.4;padding:9px 16px;border-radius:999px;' +
+    'box-shadow:0 4px 16px rgba(0,0,0,.25);display:flex;align-items:center;gap:12px;}' +
+    '.lc-cmt-toast a{color:#8ea1ff;cursor:pointer;text-decoration:none;font-weight:600;}' +
+    /* 快捷「隐藏」追加进官方 .cmtopt（float 收缩盒）会把键数从 4 变 5，
+     * 总宽 136→170px，超出官方贴排临界宽 → 正文被挤换行、条目撑高
+     * （2026-09-25 真机量测：键宽恒 24px、键距恒 10px）。把键距收到
+     * 3px：5 键总宽 135px ≤ 136px，几何与官方行完全一致，正文零扰动。
+     * :has() 门禁：功能关闭（按钮被摘）时官方间距原样保留 */
+    '.cmti .cmtopt:has(a.lc-cmt-hide-btn) a{margin-left:3px !important;}';
+  /* 等值不写：无条件重写文本节点会触发 MutationObserver → 再排 tick
+   * → 又重写……自激 tick 循环，tag 页这类大文档上主线程被持续打断 */
+  if (st.textContent !== css) st.textContent = css;
 }
 
-/* 强调色：取评论区作者链接的实时颜色；胶囊底 = 同色 12% 透明 */
-function cmtTbApplyColors(bar) {
-  let accent = '';
-  try {
-    const a = document.querySelector(
-      '.cmtusr a[href], [class*="cmtusr"] a[href], .bcmtusr a[href]',
-    );
-    if (a) accent = getComputedStyle(a).color || '';
-  } catch (e) {}
-  if (!accent) return;
-  bar.style.setProperty('--lc-cmt-accent', accent);
-  const m = accent.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-  if (m) {
-    bar.style.setProperty(
-      '--lc-cmt-accent-bg',
-      'rgba(' + m[1] + ',' + m[2] + ',' + m[3] + ',0.12)',
-    );
+/* 强调色：固定用插件面板同款蓝紫（2026-09-24 与作者定稿：选中态与
+ * popup 面板统一，不再取站点作者链接色）。
+ * 反色区补偿：暗色管线的 invert+hue-rotate 会反转子树里的颜色，chip
+ * 在反色区内，故暗色下写「预反色值」，屏幕上显示出来才是同一支蓝紫；
+ * 面板挂在 documentElement（不在反色区）照直写原值。 */
+function cmtTbApplyAccent(bar) {
+  const accent =
+    lcEpDark() && lcEpInverted(bar) ? lcEpInvertHex(EP_ACCENT) : EP_ACCENT;
+  const v = parseInt(accent.slice(1), 16);
+  const rgb =
+    ((v >> 16) & 255) + ',' + ((v >> 8) & 255) + ',' + (v & 255);
+  const bg = 'rgba(' + rgb + ',0.12)';
+  /* 等值不写（自激 tick 循环防线，见 cmtTbEnsureStyle） */
+  if (bar.style.getPropertyValue('--lc-cmt-accent') !== accent) {
+    bar.style.setProperty('--lc-cmt-accent', accent);
+  }
+  if (bar.style.getPropertyValue('--lc-cmt-accent-bg') !== bg) {
+    bar.style.setProperty('--lc-cmt-accent-bg', bg);
   }
 }
 
@@ -1019,6 +1182,49 @@ function cmtFindPager(root) {
   return null;
 }
 
+/* 0 评论卡片的表单识别：祖先链（≤8 层）上类名/id 含 cmt（LOFTER
+ * 评论族类名 .cmti/.bcmti/.cmtform/.bcmtipt 全带 cmt；搜索框不带）
+ * → 认定是评论表单，可挂「仅表情」工具行。
+ * 2026-09-25 补：tag/首页 0 评论卡片展开后的评论输入框
+ * （.w-inputxt[contenteditable] + .w-bbtn 发布钮）整条祖先链是
+ * isaym3/isaym2-do/isaym2-open/isay，一个 cmt 都没有——真机探针
+ * 实锤 21/22 卡 NO_INPUT + 卡 3 被 Commentish 拦截。补认 isaym 系；
+ * 但首页发布框复用 isay 系类名（buildCSS 7867-7875 证实），靠
+ * publishArea/publishlayer 祖先明确排除 */
+function cmtCommentishForm(el) {
+  try {
+    if (
+      el.closest &&
+      el.closest('#publishArea, .publishlayer, .publishlayerwrap, .publishMain')
+    ) {
+      return false;
+    }
+    let n = el;
+    for (let i = 0; n && n.nodeType === 1 && i < 8; i++, n = n.parentElement) {
+      const q =
+        (typeof n.className === 'string' ? n.className : '') +
+        ' ' +
+        (n.id || '');
+      if (/cmt/i.test(q)) return true;
+      if (/isaym/i.test(q)) return true;
+    }
+  } catch (e) {}
+  return false;
+}
+/* 浅锚终点：容器里出现 发布/评论 按钮就算到头（工具行插在它前面）。
+ * 文本比较去空白——0 评论卡片的发布钮渲染为「发 布」（真机
+ * DevTools 实锤），带空格时精确等值永远不中，浅锚会爬过头 */
+function cmtHasPublishBtn(el) {
+  try {
+    const btns = el.querySelectorAll('button, [role="button"], a');
+    for (let i = 0; i < btns.length; i++) {
+      const t = (btns[i].textContent || '').replace(/\s+/g, '');
+      if (t === '发布' || t === '评论') return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
 function cmtTbBuildBar() {
   const bar = document.createElement('div');
   bar.className = 'lc-cmt-tb';
@@ -1050,7 +1256,7 @@ function cmtTbBuildBar() {
   emoji.type = 'button';
   emoji.className = 'lc-emoji';
   emoji.dataset.act = 'emoji';
-  emoji.title = '表情快捷输入（下批上线）';
+  emoji.title = '表情快捷输入';
   emoji.setAttribute('aria-label', '表情快捷输入');
   emoji.innerHTML =
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">' +
@@ -1064,7 +1270,12 @@ function cmtTbBuildBar() {
       e.target && e.target.closest ? e.target.closest('[data-act]') : null;
     if (!b) return;
     const act = b.dataset.act;
-    if (act === 'emoji') return; /* 本批占位，不做任何事 */
+    if (act === 'emoji') {
+      /* 开关关闭时入口整体隐藏（见 cmtTbSync），这里再兜一道 */
+      if (!lcEpOn()) return;
+      lcEpToggle(bar);
+      return;
+    }
     if (act === 'only') {
       if (b.classList.contains('lc-dis')) return;
       cmtOnlyAuthorOn = !cmtOnlyAuthorOn;
@@ -1085,15 +1296,119 @@ function cmtTbBuildBar() {
   return bar;
 }
 
+/* ---------- 最近表情行（2026-09-26，输入框正下方，模拟 App 端）----------
+ * 数据现成（epData.recent，插入即前插），过期条目由 lcEpPruneRecent 清。
+ * 位置：formBlock 之后 = 输入框（含发布钮）正下方。内容指纹（含顺序）
+ * 变化才重建节点；行宽变化只重新裁切藏尾——稳定态零写入，不喂自激 */
+function cmtEpRowEntries() {
+  const out = [];
+  for (let i = 0; i < epData.recent.length && out.length < EP_RECENT_MAX; i++) {
+    const r = epData.recent[i];
+    if (!lcEpRecentValid(r)) continue;
+    const c = r.pack ? lcEpPack(r.pack) : null;
+    if (c && c.enabled === false) continue; /* 停用包不进快捷行 */
+    out.push(r);
+  }
+  return out;
+}
+function cmtEpRowFill(rec, row) {
+  const list = cmtEpRowEntries();
+  const sig = list.map((r) => (r.pack || '') + '|' + r.name).join(';');
+  if (sig !== rec.rowSig) {
+    rec.rowSig = sig;
+    while (row.firstChild) row.removeChild(row.firstChild);
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      const full = lcEpFmt(r.pack, r.name);
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'lc-ep-rchip';
+      b.textContent = r.name;
+      b.title = full + '（点击插入）';
+      b.setAttribute('data-full', full);
+      row.appendChild(b);
+    }
+    rec.rowW = -1; /* 内容变了强制重新裁切 */
+  }
+  const w = row.clientWidth;
+  if (w && w !== rec.rowW) {
+    rec.rowW = w;
+    const kids = row.children;
+    for (let i = 0; i < kids.length; i++) kids[i].style.display = '';
+    let i = kids.length;
+    while (i > 0 && row.scrollWidth > w + 1) {
+      i--;
+      kids[i].style.display = 'none';
+    }
+  }
+  const show = list.length > 0;
+  if ((row.style.display !== 'none') !== show) {
+    row.style.display = show ? '' : 'none';
+  }
+}
+/* 行对齐（2026-09-26 用户反馈：chips 行原来占满 formBlock 全宽顶格
+ * 两边）：左右缘都对齐输入框（与工具行同宽，观感统一）。增量 margin
+ * 方案同 cmtTbSync 的宽度对齐——margin 生效后的残余差 <0.5px 即收敛，
+ * 不回清（回清=0↔pad 振荡，工具行已踩过） */
+function cmtEpRowAlign(row, input) {
+  try {
+    const ir = input.getBoundingClientRect();
+    const rr = row.getBoundingClientRect();
+    if (ir.width <= 0 || rr.width <= 0) return;
+    const curL = parseFloat(row.style.marginLeft) || 0;
+    const curR = parseFloat(row.style.marginRight) || 0;
+    const mL = curL + (ir.left - rr.left);
+    const mR = curR + (rr.right - ir.right);
+    if (Math.abs(mL - curL) > 0.5) row.style.marginLeft = mL + 'px';
+    if (Math.abs(mR - curR) > 0.5) row.style.marginRight = mR + 'px';
+  } catch (e) {}
+}
+function cmtEpRowSync(rec, input) {
+  let row = rec.row;
+  if (!row || !row.isConnected || row.previousElementSibling !== rec.formBlock) {
+    if (row && row.parentNode) row.parentNode.removeChild(row);
+    row = document.createElement('div');
+    row.className = 'lc-cmt-eprow';
+    row.style.display = 'none';
+    row.addEventListener('click', (e) => {
+      const b = e.target && e.target.closest ? e.target.closest('.lc-ep-rchip') : null;
+      if (!b) return;
+      const full = b.getAttribute('data-full');
+      /* 插入成功后 recent 自动前插（lcEpPushRecent），指纹含顺序 →
+       * 立即重填一次，被点的 chip 当场跳到行首 */
+      if (full && lcEpInsertInto(input, full)) cmtEpRowFill(rec, row);
+    });
+    try {
+      rec.formBlock.insertAdjacentElement('afterend', row);
+    } catch (e) {
+      return;
+    }
+    rec.row = row;
+    rec.rowSig = '';
+    rec.rowW = -1;
+  }
+  cmtEpRowFill(rec, row);
+  if (row.style.display !== 'none') {
+    cmtEpRowAlign(row, input);
+    /* 对齐改了 margin → 行宽变了 → 立即重裁一次，不等下轮 tick */
+    cmtEpRowFill(rec, row);
+  }
+}
+
 /* 工具行同步：发现评论输入框 → 注入/清理工具行 → 标区块根与楼主 id →
  * chip 状态刷新 → 宽度对齐。幂等全量重算，React 洗掉就重插。 */
 function cmtTbSync() {
   const on = cmtEnhanceOn();
+  /* 表情面板门禁：跟随工具行总开关，关 → 面板节点与样式表整体摘除 */
+  lcEpGate();
   /* 清理：输入框离场 / 工具行被 React 洗掉 / 功能关闭 */
   cmtAreas.forEach((rec, input) => {
     if (!on || !input.isConnected || (rec.bar && !rec.bar.isConnected)) {
       if (rec.bar && rec.bar.parentNode) {
         rec.bar.parentNode.removeChild(rec.bar);
+      }
+      if (rec.row && rec.row.parentNode) {
+        rec.row.parentNode.removeChild(rec.row);
       }
       if (rec.root) rec.root.removeAttribute('data-lc-cmt-area');
       cmtAreas.delete(input);
@@ -1117,38 +1432,86 @@ function cmtTbSync() {
   try {
     document.querySelectorAll(CMT_INPUT_SEL).forEach((input) => {
       /* 输入框 → 表单块：向上爬到「再上一层就含评论列表」为止，
-       * 表单块即工具行的插入锚点（插在它前面 = 输入框正上方） */
-      let fb = input;
-      for (let i = 0; i < 6; i++) {
-        const p = fb.parentElement;
-        if (!p || p === document.body || p === document.documentElement) {
-          break;
+       * 表单块即工具行的插入锚点（插在它前面 = 输入框正上方）。
+       * 快路径：上轮锚定的 formBlock 仍连着、且工具行仍紧贴它前面
+       * （= 未漂移），直接复用，免爬 6 层 × 每 tick——tag 页十几个
+       * 输入框 × 8Hz tick 的固定大头。漂移/换锚由下方防漂移检查兜住 */
+      const prevRec = cmtAreas.get(input);
+      let fb;
+      if (
+        prevRec &&
+        prevRec.formBlock &&
+        prevRec.formBlock.isConnected &&
+        prevRec.bar.nextElementSibling === prevRec.formBlock
+      ) {
+        fb = prevRec.formBlock;
+      } else {
+        fb = input;
+        for (let i = 0; i < 6; i++) {
+          const p = fb.parentElement;
+          if (!p || p === document.body || p === document.documentElement) {
+            break;
+          }
+          if (p.querySelector(CMT_LIST_SEL)) break;
+          fb = p;
         }
-        if (p.querySelector(CMT_LIST_SEL)) break;
-        fb = p;
       }
-      const root = fb.parentElement;
-      if (!root || root === document.body || root === document.documentElement) {
-        return;
+      let root = fb.parentElement;
+      /* 必须是评论区：优先认评论列表锚点。列表一条都没有时（首页/tag
+       * 页 0 评论的卡片）不能直接放弃——表情按钮要常在；且深爬上去的
+       * fb 已抬到卡片顶部（甚至 body），工具行会插错位置，而只看作者/
+       * 从旧到新没有列表可作用。退化为「仅表情」工具行：改用浅锚
+       * （含 发布/评论 按钮的最小容器），并用祖先类名含 cmt 排除首页
+       * 发布框、搜索框等同形输入 */
+      let emojiOnly = false;
+      if (
+        !root ||
+        root === document.body ||
+        root === document.documentElement ||
+        !root.querySelector(CMT_LIST_SEL)
+      ) {
+        if (!cmtCommentishForm(input)) return;
+        fb = input;
+        for (let i = 0; i < 4; i++) {
+          const p = fb.parentElement;
+          if (!p || p === document.body || p === document.documentElement) {
+            break;
+          }
+          if (cmtHasPublishBtn(p)) break;
+          fb = p;
+        }
+        root = fb.parentElement;
+        if (!root || root === document.body || root === document.documentElement) {
+          return;
+        }
+        emojiOnly = true;
       }
-      /* 必须是评论区：区块内含评论列表锚点（排除发布框/搜索框） */
-      if (!root.querySelector(CMT_LIST_SEL)) return;
       if (seenForms.has(fb)) return; /* 同一表单块多个输入元素只插一条 */
       seenForms.add(fb);
-      let rec = cmtAreas.get(input);
-      if (!rec) {
+      const rec = prevRec || {};
+      if (!prevRec) {
         const bar = cmtTbBuildBar();
+        /* 浅锚模式：工具行插在输入行容器之前，顶部隔着站点 isay 气泡
+         * 展开容器的 padding/margin，与上方分割线之间空出一大截——
+         * 用负 margin 拉向分割线（值见 cmtTbEnsureStyle 的 shallow 规则） */
+        if (emojiOnly) bar.classList.add('lc-tb-shallow');
         try {
           fb.parentElement.insertBefore(bar, fb);
         } catch (e) {
           return;
         }
-        rec = { bar: bar, formBlock: fb, root: root };
+        rec.bar = bar;
+        rec.formBlock = fb;
+        rec.root = root;
+        rec.emojiOnly = emojiOnly;
+        rec.insertedAt = Date.now();
         cmtAreas.set(input, rec);
         cmtTbRevealWatch();
       }
       rec.formBlock = fb;
       rec.root = root;
+      /* 0 评论时是「仅表情」工具行；评论随后加载出来要能升级成完整版 */
+      rec.emojiOnly = emojiOnly;
       /* 防漂移：React 重排可能把外插节点挪离锚点，旧的内联边距就
        * 残留在错误位置继续拉扯布局（真机表现＝反复开合评论区卡片
        * 位置漂移）。工具行必须始终紧贴 formBlock 正前方，发现挪位
@@ -1165,18 +1528,32 @@ function cmtTbSync() {
           fb.parentElement.insertBefore(rec.bar, fb);
         } catch (e) {}
       }
-      /* 区块标记 + 楼主 id（cmtApply 的「只看作者」谓词要查这两样） */
-      root.setAttribute('data-lc-cmt-area', '1');
+      /* 区块标记 + 楼主 id（cmtApply 的「只看作者」谓词要查这两样）。
+       * 等值不写：setAttribute 同值也会触发 MutationObserver，喂自激
+       * tick 循环 */
+      if (root.getAttribute('data-lc-cmt-area') !== '1') {
+        root.setAttribute('data-lc-cmt-area', '1');
+      }
       if (!cmtAreaHost.get(root)) {
-        const h = cmtFrameHost || cmtHostFromDom(root);
+        const h = cmtFrameHost || cmtHostFromDom(root, rec.formBlock);
         if (h) cmtAreaHost.set(root, h);
       }
-      /* chip 状态与置灰 */
+      /* chip 状态与置灰；「仅表情」工具行（0 评论的卡片）整个收起
+       * chip——只看作者/从旧到新没有列表可作用，留着只会让人点空 */
       const host = cmtFrameHost || cmtAreaHost.get(root) || '';
       const chips = rec.bar.querySelectorAll('.lc-chip');
       const onlyChip = chips[0];
       const sortChip = chips[1];
+      const chipsGone = rec.emojiOnly ? 'none' : '';
       if (onlyChip && sortChip) {
+        /* 等值不写：display 同值赋值同样触发 style 属性变异，喂自激
+         * tick 循环（观察器每 120ms 被自己上一轮的写入再唤醒） */
+        if (onlyChip.style.display !== chipsGone) {
+          onlyChip.style.display = chipsGone;
+        }
+        if (sortChip.style.display !== chipsGone) {
+          sortChip.style.display = chipsGone;
+        }
         onlyChip.classList.toggle('lc-on', cmtOnlyAuthorOn);
         onlyChip.classList.toggle('lc-dis', !host);
         onlyChip.title = host
@@ -1192,18 +1569,30 @@ function cmtTbSync() {
        * 触发重算，无需额外观察器 */
       const moreChip = rec.bar.querySelector('.lc-more');
       if (moreChip) {
-        const pager = cmtSortOn ? cmtFindPager(root) : null;
+        const pager =
+          cmtSortOn && !rec.emojiOnly ? cmtFindPager(root) : null;
         const busy =
           pager &&
           (pager.disabled === true ||
             pager.getAttribute('aria-disabled') === 'true');
-        moreChip.style.display = pager ? '' : 'none';
+        const d = pager ? '' : 'none';
+        if (moreChip.style.display !== d) moreChip.style.display = d;
         moreChip.classList.toggle('lc-dis', !!busy);
         moreChip.title = busy
           ? '加载中…'
           : '加载更多评论（等同官方「查看更多」）';
       }
-      cmtTbApplyColors(rec.bar);
+      cmtTbApplyAccent(rec.bar);
+      /* 表情入口：显隐跟随工具行总开关（不留点不动的死按钮） */
+      const epBtn = rec.bar.querySelector('.lc-emoji');
+      if (epBtn) {
+        const show = lcEpOn();
+        if ((epBtn.style.display !== 'none') !== show) {
+          epBtn.style.display = show ? '' : 'none';
+        }
+      }
+      /* 最近表情行：输入框正下方（内容指纹/行宽双门禁，稳定态零写入） */
+      cmtEpRowSync(rec, input);
       /* 宽度对齐：左缘对输入框左缘（margin-left）、右缘对输入框右缘
        * （margin-right）。要把已生效的 margin 还原回「自由缘」再算目标
        * 值：直接拿当前差值当 margin，补偿生效后差值归零又会被清掉 →
@@ -1256,12 +1645,20 @@ function cmtTbSync() {
           } catch (e) {}
           if (!revealed) {
             /* 显示门槛：注入常发生在展开动画中途，输入框会相对容器
-             * 漂移 ±3px，等连续两轮量测一致（布局稳定）再显示，
-             * 避免按键跟着动画挪动；自催节拍由 cmtTbRevealWatch 兜底 */
+             * 漂移，等量测稳定再显示可避免按键跟着动画挪动；自催节拍
+             * 由 cmtTbRevealWatch 兜底。但真机（2026-09-24）发现站点
+             * 评论区的图片/字体加载会让输入框位置在两三秒内持续微动，
+             * 「连续两轮一致」迟迟不满足 → 工具行迟到 3 秒。加最长
+             * 等待兜底：插入 700ms 后无条件显示（显示后只纠 >3px 大
+             * 偏移，不会跳）；精度同步放宽到 1px，0.5px 级微动不再
+             * 重置稳定计数 */
             const key = [ir.left, ir.right, ir.top]
-              .map((v) => Math.round(v * 2))
+              .map((v) => Math.round(v))
               .join(',');
-            if (rec.stableKey === key) {
+            if (
+              rec.stableKey === key ||
+              Date.now() - (rec.insertedAt || 0) > 700
+            ) {
               rec.bar.style.visibility = 'visible';
               rec.aligned = true;
             } else {
@@ -1293,6 +1690,9 @@ function cmtTbSync() {
  * 等非评论子元素也反转到列表另一端（此时跳过该容器，宁可不排）。 */
 function cmtSortSync() {
   const want = cmtEnhanceOn() && cmtSortOn;
+  /* 早退：排序熄灭且页面上已无反转类时无事可做——否则每个 tick 都要
+   * 逐区块扫评论行、逐行抬行单位（tag 页长 feed 上是不小的固定开销） */
+  if (!want && !document.querySelector('.' + CMT_REV_CLASS)) return;
   const roots = document.querySelectorAll('[data-lc-cmt-area]');
   Array.prototype.forEach.call(roots, (root) => {
     const rows = root.querySelectorAll(
@@ -1334,10 +1734,2003 @@ function cmtSortSync() {
 /* 统一节拍。顺序重要：工具行先把区块根与楼主 id 标好，「只看作者」的
  * 谓词才能查到 host；排序最后挂类。 */
 function cmtTick() {
+  const tp0 = Date.now();
   cmtTbSync();
   cmtApply();
   cmtSortSync();
+  cmtHideBtnSync();
+  /* 面板锚在按钮上方、滚动实时跟随（scroll 捕获监听，见 lcEpEnsureGlobal），
+   * 唯一另外要跟的是工具行被 React 洗掉：cmtTick 里检查 owner 存活
+   * （跨帧模式下 owner 在本帧、面板开在顶层，存活检查通过桥消息收面板） */
+  if (epRemote) {
+    if (epRemoteOpen && epOwner && !epOwner.isConnected) lcEpRemoteClose();
+  } else if (epOpen && epOwner && !epOwner.isConnected) {
+    lcEpClose();
+  }
+  /* 开销滚动计数（5s 窗口）：探针 tickN/tickMs 直读。tickN 持续 ≈8/s
+   * = 还有自激写入没断净；tickMs/tickN = 单次 tick 在当前文档上的成本 */
+  cmtPerf.n += 1;
+  cmtPerf.ms += Date.now() - tp0;
+  if (!cmtPerf.t0 || Date.now() - cmtPerf.t0 > 5000) {
+    cmtPerf.t0 = Date.now();
+    cmtDiag.tickN = cmtPerf.n;
+    cmtDiag.tickMs = cmtPerf.ms;
+    cmtPerf.n = 0;
+    cmtPerf.ms = 0;
+  }
 }
+
+/* ================= 评论区行内快捷「隐藏」（官方操作条尾部）=================
+ * 官方悬停操作条（.cmtopt：加黑/投诉/删除/回复）是常驻 DOM，悬停显隐由
+ * 行级控制——追加一个同款链接即可继承官方样式与显隐，无需注入/看门。
+ * 点击 = 写入 filter.users（与头像处「隐藏」同一份名单，语义统一：隐藏
+ * TA 的评论与帖子）。写入走 storage get→改→set 小事务（onCmtHideClick
+ * 处注释了为什么不走主逻辑的 filterPersist/settings），onChanged 自动
+ * 更新 cmtSettings 并触发 cmtTick 重算隐藏。行被 React 重渲染洗掉后由
+ * tick 补挂（等值守卫——已存在即跳过，不产生 DOM 变更，不自激）。 */
+function cmtHideBtnSync() {
+  try {
+    const f = cmtSettings && cmtSettings.filter;
+    const on = !!(
+      cmtSettings &&
+      cmtSettings.enabled &&
+      f &&
+      f.enabled &&
+      f.scope &&
+      f.scope.comment
+    );
+    document.querySelectorAll('.cmtopt').forEach((opt) => {
+      if (!on) {
+        /* 功能关闭时清掉残留按钮（避免点了没效果的死按钮） */
+        opt.querySelectorAll('a.lc-cmt-hide-btn').forEach((b) => b.remove());
+        return;
+      }
+      if (opt.querySelector('a.lc-cmt-hide-btn')) return;
+      if (!opt.closest('.cmti')) return;
+      const btn = document.createElement('a');
+      btn.href = '#';
+      btn.className = 'cmtj s-fc4 xtag lc-cmt-hide-btn';
+      btn.textContent = '隐藏';
+      btn.title =
+        '隐藏该用户的所有评论与帖子（与头像处的「隐藏」同一名单，可在扩展面板撤销）';
+      btn.addEventListener('click', onCmtHideClick);
+      opt.appendChild(btn);
+    });
+  } catch (e) {}
+}
+
+/* 行作者：行内第一个 id 解析非空的链接（文档序=作者位，与「行级首链
+ * 决策」同一约定——回复行的回复目标链接在作者名之后，不会被取到） */
+function cmtRowAuthorOf(row) {
+  try {
+    const links = row.querySelectorAll('a[href]');
+    for (let i = 0; i < links.length; i++) {
+      const id = cmtUserId(links[i]);
+      if (!id) continue;
+      let name = (links[i].textContent || '').trim();
+      if (!name) {
+        const t = links[i].getAttribute('title') || '';
+        name = t.split(' - ')[0].trim();
+      }
+      return { id: id, name: name || id };
+    }
+  } catch (e) {}
+  return null;
+}
+
+/* 20260925e 版曾在这里调主逻辑 IIFE 内的 filterPersist()——函数声明在
+ * 内层作用域，顶层 comment 模块根本看不见，点击必抛 ReferenceError：
+ * push 只进了内存、storage 没写、onChanged 不触发 → 评论不消失、面板
+ * 0 人、刷新全丢。20260925f 起不经 settings、不调 filterPersist，直接
+ * 对 storage 做 get→改→set 小事务：评论区常驻 comment.do 子帧，那里面
+ * window.settings 根本没初始化（主逻辑只在顶层帧跑），依赖 settings
+ * 本身就是个错。写成功后 onChanged（cmtStorageBound 监听）会同步本帧
+ * cmtSettings 并 cmtTick 重算，行立即隐藏。 */
+function onCmtHideClick(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const row = (e.currentTarget || e.target).closest('.cmti');
+  const author = row && cmtRowAuthorOf(row);
+  if (!author) {
+    cmtPageToast('没识别到这条评论的作者');
+    return;
+  }
+  try {
+    chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
+      let cur;
+      try {
+        cur = res[LC_STORAGE_KEY] || {};
+      } catch (er) {
+        cur = {};
+      }
+      if (!cur.filter) cur.filter = LC_clone(LC_DEFAULTS.filter);
+      if (!Array.isArray(cur.filter.users)) cur.filter.users = [];
+      if (cur.filter.users.some((u) => u.id === author.id)) {
+        cmtPageToast('「' + author.name + '」已在隐藏名单');
+        return;
+      }
+      cur.filter.users.push({ id: author.id, name: author.name });
+      chrome.storage.local.set({ [LC_STORAGE_KEY]: cur }, () => {
+        const err = chrome.runtime.lastError;
+        if (err) {
+          cmtPageToast('写入失败：' + err.message);
+          return;
+        }
+        cmtPageToast('已隐藏「' + author.name + '」的评论与帖子', () => {
+          cmtFilterUsersRemove(author.id);
+        });
+      });
+    });
+  } catch (err) {
+    cmtPageToast('隐藏失败（' + String((err && err.message) || err) + '）');
+  }
+}
+
+/* 撤销：同样走 storage 小事务（按 id 摘除），不依赖本帧 settings */
+function cmtFilterUsersRemove(id) {
+  try {
+    chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
+      const cur = res[LC_STORAGE_KEY] || {};
+      if (cur.filter && Array.isArray(cur.filter.users)) {
+        const next = cur.filter.users.filter((u) => u.id !== id);
+        if (next.length !== cur.filter.users.length) {
+          cur.filter.users = next;
+          chrome.storage.local.set({ [LC_STORAGE_KEY]: cur }, () => {});
+        }
+      }
+    });
+  } catch (e) {}
+}
+
+/* 页面级 toast（底部居中胶囊，4s 自动消失；undo 回调可选）。
+ * 与表情面板的 lcEpToast 独立——那个挂在 epHost 上，评论区没有宿主 */
+let cmtToastT = 0;
+function cmtPageToast(msg, undo) {
+  try {
+    const old = document.querySelector('.lc-cmt-toast');
+    if (old) old.remove();
+    const d = document.createElement('div');
+    d.className = 'lc-cmt-toast';
+    d.appendChild(document.createTextNode(msg));
+    if (undo) {
+      const a = document.createElement('a');
+      a.textContent = '撤销';
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        d.remove();
+        undo();
+      });
+      d.appendChild(a);
+    }
+    document.body.appendChild(d);
+    clearTimeout(cmtToastT);
+    cmtToastT = setTimeout(() => {
+      const t = document.querySelector('.lc-cmt-toast');
+      if (t) t.remove();
+    }, 4000);
+  } catch (e) {}
+}
+
+/* ================= 表情快捷输入（评论工具行右侧入口 · #9）=================
+ * 定稿见 docs/todo-priorities.md #9，交互原型 tools/demo-emoji-panel.html。
+ * 只做「文字格式」：把 [包名/情绪] 插到评论输入框，网页端显示文字、
+ * App 端由官方渲染成表情图；不请求网络、不读站点数据，与站点零耦合。
+ * 落位：挂 documentElement + position:absolute（不在 body/#main 内）——
+ * ① 逃出站点容器的 overflow 裁切；② 逃出暗色管线的 invert 反色区，
+ * 颜色按真值写、不必预反色。工具行 chip 在反色区内，故暗色下 chip 的
+ * 强调色写「预反色值」，两侧视觉才一致（#7c80d2，与 popup 面板同色）。
+ * 定位：锚在表情按钮上方 6px（恒定全高 348，允许顶部超出屏幕，向上
+ * 滚动即可见全貌；不向下展开）；页面坐标 + absolute，滚动/缩放时由
+ * 捕获监听实时重算、始终贴着按钮走；z-index 压在导航栏之下、压在
+ * 蒙版之上（无导航帧除外）。开关跟随「评论工具行」总开关，不单列。 */
+const EP_KEY = 'lc_emoji_v1';
+const EP_STYLE_ID = 'lc-emoji-panel-style';
+/* 面板落位几何的自动上报键：面板每次打开落位后写入（含帧 URL / 内联
+ * 尺寸 / 渲染矩形 / 帧宽 / DPR）。面板通常挂在评论区子帧里，顶层帧的
+ * 探针看不到 epHost —— 各帧用 storage.onChanged 把最新落位缓存进内存
+ * （epDiagCache），lcCmtPayload 同步带上，不再走异步合并（会被子帧
+ * 汇总覆写冲掉，实测两次丢字段）。10 分钟内的数据才算数。 */
+const EP_DIAG_KEY = 'lc_ep_diag_v1';
+let lcEpDiagLast = 0; /* 诊断上报节流：滚动跟随时落位每帧都跑，存储至多 1s 一写 */
+let epDiagCache = null;
+try {
+  chrome.storage.local.get(EP_DIAG_KEY, (res) => {
+    epDiagCache = (res && res[EP_DIAG_KEY]) || null;
+  });
+  chrome.storage.onChanged.addListener((ch, area) => {
+    if (area === 'local' && ch[EP_DIAG_KEY])
+      epDiagCache = ch[EP_DIAG_KEY].newValue || null;
+  });
+} catch (e) {}
+const EP_RECENT_MAX = 12;
+const EP_ACCENT = '#7c80d2';
+const EP_CORE_TABS = ['老福鸽', '老福鸽约稿专属', '联动', '道具'];
+/* 内置免费包只读（不可改名/删除）：祁煜 + 燕云合并进「联动」tab，
+ * 但格式里必须写各自真实包名，故用 [包名, 表情名] 二元组存 */
+const EP_BUILTIN = [
+  {
+    tab: '老福鸽',
+    items: [
+      '吹爆太太', '给你喜欢', '狗头', '多谢款待', '哈哈哈', 'kswl', '打call',
+      '甜哭了', '刀傻了', '揍审核', '拜托拜托', '裤子飞飞', '吃瓜', '求投喂',
+      '满头问号', '下次一定', '我酸了', '禁止涩涩', '握草', '生日快乐',
+      '有个朋友', '高考必胜',
+    ],
+  },
+  {
+    tab: '老福鸽约稿专属',
+    items: [
+      '在吗', '我来了', '稍等', '排单中', '请发设定', 'OK', '在炒了', '久等了',
+      '期待', '不好意思', '请用草稿', '请用线稿', '请用色稿', '请用成稿',
+      '好看死了', '辛苦了', '无需修改', 'sorry', '多谢', '收到',
+    ],
+  },
+  {
+    tab: '联动',
+    items: [
+      ['祁煜生日联动', '晚安'], ['祁煜生日联动', '好的'],
+      ['祁煜生日联动', '安慰'], ['祁煜生日联动', '打招呼'],
+      ['燕云老福鸽', '大火爆炒'], ['燕云老福鸽', '好好吃饭'],
+      ['燕云老福鸽', '摄星拿月'], ['燕云老福鸽', '你来燕了'],
+    ],
+  },
+];
+const EP_PROP_NAME = '更新求踢'; /* 官方唯一互动道具：单独发才触发 */
+let epData = { custom: [], recent: [] };
+let epView = 'normal'; /* normal | import | manage */
+let epTab = '老福鸽';
+/* 「最近」不再设面板栏（2026-09-26 用户拍板）：最近使用的表情直接排
+ * 在输入框下方（lc-cmt-eprow 快捷行），高频路径连面板都不用开；面板
+ * 打开就是最常用的老福鸽 */
+let epDraft = null;
+let epOwner = null; /* 打开面板的那条工具行 */
+let epHost = null;
+let epOpen = false;
+let epLastKey = '';
+let epSaveT = 0;
+let epAnimT = 0; /* 收起动画的延迟复位定时器 */
+let epToastT = 0;
+let epGlobalBound = false;
+/* 跨帧模式（专栏文章页）：整个评论区活在 comment.do 子帧里，面板若画在
+ * 子帧内会被 iframe 边界裁切（宽度卡死、顶部出不了文档顶）。改为子帧只
+ * 保留工具行与插入逻辑，面板由顶层帧托管渲染，两边用 postMessage 通讯：
+ *   子帧→顶层  open/move(按钮几何) outside(Esc/点外) close
+ *   顶层→子帧  insert(文本) close
+ * epRemote 指本帧是否为子帧；顶层侧会话状态以 epRmt* 命名 */
+const epRemote = window !== window.top;
+let epRemoteOpen = false; /* 子帧侧：面板当前开在顶层 */
+let epRmtBound = false; /* 子帧侧：桥接监听已绑 */
+let epRmtWin = null; /* 顶层侧：面板所属子帧的 window */
+let epRmtFrame = null; /* 顶层侧：对应 iframe 元素（实时取矩形） */
+let epRmtBr = null; /* 顶层侧：子帧最近上报的按钮视口矩形 */
+let epRmtInputRight = null; /* 顶层侧：子帧输入框右缘（面板对齐用） */
+let epTopHostBound = false; /* 顶层侧：托管监听已绑 */
+/* 导航栏兜底扫描缓存：全量 querySelectorAll + getComputedStyle 偏重，
+ * 结果 2s 内直接复用（导航栏的 fixed/sticky 形态不会频繁变化） */
+const lcEpNavCache = { t: 0, el: null, z: 0, raw: '' };
+
+/* ---------- 主题 / 色值 ---------- */
+function lcEpOn() {
+  /* 表情入口跟随「评论工具行」总开关，不单列开关 */
+  return !!cmtEnhanceOn();
+}
+/* 深膜联动（2026-09-26 用户拍板）：锚点所在卡正处自适应材质的深膜态
+ * （背景图偏暗）时面板同切深色。类只在开/关面板那一刻计算，打开期间
+ * 卡片膜态变化不追（面板生命周期短，不值得挂观察） */
+function lcEpFaceDark() {
+  try {
+    if (epOwner && epOwner.isConnected) {
+      return !!epOwner.closest('.lc-face-dark');
+    }
+    if (epRmtFrame && epRmtFrame.isConnected) {
+      return !!epRmtFrame.closest('.lc-face-dark');
+    }
+  } catch (e) {}
+  return false;
+}
+function lcEpHostDark() {
+  return lcEpDark() || lcEpFaceDark();
+}
+function lcEpDark() {
+  try {
+    if (cmtSettings && cmtSettings.enabled === false) return false;
+    const d =
+      (window.settings && window.settings.darkMode) ||
+      (cmtSettings && cmtSettings.darkMode) ||
+      null;
+    if (!d) return false;
+    if (d.mode === 'manual') return true;
+    if (d.mode === 'auto') {
+      return !!(
+        window.matchMedia &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches
+      );
+    }
+  } catch (e) {}
+  return false;
+}
+/* 祖先链上是否有 filter（暗色管线用 invert+hue-rotate 反色）。
+ * 有 → 该子树里的颜色会被反转，强调色要写预反色值 */
+function lcEpInverted(el) {
+  try {
+    let n = el;
+    while (n && n.nodeType === 1) {
+      const f = getComputedStyle(n).filter;
+      if (f && f !== 'none') return true;
+      if (n === document.documentElement) break;
+      n = n.parentElement;
+    }
+  } catch (e) {}
+  return false;
+}
+/* invert(100%) hue-rotate(180deg) 的逆变换（与主管线的 computeDarkAccent
+ * 同一套矩阵：两次变换互为逆，故写逆值再经反色显示 = 原色） */
+function lcEpInvertHex(hex) {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(String(hex || ''));
+  if (!m) return hex;
+  const v = parseInt(m[1], 16);
+  const r = ((v >> 16) & 255) / 255;
+  const g = ((v >> 8) & 255) / 255;
+  const b = (v & 255) / 255;
+  const hr = -0.574 * r + 1.43 * g + 0.144 * b;
+  const hg = 0.426 * r + 0.43 * g + 0.144 * b;
+  const hb = 0.426 * r + 1.43 * g - 0.856 * b;
+  const one = (x) => 1 - Math.max(0, Math.min(1, x));
+  const to = (x) =>
+    Math.round(Math.max(0, Math.min(1, one(x))) * 255)
+      .toString(16)
+      .padStart(2, '0');
+  return '#' + to(hr) + to(hg) + to(hb);
+}
+
+/* ---------- 数据 ---------- */
+function lcEpBlank() {
+  return { custom: [], recent: [] };
+}
+function lcEpLoad(raw) {
+  try {
+    const d = raw && typeof raw === 'object' ? raw : null;
+    epData = {
+      custom: d && Array.isArray(d.custom) ? d.custom : [],
+      recent: d && Array.isArray(d.recent) ? d.recent : [],
+    };
+  } catch (e) {
+    epData = lcEpBlank();
+  }
+  lcEpPruneRecent();
+  if (epOpen) lcEpRender();
+}
+function lcEpSaveSoon() {
+  clearTimeout(epSaveT);
+  epSaveT = setTimeout(() => {
+    try {
+      chrome.storage.local.set({ [EP_KEY]: epData });
+    } catch (e) {}
+  }, 180);
+}
+function lcEpPack(packName) {
+  for (let i = 0; i < epData.custom.length; i++) {
+    if (epData.custom[i].pack === packName) return epData.custom[i];
+  }
+  return null;
+}
+function lcEpAlias(c) {
+  return (c && c.alias) || (c && c.pack) || '';
+}
+function lcEpFmt(pack, name) {
+  return pack ? '[' + pack + '/' + name + ']' : '[' + name + ']';
+}
+function lcEpEsc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+  });
+}
+function lcEpFlat(tab) {
+  const out = [];
+  for (let i = 0; i < EP_BUILTIN.length; i++) {
+    const p = EP_BUILTIN[i];
+    if (p.tab !== tab) continue;
+    for (let j = 0; j < p.items.length; j++) {
+      const it = p.items[j];
+      if (typeof it === 'string') out.push({ pack: p.tab, name: it });
+      else out.push({ pack: it[0], name: it[1] });
+    }
+  }
+  return out;
+}
+function lcEpBuiltinGroups(tab) {
+  const g = [];
+  const seen = {};
+  lcEpFlat(tab).forEach((it) => {
+    if (!seen[it.pack]) {
+      seen[it.pack] = { pack: it.pack, items: [] };
+      g.push(seen[it.pack]);
+    }
+    seen[it.pack].items.push(it.name);
+  });
+  return g;
+}
+function lcEpInputOf(bar) {
+  let out = null;
+  cmtAreas.forEach((rec, input) => {
+    if (rec.bar === bar) out = input;
+  });
+  return out;
+}
+
+/* ---------- 样式 ---------- */
+const EP_CSS = `
+.lc-ep-host{position:absolute;z-index:500;width:340px;height:348px;display:none;
+  flex-direction:column;font-size:13px;line-height:1.6;color:var(--ep-text);
+  --ep-card:#ffffff;--ep-sub:#f6f6fa;--ep-line:#ececf2;--ep-text:#3a3a44;
+  --ep-muted:#8d8d9a;--ep-strong:#5c5c5c;--ep-hover:#f6f6f6;--ep-chipbd:#e4e4e4;
+  --ep-accent:#7c80d2;--ep-accent-bg:rgba(124,128,210,.12);--ep-danger:#e74c3c;
+  --ep-amber:#8a5b00;--ep-amberbg:#fdf3dd;--ep-x-bg:rgba(0,0,0,.10);--ep-x-fg:#8d8d9a;
+  --ep-sb:rgba(0,0,0,.22);--ep-sbh:rgba(0,0,0,.42);}
+.lc-ep-host,.lc-ep-host *{box-sizing:border-box}
+.lc-ep-host.lc-dk{--ep-card:#26262e;--ep-sub:#202027;--ep-line:#3b3b47;--ep-text:#e7e7ef;
+  --ep-muted:#a2a2b0;--ep-strong:#c9c9d6;--ep-hover:#2e2e38;--ep-chipbd:#45454f;
+  --ep-accent-bg:rgba(124,128,210,.22);--ep-danger:#ff6b5e;--ep-amber:#e2c184;
+  --ep-amberbg:#332a18;--ep-x-bg:rgba(255,255,255,.12);--ep-x-fg:#a2a2b0;
+  --ep-sb:rgb(90,90,84);--ep-sbh:rgb(126,126,118);}
+.lc-ep-host.lc-open{display:flex}
+/* 开合动画（2026-09-26）：display none→flex 时入场动画自动重播；
+ * 收起由 lcEpClose 加 lc-out 播 120ms 退场后再整体复位 */
+.lc-ep-host.lc-open .lc-emoji-panel{animation:lcEpIn .16s ease-out}
+.lc-ep-host.lc-out .lc-emoji-panel{animation:lcEpOut .12s ease-in forwards}
+@keyframes lcEpIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes lcEpOut{from{opacity:1}to{opacity:0;transform:translateY(6px)}}
+@media (prefers-reduced-motion:reduce){.lc-ep-host.lc-open .lc-emoji-panel,.lc-ep-host.lc-out .lc-emoji-panel{animation:none}}
+.lc-emoji-panel{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden;
+  /* 磨砂（2026-09-26 用户拍板）：与站点卡片同款配方——半透明底 +
+   * backdrop blur；深膜/暗色由 .lc-dk 变量换底色（保持半透明） */
+  background:rgba(255,255,255,.72);
+  -webkit-backdrop-filter:blur(26px) saturate(1.5);backdrop-filter:blur(26px) saturate(1.5);
+  border:1px solid var(--ep-line);border-radius:12px;
+  box-shadow:0 8px 28px rgba(0,0,0,.18)}
+.lc-ep-host.lc-dk .lc-emoji-panel{background:rgba(38,38,46,.78)}
+.lc-ep-sb{scrollbar-width:thin;scrollbar-color:var(--ep-sb) transparent}
+.lc-ep-sb::-webkit-scrollbar{width:8px;height:8px}
+.lc-ep-sb::-webkit-scrollbar-track{background:transparent}
+.lc-ep-sb::-webkit-scrollbar-thumb{background:var(--ep-sb);border-radius:4px}
+.lc-ep-sb::-webkit-scrollbar-thumb:hover{background:var(--ep-sbh)}
+.lc-ep-sb::-webkit-scrollbar-corner{background:transparent}
+.lc-ep-nav{flex:0 0 auto}
+.lc-ep-tabs-core{display:flex;gap:4px;padding:8px 8px 2px;overflow:hidden}
+.lc-ep-tabs-mine{display:flex;gap:4px;align-items:center;height:36px;padding:0 8px;margin-top:4px;
+  overflow-x:auto;overflow-y:hidden;border-top:1px solid var(--ep-line)}
+.lc-ep-mine-hint{font-size:11px;color:var(--ep-muted);opacity:.8;white-space:nowrap}
+.lc-ep-tab{flex:0 0 auto;appearance:none;border:0;background:transparent;padding:3px 9px;
+  border-radius:999px;font:12px/1.5 inherit;color:var(--ep-muted);cursor:pointer;white-space:nowrap}
+.lc-ep-tab:hover{color:var(--ep-strong)}
+.lc-ep-tab.on{color:var(--ep-accent);background:var(--ep-accent-bg)}
+.lc-ep-tab.off{opacity:.45}
+.lc-ep-plus{margin-left:auto;color:var(--ep-accent);border:1px solid var(--ep-accent);
+  border-radius:999px;padding:0 7px;font-size:13px;line-height:20px;height:22px;
+  background:transparent;cursor:pointer}
+.lc-ep-plus:hover{background:var(--ep-accent-bg)}
+.lc-ep-bar{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:9px 10px 8px;border-bottom:1px solid var(--ep-line);font-size:12px;color:var(--ep-muted)}
+.lc-ep-bar .ttl{color:var(--ep-text);font-weight:500}
+.lc-ep-mini{appearance:none;border:1px solid var(--ep-chipbd);background:transparent;border-radius:6px;
+  padding:2px 8px;font:11px/1.6 inherit;color:var(--ep-muted);cursor:pointer}
+.lc-ep-mini:hover{color:var(--ep-strong);background:var(--ep-hover)}
+.lc-ep-mini.on{color:var(--ep-accent);border-color:var(--ep-accent)}
+.lc-ep-body{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding:8px 10px 10px}
+/* 居中不用 justify-content:center：内容比容器高时（窄面板下说明文字
+ * 折行变多就会）center 会向顶底两侧同时溢出，顶部溢出滚动永远够不到
+ * （道具按钮被削成一条边）。margin-block:auto 在有空间时同样居中，
+ * 溢出时自动归零、退化为正常的顶部对齐 + 可滚动 */
+.lc-ep-body.center{display:flex;flex-direction:column}
+.lc-ep-body.center>*{margin-block:auto}
+.lc-ep-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}
+.lc-ep-chip{position:relative;appearance:none;border:1px solid transparent;background:transparent;
+  border-radius:6px;padding:5px 6px;font:12px/1.4 inherit;color:var(--ep-text);cursor:pointer;
+  text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.lc-ep-chip:hover{background:var(--ep-hover);border-color:var(--ep-chipbd)}
+.lc-ep-chip.off{opacity:.4;cursor:not-allowed}
+.lc-ep-chip .lc-ep-x{position:absolute;top:2px;right:2px;width:14px;height:14px;line-height:14px;
+  border-radius:50%;background:var(--ep-x-bg);color:var(--ep-x-fg);font-size:10px;text-align:center;
+  opacity:0;transition:opacity .12s,background-color .12s,color .12s}
+.lc-ep-chip:hover .lc-ep-x{opacity:1}
+.lc-ep-chip .lc-ep-x:hover{background:var(--ep-danger);color:#fff}
+.lc-ep-group{margin:0 0 12px}
+.lc-ep-group:last-child{margin-bottom:0}
+.lc-ep-ghead{display:flex;align-items:center;gap:6px;margin:0 0 5px;font-size:12px;
+  color:var(--ep-muted);min-height:20px}
+.lc-ep-ghead .gname{color:var(--ep-text);font-weight:500}
+.lc-ep-ghead input.gname{font:12px inherit;color:var(--ep-text);background:var(--ep-sub);
+  border:1px solid var(--ep-accent);border-radius:4px;padding:0 4px;width:112px;outline:none}
+.lc-ep-ghead .gtag{font-size:10px;padding:0 5px;border-radius:4px;border:1px solid var(--ep-chipbd);
+  cursor:pointer}
+.lc-ep-ghead .gtag.rent{color:var(--ep-amber);border-color:var(--ep-amber);background:var(--ep-amberbg)}
+.lc-ep-ghead .tgl{font-size:11px;cursor:pointer;padding:0 4px;border-radius:4px;color:var(--ep-muted)}
+.lc-ep-ghead .tgl:hover{background:var(--ep-hover);color:var(--ep-text)}
+.lc-ep-ghead .tgl.on{color:var(--ep-amber)}
+.lc-ep-ghead .del{color:var(--ep-danger);cursor:pointer;font-size:11px;margin-left:auto}
+.lc-ep-note{font-size:11px;color:var(--ep-muted);padding:0 0 6px}
+.lc-ep-sub p{margin:0 0 6px;font-size:11px;color:var(--ep-muted);line-height:1.7}
+.lc-ep-sub textarea{width:100%;height:84px;resize:none;font:12px/1.6 inherit;color:var(--ep-text);
+  background:var(--ep-sub);border:1px solid var(--ep-line);border-radius:6px;padding:6px 8px;outline:none}
+.lc-ep-sub textarea:focus{border-color:var(--ep-accent)}
+.lc-ep-sub .row{display:flex;gap:6px;margin-top:5px;align-items:center;flex-wrap:wrap}
+.lc-ep-summary{font-size:12px;color:var(--ep-text)}
+.lc-ep-summary b{font-weight:500}
+.lc-ep-summary .skip{color:var(--ep-muted);font-size:11px}
+.lc-ep-warn{color:var(--ep-amber);font-size:11px;margin-top:6px;line-height:1.7}
+.lc-ep-plist{margin-top:8px;border-top:1px solid var(--ep-line);padding-top:7px}
+.lc-ep-phead{font-size:11px;color:var(--ep-muted);margin:0 0 5px;line-height:1.6}
+.lc-ep-prow{display:flex;align-items:center;gap:6px;padding:3px 2px;font-size:12px;min-height:26px}
+.lc-ep-prow .pn{color:var(--ep-text);font-weight:500;max-width:150px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.lc-ep-prow .alias{font-size:11px;color:var(--ep-muted);min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.lc-ep-prow .pc{font-size:11px;color:var(--ep-muted);margin-left:auto;white-space:nowrap}
+.lc-ep-seg{display:inline-flex;border:1px solid var(--ep-chipbd);border-radius:6px;overflow:hidden;
+  flex:0 0 auto}
+.lc-ep-seg b{font:11px/1.9 inherit;font-weight:400;padding:0 6px;cursor:pointer;color:var(--ep-muted);
+  user-select:none}
+.lc-ep-seg b:hover{background:var(--ep-hover)}
+.lc-ep-seg b.on{background:var(--ep-accent-bg);color:var(--ep-accent)}
+.lc-ep-seg b.on.rent{background:var(--ep-amberbg);color:var(--ep-amber)}
+.lc-ep-seg.ro{opacity:.6;cursor:default}
+.lc-ep-seg.ro b{cursor:default}
+.lc-ep-seg.ro b:hover{background:transparent}
+.lc-ep-seg.ro b.on:hover{background:var(--ep-accent-bg)}
+.lc-ep-seg.ro b.on.rent:hover{background:var(--ep-amberbg)}
+.lc-ep-rentbar{flex:0 0 auto;padding:4px 10px;font-size:11px;line-height:1.6;color:var(--ep-amber);
+  background:var(--ep-amberbg);border-bottom:1px solid var(--ep-line)}
+.lc-ep-rentbar.off{color:var(--ep-muted);background:transparent}
+.lc-ep-empty{text-align:center;color:var(--ep-muted);font-size:12px;padding:0 10px;line-height:2}
+.lc-ep-special{width:100%;margin:2px 0 4px;padding:10px 12px;background:var(--ep-amberbg);
+  color:var(--ep-amber);border:0;border-radius:8px;display:block;font:13px/1.5 inherit;
+  cursor:pointer;text-align:left}
+.lc-ep-special:hover{filter:brightness(.98)}
+.lc-ep-prop p{margin:8px 2px 0;font-size:11px;color:var(--ep-muted);line-height:1.7}
+.lc-ep-foot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:6px 10px 9px;font-size:11px;color:var(--ep-muted);border-top:1px solid var(--ep-line)}
+.lc-ep-foot .hint{min-width:0}
+.lc-ep-toast{position:absolute;left:50%;bottom:-6px;transform:translateX(-50%);
+  background:var(--ep-text);color:var(--ep-card);border-radius:8px;padding:6px 12px;font-size:12px;
+  display:flex;gap:10px;align-items:center;box-shadow:0 6px 20px rgba(0,0,0,.2);white-space:nowrap}
+.lc-ep-toast a{color:var(--ep-accent);cursor:pointer;text-decoration:none}
+`;
+
+function lcEpEnsureStyle() {
+  let st = document.getElementById(EP_STYLE_ID);
+  if (!st) {
+    st = document.createElement('style');
+    st.id = EP_STYLE_ID;
+    (document.head || document.documentElement).appendChild(st);
+  }
+  if (st.textContent !== EP_CSS) st.textContent = EP_CSS;
+  return st;
+}
+function lcEpEnsureDom() {
+  const root = document.documentElement || document.body;
+  if (!root) return null;
+  if (epHost && epHost.isConnected) return epHost;
+  lcEpEnsureStyle();
+  epHost = document.createElement('div');
+  epHost.className = 'lc-ep-host';
+  epHost.setAttribute('data-lc-emoji-host', '1');
+  const panel = document.createElement('div');
+  panel.className = 'lc-emoji-panel';
+  epHost.appendChild(panel);
+  /* 关键：面板内 mousedown 一律不夺焦点（面板里的输入框除外）。否则点
+   * 表情按钮会把焦点从页面编辑器抢走，contenteditable 的光标选区随之
+   * 丢失，execCommand('insertText') 插不进去（专栏评论区的老式编辑器
+   * 就是这么哑火的；textarea 页走 value 直写不受影响）。这是编辑器
+   * 工具栏按钮的标准做法：mousedown preventDefault，click 照常触发 */
+  epHost.addEventListener('mousedown', (e) => {
+    const t = e.target;
+    try {
+      if (
+        t &&
+        t.nodeType === 1 &&
+        t.closest &&
+        t.closest('input, textarea, [contenteditable="true"]')
+      ) {
+        return; /* 面板自己的输入控件（导入框/别名编辑等）要正常拿焦点 */
+      }
+    } catch (err) {}
+    e.preventDefault();
+  });
+  root.appendChild(epHost);
+  return epHost;
+}
+function lcEpPanelEl() {
+  return epHost ? epHost.querySelector('.lc-emoji-panel') : null;
+}
+/* 关 = 从页面彻底摘除（入口同步隐藏），不留任何节点与样式 */
+function lcEpTeardown() {
+  epOpen = false;
+  epOwner = null;
+  epDraft = null;
+  epRmtWin = null;
+  epRmtFrame = null;
+  epRmtBr = null;
+  epRmtInputRight = null;
+  if (epHost && epHost.parentNode) epHost.parentNode.removeChild(epHost);
+  epHost = null;
+  try {
+    const st = document.getElementById(EP_STYLE_ID);
+    if (st) st.remove();
+  } catch (e) {}
+}
+function lcEpGate() {
+  if (!lcEpOn()) {
+    if (epRemote && epRemoteOpen) lcEpRemoteClose();
+    if (epHost || epOpen) lcEpTeardown();
+    return false;
+  }
+  return true;
+}
+/* 面板尺寸恒定 340×348，锚在按钮上方 6px、允许顶部超出屏幕；打开时
+ * 算一次，之后由 scroll/resize 捕获监听实时重算跟随按钮（rAF 节流） */
+function lcEpPlace() {
+  if (!epOpen) return;
+  if (!epHost) return;
+  /* 几何先行：蒙版探测要在面板的预期落点上做——蒙版只盖住面板那块
+   * 区域，不一定盖住按钮（发现-趋势页就是按钮在蒙版外、面板在蒙版内） */
+  const vw = document.documentElement.clientWidth || 0;
+  const sx = window.scrollX || window.pageXOffset || 0;
+  const sy = window.scrollY || window.pageYOffset || 0;
+  let br = { top: 0, bottom: 0, right: 0 };
+  let ir = null;
+  if (epRmtFrame) {
+    /* 跨帧会话：锚点在子帧里。子帧上报的是按钮/输入框的「子帧视口坐
+     * 标」，加上 iframe 元素在顶层视口的实时矩形即得顶层视口坐标——
+     * 顶层滚动由 scroll 跟随重算，子帧滚动由子帧转发 move 消息 */
+    if (!epRmtFrame.isConnected) {
+      lcEpClose();
+      return;
+    }
+    let fr = { left: 0, top: 0 };
+    try {
+      fr = epRmtFrame.getBoundingClientRect();
+    } catch (e) {}
+    br = {
+      top: fr.top + (epRmtBr ? epRmtBr.top : 0),
+      bottom: fr.top + (epRmtBr ? epRmtBr.bottom : 0),
+      right: fr.left + (epRmtBr ? epRmtBr.right : 0),
+    };
+    if (epRmtInputRight != null) {
+      ir = { right: fr.left + epRmtInputRight, width: 1 };
+    }
+  } else {
+    if (!epOwner || !epOwner.isConnected) {
+      lcEpClose();
+      return;
+    }
+    try {
+      br = epOwner.getBoundingClientRect();
+    } catch (e) {}
+    const input = lcEpInputOf(epOwner);
+    try {
+      if (input) ir = input.getBoundingClientRect();
+    } catch (e) {}
+  }
+  const w = vw ? Math.min(340, vw - 16) : 340;
+  const rightEdge = ir && ir.width ? ir.right : br.right;
+  let left = vw ? Math.min(vw - w - 8, rightEdge - w) : rightEdge - w;
+  if (!vw || left < 8) left = 8;
+  /* 全高 348 锚在按钮上方 6px，顶端允许超出「文档顶」：面板永远完整
+   * 地贴在按钮上方，按钮靠近屏幕顶部时面板上缘被视口自然裁掉，导航
+   * 栏（z 更高）盖住露出的部分。不做顶端钳 0 / 高度收缩——那会把整
+   * 板压在文档顶和按钮之间挤成矮条（跨帧会话里子帧内滚动时尤为明显，
+   * 用户明确否决了该行为）。仅当视口本身极矮时按视口高度收一下，防
+   * 底边整个出屏 */
+  let h = 348;
+  try {
+    const vhEp = document.documentElement.clientHeight || 0;
+    if (vhEp > 120 && h > vhEp - 8) h = vhEp - 8;
+  } catch (e) {}
+  const top = (br.top || 0) - 6 - h;
+
+  /* 层级探测：重落位（滚动跟随）时面板已可见，会挡住 elementFromPoint
+   * ——先整板隐身，探完再恢复。display 不能动（会闪），visibility 不影响布局 */
+  const prevVis = epHost.style.visibility;
+  epHost.style.visibility = 'hidden';
+  /* 1) 导航栏：视口顶部中央的命中元素向上找 fixed/sticky 层；
+   * 2) 蒙版：面板预期落点中心的命中元素向上找定位 z 层（只认 ≥100 的，
+   *    避免把普通内容的 z:1 当成蒙版）。面板要压在蒙版之上、导航栏
+   *    之下；蒙版若连导航栏都压过，就贴着蒙版上面走 */
+  let navZ = 0;
+  let navZRaw = '';
+  let navEl = null;
+  try {
+    /* 命中探测：只在视口顶部中央探一点，可能被页面自身元素恰好挡住
+     * （专栏等页面顶部有横幅/标签条）——左、中、右各试一次 */
+    const xs = [Math.min(vw / 2, 300), 24, Math.max(24, vw - 24)];
+    for (let xi = 0; xi < xs.length && !navEl; xi++) {
+      let n = document.elementFromPoint(xs[xi], 12);
+      while (n && n.nodeType === 1 && n !== document.body && n !== document.documentElement) {
+        const cs = getComputedStyle(n);
+        if (cs.position === 'fixed' || cs.position === 'sticky') {
+          /* 只有「矮条」才算导航栏。全屏覆盖层（发现页图片查看器、
+           * 各类弹窗蒙版）也挂在视口顶部且是 fixed——若当成导航栏，
+           * 面板会被放到它下面一层（z=99996 被 z=99997 的查看器盖住
+           * 就是这么来的）。高度超过视口 1/3 的一律按覆盖层处理 */
+          let overlay = false;
+          try {
+            const r = n.getBoundingClientRect();
+            const vh0 = document.documentElement.clientHeight || 800;
+            if (r.height > 200 || r.height > vh0 / 3) overlay = true;
+          } catch (err) {}
+          if (!overlay) {
+            navEl = n;
+            navZRaw = String(cs.zIndex);
+            const v = parseInt(cs.zIndex, 10);
+            if (!isNaN(v)) navZ = v;
+          }
+          break;
+        }
+        n = n.parentElement;
+      }
+    }
+    /* 兜底扫描：命中探测全部落空时（首页/tag 页见过），全量找「宽≥
+     * 0.4 屏、高≤160、贴视口顶」的 fixed/sticky 矮条。有 2s 缓存，
+     * 滚动跟随时不会每帧全量扫 */
+    if (!navEl) {
+      const nowNav = Date.now();
+      if (
+        lcEpNavCache.t &&
+        nowNav - lcEpNavCache.t < 2000 &&
+        lcEpNavCache.el &&
+        lcEpNavCache.el.isConnected
+      ) {
+        navEl = lcEpNavCache.el;
+        navZ = lcEpNavCache.z;
+        navZRaw = lcEpNavCache.raw;
+      } else {
+        const vh0 = document.documentElement.clientHeight || 800;
+        const els = document.querySelectorAll('div,header,nav,section,aside');
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i];
+          let cs;
+          let r;
+          try {
+            cs = getComputedStyle(el);
+            r = el.getBoundingClientRect();
+          } catch (e2) {
+            continue;
+          }
+          if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+          if (r.height <= 0 || r.width < vw * 0.4 || r.top > 60) continue;
+          if (r.height > 160 || r.height > vh0 / 3) continue;
+          const v = parseInt(cs.zIndex, 10);
+          const z = isNaN(v) ? 0 : v;
+          if (!navEl || z > navZ) {
+            navEl = el;
+            navZ = z;
+            navZRaw = String(cs.zIndex);
+          }
+        }
+        lcEpNavCache.t = nowNav;
+        lcEpNavCache.el = navEl;
+        lcEpNavCache.z = navZ;
+        lcEpNavCache.raw = navZRaw;
+      }
+    }
+    /* 有效层级修正：导航栏自己的 z 可能被外层堆叠上下文「困住」——
+     * fixed/sticky 包装层、transform/filter/backdrop-filter 容器、
+     * isolation 等在 Chrome 里都会开新上下文，导航栏的 9998 在根上下
+     * 文里根本不算数，面板 z=9997 照样画在它上面（真机 DevTools 实
+     * 锤：面板 9997 < 导航栏 9998，视觉上却反过来）。从导航栏逐级向
+     * 上找最外层的「开堆叠上下文」祖先，用它的数字 z 作有效 navZ；
+     * 最外层若是 auto 则归 0，交由几何裁切兜底 */
+    try {
+      let n2 = navEl && navEl.parentElement;
+      while (n2 && n2.nodeType === 1 && n2 !== document.body && n2 !== document.documentElement) {
+        const cs2 = getComputedStyle(n2);
+        const ctx =
+          cs2.position === 'fixed' ||
+          cs2.position === 'sticky' ||
+          (cs2.position !== 'static' && cs2.zIndex !== 'auto') ||
+          cs2.transform !== 'none' ||
+          cs2.filter !== 'none' ||
+          (cs2.backdropFilter && cs2.backdropFilter !== 'none') ||
+          parseFloat(cs2.opacity) < 1 ||
+          cs2.isolation === 'isolate' ||
+          cs2.mixBlendMode !== 'normal';
+        if (ctx) {
+          const v2 = parseInt(cs2.zIndex, 10);
+          navZ = isNaN(v2) ? 0 : v2;
+          navZRaw = String(cs2.zIndex) + '@outer';
+        }
+        n2 = n2.parentElement;
+      }
+    } catch (e2) {}
+  } catch (e) {}
+  let maskZ = 0;
+  try {
+    const vh = document.documentElement.clientHeight || 800;
+    /* 探测点取面板「可见部分」的中点：top 允许负值后，几何中心可能
+     * 落在视口外/导航栏底下，钳到 4 会探到导航栏自己。按可见区间取
+     * 中点，再在向上爬时跳过已识别的导航栏元素，避免把导航栏当蒙版 */
+    const visTop = Math.max(top, 0);
+    const visBot = Math.min(top + h, vh);
+    const cy = visBot > visTop ? (visTop + visBot) / 2 : Math.min(Math.max(top + h / 2, 4), Math.max(4, vh - 4));
+    const cx = Math.min(Math.max(left + w / 2, 4), Math.max(4, vw - 4));
+    let n = document.elementFromPoint(cx, cy);
+    while (n && n.nodeType === 1 && n !== document.body && n !== document.documentElement) {
+      if (navEl && n === navEl) {
+        n = n.parentElement;
+        continue;
+      }
+      const cs = getComputedStyle(n);
+      if (cs.position !== 'static') {
+        const v = parseInt(cs.zIndex, 10);
+        if (!isNaN(v) && v >= 100) {
+          /* 只认「近乎全屏」的覆盖层（发现页图片查看器这类）。页面普通
+           * 元素自带的高 z（哪怕上万）不该把面板抬到导航栏之上——导航
+           * 栏必须始终能盖住面板，这是用户明确的优先级 */
+          let full = false;
+          try {
+            const r = n.getBoundingClientRect();
+            const vh1 = document.documentElement.clientHeight || 800;
+            full = r.width >= vw * 0.8 && r.height >= vh1 * 0.8;
+          } catch (e2) {}
+          if (full) {
+            maskZ = v;
+            break;
+          }
+        }
+      }
+      n = n.parentElement;
+    }
+  } catch (e) {}
+  let z;
+  /* 面板永远待在导航栏之下（导航栏要能盖住面板，用户明确要求）；
+   * 蒙版只有比导航栏更高（如发现页图片查看器盖过导航栏）时才需要
+   * 越过它——否则导航栏优先，面板贴着导航栏下面走 */
+  const zBelowNav = navZ > 1 ? navZ - 1 : 0;
+  const zAboveMask = maskZ > 0 && maskZ >= navZ ? maskZ + 1 : 0;
+  if (zAboveMask || zBelowNav) {
+    z = Math.max(zAboveMask, zBelowNav);
+  } else {
+    z = 2147482000; /* 无导航无蒙版（comment.do 子帧等） */
+  }
+  epHost.style.visibility = prevVis; /* 探测完恢复，隐身只限探测期间 */
+  if (epHost.style.zIndex !== String(z)) epHost.style.zIndex = String(z);
+  const css = {
+    position: 'absolute',
+    width: w + 'px',
+    height: h + 'px',
+    left: Math.round(left + sx) + 'px',
+    top: Math.round(top + sy) + 'px',
+  };
+  Object.keys(css).forEach((k) => {
+    if (epHost.style[k] !== css[k]) epHost.style[k] = css[k];
+  });
+  /* 导航栏遮盖（毛玻璃透出优先）：导航栏数字 z 可信时（zBelowNav 生效，
+   * 面板真的画在玻璃栏下层），不裁切——让导航栏的 backdrop-filter 把
+   * 面板模糊地映出来，这是想要的玻璃质感。只有拿不到数字 z（导航栏
+   * z:auto / 探测只靠扫描兜底）或蒙版盖过导航栏时才用几何裁切兜底：
+   * 把面板伸进导航栏竖直带内的部分裁掉，防面板浮在玻璃栏上面。裁切
+   * 每次落位都重算，fixed/sticky 导航、任意滚动位置都成立 */
+  let clip = '';
+  if (navEl && !(zBelowNav > 0 && z === zBelowNav)) {
+    try {
+      const nr = navEl.getBoundingClientRect();
+      const cut = nr.bottom - top; /* 面板盒顶到导航栏底缘（同一视口口径） */
+      if (nr.height > 0 && cut > 0) {
+        clip = cut >= h ? 'inset(100% 0 0 0)' : 'inset(' + Math.round(cut) + 'px 0 0 0)';
+      }
+    } catch (e) {}
+  }
+  if (epHost.style.clipPath !== clip) epHost.style.clipPath = clip;
+  const cls = 'lc-ep-host lc-open' + (lcEpHostDark() ? ' lc-dk' : '');
+  if (epHost.className !== cls) epHost.className = cls;
+  /* 落位几何自动上报（见 EP_DIAG_KEY 注释）：探针任何时候都能取到
+   * 最近一次落位的真实数值。滚动跟随时落位每帧都跑，节流 1s 一写 */
+  try {
+    const now = Date.now();
+    if (now - lcEpDiagLast > 1000) {
+      lcEpDiagLast = now;
+      const r2 = epHost.getBoundingClientRect();
+      chrome.storage.local.set({
+      [EP_DIAG_KEY]: {
+        url: location.href.slice(0, 160),
+        isTop: window === window.top,
+        z: epHost.style.zIndex,
+        navZ: navZRaw || String(navZ || 0),
+        maskZ: maskZ || 0,
+        inline: epHost.style.width + ' x ' + epHost.style.height,
+        rect: [r2.left, r2.top, r2.width, r2.height].map(Math.round),
+        clientW: document.documentElement.clientWidth,
+        clientH: document.documentElement.clientHeight,
+        sy: window.scrollY || 0,
+        ownerTop: Math.round(br.top || 0),
+        h: Math.round(h),
+        dpr: window.devicePixelRatio,
+        t: now,
+      },
+      });
+    }
+  } catch (e) {}
+}
+/* 落位时机：打开时算一次 + scroll/resize 实时跟随（见 lcEpOpenFor 的
+ * 监听），面板始终锚在按钮上方。唯一要跟的另一件事是「工具行被
+ * React 洗掉」：在 cmtTick 里检查 owner 存活，没了就收面板 */
+function lcEpToast(msg, undo) {
+  if (!epHost) return;
+  const old = epHost.querySelector('.lc-ep-toast');
+  if (old) old.remove();
+  const d = document.createElement('div');
+  d.className = 'lc-ep-toast';
+  const s = document.createElement('span');
+  s.textContent = msg;
+  d.appendChild(s);
+  if (undo) {
+    const a = document.createElement('a');
+    a.textContent = '撤销';
+    a.addEventListener('click', () => {
+      undo();
+      d.remove();
+    });
+    d.appendChild(a);
+  }
+  epHost.appendChild(d);
+  clearTimeout(epToastT);
+  epToastT = setTimeout(() => d.remove(), 4000);
+}
+
+/* ---------- 渲染 ---------- */
+function lcEpRender() {
+  const panel = lcEpPanelEl();
+  if (!panel) return;
+  const sc = panel.querySelector('.lc-ep-body');
+  const st = sc ? sc.scrollTop : 0;
+  const mc = panel.querySelector('.lc-ep-tabs-mine');
+  const ml = mc ? mc.scrollLeft : 0;
+  const ti = panel.querySelector('#lc-ep-imp');
+  const tv = ti ? ti.value : null;
+
+  if (epTab.indexOf('c:') === 0 && !lcEpPack(epTab.slice(2))) epTab = '老福鸽';
+  const key = epView + '|' + (epView === 'normal' ? epTab : '');
+  const prevView = epLastKey.split('|')[0];
+  const keep = key === epLastKey;
+  epLastKey = key;
+
+  let h;
+  if (epView === 'import') h = lcEpViewImport();
+  else if (epView === 'manage') h = lcEpViewManage();
+  else h = lcEpViewNormal();
+  panel.innerHTML = h;
+  lcEpBind(panel);
+  const nb = panel.querySelector('.lc-ep-body');
+  if (nb && keep && st) nb.scrollTop = st;
+  const nm = panel.querySelector('.lc-ep-tabs-mine');
+  if (nm && ml && epView === 'normal' && prevView === 'normal') nm.scrollLeft = ml;
+  const nt = panel.querySelector('#lc-ep-imp');
+  if (nt) nt.value = tv !== null ? tv : epDraft ? epDraft.raw : '';
+}
+function lcEpViewNormal() {
+  let h = '<div class="lc-ep-nav">';
+  h +=
+    '<div class="lc-ep-tabs-core">' +
+    EP_CORE_TABS.map((t) => {
+      return (
+        '<button class="lc-ep-tab' +
+        (t === epTab ? ' on' : '') +
+        '" data-tab="' +
+        lcEpEsc(t) +
+        '">' +
+        lcEpEsc(t) +
+        '</button>'
+      );
+    }).join('') +
+    '<button class="lc-ep-tab lc-ep-plus" data-tab="＋" title="添加自己买的表情包">＋</button></div>';
+  h += '<div class="lc-ep-tabs-mine lc-ep-sb">';
+  if (!epData.custom.length) {
+    h +=
+      '<span class="lc-ep-mine-hint">自己买的表情包会排在这里 —— 点右上「＋」粘贴导入</span>';
+  } else {
+    epData.custom.forEach((c) => {
+      const on = 'c:' + c.pack === epTab;
+      const cls =
+        'lc-ep-tab' + (on ? ' on' : '') + (c.enabled === false ? ' off' : '');
+      h +=
+        '<button class="' +
+        cls +
+        '" data-tab="c:' +
+        lcEpEsc(c.pack) +
+        '" title="' +
+        lcEpEsc(lcEpAlias(c)) +
+        '">' +
+        lcEpEsc(lcEpAlias(c)) +
+        (c.perpetual === false ? '·月租' : '') +
+        '</button>';
+    });
+  }
+  h += '</div></div>';
+  const c = epTab.indexOf('c:') === 0 ? lcEpPack(epTab.slice(2)) : null;
+  if (c && c.enabled === false) {
+    h +=
+      '<div class="lc-ep-rentbar off">这个包已停用 · 到「管理」里启用后才好点进去发</div>';
+  } else if (c && c.perpetual === false) {
+    h += '<div class="lc-ep-rentbar">月租套装 · 到期后这些表情不再渲染</div>';
+  }
+  const b = lcEpBodyOfTab();
+  h += '<div class="lc-ep-body lc-ep-sb' + (b.center ? ' center' : '') + '">' + b.h + '</div>';
+  h +=
+    '<div class="lc-ep-foot"><span class="hint">网页端显示文字格式，App 端会渲染成表情图片</span>' +
+    '<button class="lc-ep-mini" data-act="manage-on">管理</button></div>';
+  return h;
+}
+function lcEpBodyOfTab() {
+  if (epTab === '道具') {
+    return {
+      center: true,
+      h:
+        '<div class="lc-ep-prop">' +
+        '<button class="lc-ep-special" data-ins="' +
+        lcEpEsc(lcEpFmt('', EP_PROP_NAME)) +
+        '">' +
+        lcEpEsc(EP_PROP_NAME) +
+        '</button>' +
+        '<p>官方目前唯一的互动道具。点一下把 [更新求踢] 放进输入框；App 端点它会直接发送，单独手打发送也触发。<br>' +
+        '<b>和别的文字或表情夹在一起发就会失效</b>，变成普通文字。</p></div>',
+    };
+  }
+  if (epTab === '联动') {
+    let h = '';
+    lcEpBuiltinGroups('联动').forEach((g) => {
+      h +=
+        '<div class="lc-ep-group"><div class="lc-ep-ghead"><span class="gname">' +
+        lcEpEsc(g.pack) +
+        '</span><span>' +
+        g.items.length +
+        '</span></div><div class="lc-ep-grid">' +
+        g.items
+          .map((n) => {
+            const full = lcEpFmt(g.pack, n);
+            return (
+              '<button class="lc-ep-chip" data-ins="' +
+              lcEpEsc(full) +
+              '" title="' +
+              lcEpEsc(full) +
+              '">' +
+              lcEpEsc(n) +
+              '</button>'
+            );
+          })
+          .join('') +
+        '</div></div>';
+    });
+    return { h };
+  }
+  if (epTab.indexOf('c:') === 0) {
+    const c = lcEpPack(epTab.slice(2));
+    if (!c) return { center: true, h: '<div class="lc-ep-empty">这个表情包已经不在了</div>' };
+    if (!c.items.length) {
+      return {
+        center: true,
+        h:
+          '<div class="lc-ep-empty">这个包还是空的<br><span style="font-size:11px">点「＋」粘贴导入，或到「管理」里补</span></div>',
+      };
+    }
+    return {
+      h:
+        '<div class="lc-ep-grid">' +
+        c.items
+          .map((n) => {
+            const full = lcEpFmt(c.pack, n);
+            return (
+              '<button class="lc-ep-chip' +
+              (c.enabled === false ? ' off' : '') +
+              '" data-ins="' +
+              lcEpEsc(full) +
+              '" title="' +
+              lcEpEsc(full) +
+              '">' +
+              lcEpEsc(n) +
+              '</button>'
+            );
+          })
+          .join('') +
+        '</div>',
+    };
+  }
+  return {
+    h:
+      '<div class="lc-ep-grid">' +
+      lcEpFlat(epTab)
+        .map((it) => {
+          const full = lcEpFmt(it.pack, it.name);
+          return (
+            '<button class="lc-ep-chip" data-ins="' +
+            lcEpEsc(full) +
+            '" title="' +
+            lcEpEsc(full) +
+            '">' +
+            lcEpEsc(it.name) +
+            '</button>'
+          );
+        })
+        .join('') +
+      '</div>',
+  };
+}
+function lcEpViewImport() {
+  return (
+    '<div class="lc-ep-bar"><span class="ttl">添加自己的表情包</span>' +
+    '<button class="lc-ep-mini" data-act="back">返回</button></div>' +
+    '<div class="lc-ep-body lc-ep-sb">' +
+    lcEpImportHtml() +
+    '</div>' +
+    '<div class="lc-ep-foot"><span class="hint">在 App 里点一遍再复制，比手打快</span></div>'
+  );
+}
+function lcEpImportHtml() {
+  let t =
+    '<div class="lc-ep-sub"><p>在 App 里把要的表情挨个点进一条评论，然后复制整段粘进来；' +
+    '不想要的复制时删掉即可，也可以直接在框里手打 <b>[包名/表情名]</b> 补充：</p>' +
+    '<textarea id="lc-ep-imp" placeholder="[星尘/比心][星尘/大哭][糯米太太/贴贴]…"></textarea>' +
+    '<div class="row"><button class="lc-ep-mini" data-act="parse">解析</button>';
+  if (epDraft) {
+    t +=
+      '<span class="lc-ep-summary">识别到 <b>' +
+      epDraft.packs.length +
+      '</b> 个包 · <b>' +
+      epDraft.count +
+      '</b> 个表情（已去重）' +
+      (epDraft.exist
+        ? '<span class="skip">，' + epDraft.exist + ' 个已存在会跳过</span>'
+        : '') +
+      '</span>' +
+      '<button class="lc-ep-mini on" data-act="save-import">全部保存</button>';
+  }
+  t += '</div>';
+  if (epDraft && epDraft.warn) t += '<div class="lc-ep-warn">' + lcEpEsc(epDraft.warn) + '</div>';
+  if (epDraft) t += lcEpPackListHtml();
+  return t + '</div>';
+}
+function lcEpPackListHtml() {
+  let h =
+    '<div class="lc-ep-plist"><div class="lc-ep-phead">将要保存的包 —— 默认永久，买的是月租就点一下切换：</div>';
+  for (let i = 0; i < epDraft.packs.length; i++) {
+    const p = epDraft.packs[i];
+    const c = lcEpPack(p.pack);
+    const rent = p.rent === true;
+    h +=
+      '<div class="lc-ep-prow"><span class="pn" title="' +
+      lcEpEsc(p.pack) +
+      '">' +
+      lcEpEsc(p.pack) +
+      '</span>';
+    if (c) {
+      if (c.alias && c.alias !== c.pack) {
+        h += '<span class="alias">现名：' + lcEpEsc(c.alias) + '</span>';
+      }
+      h +=
+        '<span class="pc">' +
+        p.items.length +
+        ' 个</span>' +
+        '<span class="lc-ep-seg ro" title="这个包已经添加过，沿用它的现有设置，要改去「管理」">' +
+        '<b class="' + (c.perpetual ? 'on' : '') + '">永久</b>' +
+        '<b class="' + (c.perpetual ? '' : 'on rent') + '">月租</b></span>';
+    } else {
+      h +=
+        '<span class="pc">' +
+        p.items.length +
+        ' 个</span>' +
+        '<span class="lc-ep-seg" data-seg="' +
+        lcEpEsc(p.pack) +
+        '">' +
+        '<b class="' + (rent ? '' : 'on') + '" data-rent="0">永久</b>' +
+        '<b class="' + (rent ? 'on rent' : '') + '" data-rent="1">月租</b></span>';
+    }
+    h += '</div>';
+  }
+  return h + '</div>';
+}
+function lcEpViewManage() {
+  let h =
+    '<div class="lc-ep-bar"><span class="ttl">管理我的表情包</span>' +
+    '<button class="lc-ep-mini on" data-act="back">完成</button></div>';
+  if (!epData.custom.length) {
+    h +=
+      '<div class="lc-ep-body lc-ep-sb center"><div class="lc-ep-empty">还没有添加自己的表情包<br>' +
+      '<span style="font-size:11px">回到面板点「＋」，粘贴导入</span></div></div>';
+  } else {
+    h += '<div class="lc-ep-body lc-ep-sb">';
+    for (let i = 0; i < epData.custom.length; i++) h += lcEpManageGroup(epData.custom[i]);
+    h += '</div>';
+  }
+  /* foot 右侧挂「清空最近使用」：自动清理只管失效条目，主动重置记录
+     靠这里（无确认，记录可重建，误点零成本） */
+  h +=
+    '<div class="lc-ep-foot"><span class="hint">改动即时保存</span>' +
+    (epData.recent.length
+      ? '<span data-clrrec style="color:var(--ep-danger);cursor:pointer;font-size:11px" title="清空输入框下方「最近使用」一行">清空最近使用</span>'
+      : '') +
+    '</div>';
+  return h;
+}
+function lcEpManageGroup(c) {
+  let g =
+    '<div class="lc-ep-group"><div class="lc-ep-ghead">' +
+    '<input class="gname" data-pack="' +
+    lcEpEsc(c.pack) +
+    '" value="' +
+    lcEpEsc(lcEpAlias(c)) +
+    '">' +
+    '<span>' +
+    c.items.length +
+    '</span>' +
+    '<span class="gtag' +
+    (c.perpetual ? '' : ' rent') +
+    '" data-type="' +
+    lcEpEsc(c.pack) +
+    '" title="点一下切换永久 / 月租">' +
+    (c.perpetual ? '永久' : '月租') +
+    '</span>' +
+    '<span class="tgl' +
+    (c.enabled === false ? ' on' : '') +
+    '" data-tg="' +
+    lcEpEsc(c.pack) +
+    '">' +
+    (c.enabled === false ? '已停用·点启用' : '停用') +
+    '</span>' +
+    '<span class="del" data-delpack="' +
+    lcEpEsc(c.pack) +
+    '">删除整包</span></div>' +
+    '<div class="lc-ep-note">只改这里的显示名，发出去的格式仍是 <b>' +
+    lcEpEsc(c.pack) +
+    '</b></div><div class="lc-ep-grid">';
+  for (let j = 0; j < c.items.length; j++) {
+    const full = lcEpFmt(c.pack, c.items[j]);
+    g +=
+      '<button class="lc-ep-chip' +
+      (c.enabled === false ? ' off' : '') +
+      '" data-ins="' +
+      lcEpEsc(full) +
+      '" title="' +
+      lcEpEsc(full) +
+      '">' +
+      lcEpEsc(c.items[j]) +
+      '<span class="lc-ep-x" data-dp="' +
+      lcEpEsc(c.pack) +
+      '" data-dn="' +
+      lcEpEsc(c.items[j]) +
+      '">×</span></button>';
+  }
+  if (!c.items.length) {
+    g += '<span style="font-size:11px;color:var(--ep-muted)">（空的）</span>';
+  }
+  g += '</div></div>';
+  return g;
+}
+
+/* ---------- 交互 ---------- */
+function lcEpBind(panel) {
+  const all = (s) => Array.prototype.slice.call(panel.querySelectorAll(s));
+  all('.lc-ep-tab').forEach((b) => {
+    b.addEventListener('click', () => {
+      const t = b.dataset.tab;
+      if (t === '＋') {
+        epView = 'import';
+        epDraft = null;
+        lcEpRender();
+        return;
+      }
+      epTab = t;
+      epView = 'normal';
+      lcEpRender();
+    });
+  });
+  all('[data-ins]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      if (e.target && e.target.dataset && e.target.dataset.dp) return;
+      if (epView !== 'normal') return;
+      if (b.classList.contains('off')) {
+        lcEpToast('这个包已停用，在「管理」里启用后再发');
+        return;
+      }
+      lcEpInsert(b.dataset.ins);
+    });
+  });
+  all('[data-dp]').forEach((x) => {
+    x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      lcEpDelOne(x.dataset.dp, x.dataset.dn);
+    });
+  });
+  all('[data-delpack]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      lcEpDelPack(b.dataset.delpack);
+    });
+  });
+  all('[data-clrrec]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      epData.recent = [];
+      lcEpSaveSoon();
+      lcEpRender();
+      lcEpToast('已清空最近使用记录');
+    });
+  });
+  all('[data-type]').forEach((t) => {
+    t.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const c = lcEpPack(t.dataset.type);
+      if (c) {
+        c.perpetual = !c.perpetual;
+        lcEpSaveSoon();
+        lcEpRender();
+      }
+    });
+  });
+  all('[data-tg]').forEach((t) => {
+    t.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const c = lcEpPack(t.dataset.tg);
+      if (c) {
+        c.enabled = c.enabled === false;
+        lcEpSaveSoon();
+        lcEpRender();
+      }
+    });
+  });
+  all('.lc-ep-seg[data-seg] b').forEach((b) => {
+    b.addEventListener('click', () => {
+      if (!epDraft) return;
+      const pn = b.parentNode.dataset.seg;
+      const want = b.dataset.rent === '1';
+      let p = null;
+      for (let i = 0; i < epDraft.packs.length; i++) {
+        if (epDraft.packs[i].pack === pn) p = epDraft.packs[i];
+      }
+      if (!p || p.rent === want) return;
+      p.rent = want;
+      lcEpRender();
+    });
+  });
+  /* 重命名：blur / change 即提交并退出编辑态（点空白也能退出） */
+  all('input[data-pack]').forEach((inp) => {
+    const commit = () => {
+      const c = lcEpPack(inp.dataset.pack);
+      if (c && inp.value.trim() && inp.value.trim() !== lcEpAlias(c)) {
+        c.alias = inp.value.trim();
+        lcEpSaveSoon();
+      }
+      lcEpRender();
+    };
+    inp.addEventListener('change', commit);
+    inp.addEventListener('blur', commit);
+  });
+  all('[data-act]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const a = b.dataset.act;
+      if (a === 'manage-on') {
+        epView = 'manage';
+        lcEpRender();
+      } else if (a === 'back') {
+        epView = 'normal';
+        epDraft = null;
+        lcEpRender();
+      } else if (a === 'parse') {
+        lcEpParse();
+      } else if (a === 'save-import') {
+        lcEpSaveImport();
+      }
+    });
+  });
+}
+function lcEpDelOne(packName, name) {
+  const c = lcEpPack(packName);
+  if (!c) return;
+  const k = c.items.indexOf(name);
+  if (k > -1) c.items.splice(k, 1);
+  lcEpPruneRecent();
+  lcEpSaveSoon();
+  lcEpRender();
+}
+function lcEpDelPack(packName) {
+  let idx = -1;
+  for (let i = 0; i < epData.custom.length; i++) {
+    if (epData.custom[i].pack === packName) idx = i;
+  }
+  if (idx < 0) return;
+  const gone = epData.custom.splice(idx, 1)[0];
+  if (epTab === 'c:' + packName) epTab = '老福鸽';
+  /* 撤销只还原整包，最近里的过期条目不跟着回来（条目已清，恢复成本高） */
+  lcEpPruneRecent();
+  lcEpSaveSoon();
+  lcEpRender();
+  lcEpToast('已删除「' + lcEpAlias(gone) + '」整包', () => {
+    epData.custom.splice(idx, 0, gone);
+    lcEpSaveSoon();
+    lcEpRender();
+  });
+}
+/* 插入到光标处（不是尾部）。textarea 走原生 setter + input 事件，
+ * React 才能感知；contenteditable（站点的 .bcmtipt/.editdiv）走
+ * execCommand('insertText')，失败再退化为 Range 手工插入 */
+/* 老式假输入框（实测 comment.do 的 div.bcmtipt，contentEditable=false，
+ * 2026-09-24 探针日志实锤）：先按真实用户行为戳一下（站点多半在点击/
+ * 聚焦时才把真编辑器换上来），再在自身和表单块范围内找真正可编辑的
+ * 元素。实在没有就把这个 div 临时转成可编辑——它是可见的评论框，站点
+ * 提交多半直接读它的文本。返回真正可插入的元素，失败返回 null */
+function lcEpWakeEditable(box) {
+  try {
+    ['mousedown', 'mouseup', 'click'].forEach((ty) => {
+      box.dispatchEvent(
+        new MouseEvent(ty, { bubbles: true, cancelable: true }),
+      );
+    });
+    box.focus();
+  } catch (e) {}
+  const scopes = [
+    box,
+    box.parentElement,
+    box.closest('form') ||
+      (box.parentElement && box.parentElement.parentElement),
+  ];
+  for (let i = 0; i < scopes.length; i++) {
+    const sc = scopes[i];
+    if (!sc || !sc.querySelector) continue;
+    try {
+      const alt = sc.querySelector(
+        'textarea, [contenteditable="true"], [contenteditable=""]',
+      );
+      if (alt) return alt;
+    } catch (e) {}
+  }
+  try {
+    box.contentEditable = 'true';
+    return box;
+  } catch (e) {
+    return null;
+  }
+}
+/* 跨帧桥：带 __lcEp 标记的 postMessage。顶层侧收消息时还会校验
+ * source 是本页某个 iframe 的 contentWindow，防任意页面伪造 */
+function lcEpPostTo(win, extra) {
+  try {
+    win.postMessage(Object.assign({ __lcEp: 1 }, extra), '*');
+  } catch (e) {}
+}
+function lcEpInsert(text) {
+  /* 跨帧会话：面板在顶层、输入框在子帧——插入必须回到子帧执行
+   * （成功后子帧自己推最近使用、失败由子帧回吐 toast） */
+  if (epRmtWin) {
+    lcEpPostTo(epRmtWin, { type: 'insert', text: String(text == null ? '' : text) });
+    return true;
+  }
+  const input = epOwner ? lcEpInputOf(epOwner) : null;
+  return lcEpInsertInto(input, text);
+}
+/* 指定输入框插入（最近 chips 行用：行元素自己持有 input 引用，不依赖
+ * 面板的 epOwner 状态——chip 点击时面板多半根本没开） */
+function lcEpInsertInto(input, text) {
+  if (!input) {
+    lcEpToast('插入失败：找不到输入框，关掉面板重开一次再试');
+    return false;
+  }
+  let target = input;
+  if (!input.isContentEditable && typeof input.value !== 'string') {
+    target = lcEpWakeEditable(input);
+    if (!target) {
+      lcEpToast('插入失败：这个输入框类型不受支持（' + (input.tagName || '?') + '）');
+      return false;
+    }
+  }
+  let ok = false;
+  try {
+    if (target.isContentEditable) {
+      /* 面板已防焦点丢失（mousedown preventDefault），编辑器选区通常
+       * 还在；万一丢了（脚本切换视图等）就退化到末尾插入 */
+      target.focus();
+      try {
+        ok = document.execCommand('insertText', false, text);
+      } catch (e) {
+        ok = false;
+      }
+      if (!ok) {
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount) {
+          try {
+            const r = document.createRange();
+            r.selectNodeContents(target);
+            r.collapse(false); /* 光标落到编辑器末尾 */
+            const s2 = window.getSelection();
+            s2.removeAllRanges();
+            s2.addRange(r);
+            ok = document.execCommand('insertText', false, text);
+          } catch (e) {
+            ok = false;
+          }
+        } else {
+          const r = sel.getRangeAt(0);
+          r.deleteContents();
+          const tn = document.createTextNode(text);
+          r.insertNode(tn);
+          r.setStartAfter(tn);
+          r.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(r);
+          ok = true;
+        }
+      }
+      /* 老式编辑器（comment.do 的 ztag 系）靠 input 事件同步内部状态 */
+      if (ok) {
+        try {
+          target.dispatchEvent(new Event('input', { bubbles: true }));
+        } catch (err) {}
+      }
+    } else if (typeof target.value === 'string') {
+      const s = target.selectionStart == null ? target.value.length : target.selectionStart;
+      const e = target.selectionEnd == null ? target.value.length : target.selectionEnd;
+      const next = target.value.slice(0, s) + text + target.value.slice(e);
+      try {
+        const proto =
+          target.tagName === 'TEXTAREA'
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+        setter.call(target, next);
+      } catch (err) {
+        target.value = next;
+      }
+      try {
+        target.setSelectionRange(s + text.length, s + text.length);
+      } catch (err) {}
+      try {
+        target.dispatchEvent(new Event('input', { bubbles: true }));
+      } catch (err) {}
+      ok = true;
+    } else {
+      /* 既不是 contenteditable 也没有字符串 value（站点怪异容器）——
+       * 不静默：给出可见提示，避免「点了没反应」无从排查 */
+      ok = false;
+    }
+  } catch (e) {
+    ok = false;
+  }
+  if (!ok) {
+    lcEpToast('插入失败：这个输入框类型不受支持（' + (target.tagName || '?') + '）');
+    try {
+      console.warn(
+        '[lc] emoji insert failed:',
+        'orig=' + input.tagName + '/' + (typeof input.className === 'string' ? input.className : ''),
+        'target=' + target.tagName,
+        'contentEditable=' + target.isContentEditable,
+        'class=' + (typeof target.className === 'string' ? target.className : ''),
+      );
+    } catch (err) {}
+  }
+  if (ok) lcEpPushRecent(text);
+  return ok;
+}
+function lcEpPushRecent(text) {
+  const m = /^\[([^/[\]\n]+)\/([^/[\]\n]+)\]$/.exec(String(text || ''));
+  const pack = m ? m[1] : '';
+  const name = m ? m[2] : String(text || '').replace(/[[\]]/g, '');
+  if (!name || name === EP_PROP_NAME) return;
+  epData.recent = epData.recent.filter((r) => !(r.pack === pack && r.name === name));
+  epData.recent.unshift({ pack, name });
+  epData.recent = epData.recent.slice(0, EP_RECENT_MAX);
+  lcEpSaveSoon();
+}
+/* ---------- 最近列表的过期清理（2026-09-26 用户实测：测试用的 666
+ * 从包里删掉后仍留在最近里，点了也发的是死格式）----------
+ * 有效性 = 自定义包在且 items 含该名；或内置平面清单含该 (pack,name)。
+ * 停用（enabled=false）不算过期——启用后要能原样回来 */
+function lcEpBuiltinHas(pack, name) {
+  for (let i = 0; i < EP_BUILTIN.length; i++) {
+    const p = EP_BUILTIN[i];
+    for (let j = 0; j < p.items.length; j++) {
+      const it = p.items[j];
+      if (
+        typeof it === 'string'
+          ? p.tab === pack && it === name
+          : it[0] === pack && it[1] === name
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+function lcEpRecentValid(r) {
+  if (!r || !r.name) return false;
+  if (r.pack) {
+    const c = lcEpPack(r.pack);
+    if (c) return c.items.indexOf(r.name) > -1;
+    return lcEpBuiltinHas(r.pack, r.name);
+  }
+  return lcEpBuiltinHas('', r.name);
+}
+function lcEpPruneRecent() {
+  const kept = epData.recent.filter(lcEpRecentValid);
+  if (kept.length === epData.recent.length) return false;
+  epData.recent = kept;
+  lcEpSaveSoon();
+  try {
+    /* 快捷行的内容指纹作废，下轮同步即重建（顺序敏感，直接置空最稳） */
+    cmtAreas.forEach((rec) => {
+      rec.rowSig = '';
+    });
+  } catch (e) {}
+  return true;
+}
+/* 导入解析：不校验合法性（付费包名千千万，格式对不对 App 端说了算），
+ * 不勾选（不想要的复制时删掉即可），只报识别到的包/表情数 */
+function lcEpParse() {
+  const el = lcEpPanelEl() ? lcEpPanelEl().querySelector('#lc-ep-imp') : null;
+  const raw = el ? el.value : '';
+  const re = /\[([^/[\]\n]{1,24})\/([^/[\]\n]{1,24})\]/g;
+  const map = {};
+  const order = [];
+  const seen = {};
+  let m;
+  let count = 0;
+  let exist = 0;
+  while ((m = re.exec(raw))) {
+    const key = m[1] + '\u0000' + m[2];
+    if (seen[key]) continue;
+    seen[key] = 1;
+    if (!map[m[1]]) {
+      map[m[1]] = [];
+      order.push(m[1]);
+    }
+    map[m[1]].push(m[2]);
+    count++;
+    const c = lcEpPack(m[1]);
+    if (c && c.items.indexOf(m[2]) > -1) exist++;
+  }
+  if (!order.length) {
+    epDraft = null;
+    lcEpToast('没识别到表情格式，检查一下是不是复制全了');
+    lcEpRender();
+    return;
+  }
+  let warn = '';
+  if (
+    raw.indexOf('[' + EP_PROP_NAME + ']') > -1 &&
+    raw.replace(/\[[^\]\n]{1,50}\]/g, '').trim()
+  ) {
+    warn =
+      '内容里还有别的文字或表情，[更新求踢] 这样发出去会失效，已跳过不导入。';
+  }
+  epDraft = { packs: [], count, exist, warn, raw };
+  for (let i = 0; i < order.length; i++) {
+    epDraft.packs.push({ pack: order[i], items: map[order[i]], rent: false });
+  }
+  lcEpRender();
+}
+function lcEpSaveImport() {
+  if (!epDraft) return;
+  let n = 0;
+  let skip = 0;
+  let firstNew = '';
+  for (let i = 0; i < epDraft.packs.length; i++) {
+    const p = epDraft.packs[i];
+    let c = lcEpPack(p.pack);
+    if (!c) {
+      /* 新包按解析时选的类型建；已存在的包沿用现有设置（归并追加） */
+      c = {
+        pack: p.pack,
+        alias: p.pack,
+        perpetual: p.rent !== true,
+        enabled: true,
+        items: [],
+      };
+      epData.custom.push(c);
+    }
+    for (let j = 0; j < p.items.length; j++) {
+      if (c.items.indexOf(p.items[j]) > -1) {
+        skip++;
+        continue;
+      }
+      c.items.push(p.items[j]);
+      n++;
+      if (!firstNew) firstNew = p.pack;
+    }
+  }
+  epDraft = null;
+  epView = 'normal';
+  if (firstNew) epTab = 'c:' + firstNew;
+  lcEpSaveSoon();
+  lcEpRender();
+  lcEpToast('已保存 ' + n + ' 个新表情' + (skip ? '，' + skip + ' 个已存在跳过' : ''));
+}
+
+/* ---------- 开合 ---------- */
+/* 全局监听（Esc / 点外关闭 / 滚动跟随）：本地面板与顶层托管面板共用，
+ * 首次开面板时绑一次 */
+function lcEpEnsureGlobal() {
+  if (epGlobalBound) return;
+  epGlobalBound = true;
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (epOpen && e.key === 'Escape') lcEpClose();
+    },
+    true,
+  );
+  document.addEventListener(
+    'mousedown',
+    (e) => {
+      if (!epOpen) return;
+      const t = e.target;
+      if (!t) return;
+      try {
+        if (epHost && epHost.contains(t)) return;
+        if (t.nodeType === 1 && t.closest && t.closest('.lc-emoji')) return;
+      } catch (err) {}
+      lcEpClose();
+    },
+    true,
+  );
+  /* 滚动跟随：面板锚在按钮上方，滚动/缩放时实时重算贴回按钮。
+   * scroll 用捕获——内层滚动容器（发现页 feed 等）的 scroll 事件
+   * 不冒泡，捕获阶段的 window 监听能收到；rAF 节流到每帧一次 */
+  let epPlaceRaf = 0;
+  const epFollowScroll = () => {
+    if (!epOpen || epPlaceRaf) return;
+    epPlaceRaf = requestAnimationFrame(() => {
+      epPlaceRaf = 0;
+      if (epOpen) lcEpPlace();
+    });
+  };
+  window.addEventListener('scroll', epFollowScroll, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener('resize', epFollowScroll);
+}
+function lcEpOpenFor(bar) {
+  if (!lcEpOn()) return;
+  if (epRemote) {
+    lcEpRemoteOpenFor(bar);
+    return;
+  }
+  if (epRmtWin) {
+    /* 本地开面板前收掉跨帧会话（同页内外两套评论框的罕见布局） */
+    lcEpPostTo(epRmtWin, { type: 'close' });
+    epRmtWin = null;
+    epRmtFrame = null;
+    epRmtBr = null;
+    epRmtInputRight = null;
+    epOpen = false;
+  }
+  lcEpEnsureDom();
+  if (!epHost) return;
+  epOwner = bar;
+  epOpen = true;
+  epView = 'normal';
+  epDraft = null;
+  /* 收起动画播到一半被重开：撤掉退场态，入场动画随 display 翻转重播 */
+  clearTimeout(epAnimT);
+  if (epHost.classList.contains('lc-out')) epHost.classList.remove('lc-out');
+  lcEpRender();
+  lcEpPlace();
+  const eb = bar && bar.querySelector ? bar.querySelector('.lc-emoji') : null;
+  if (eb) eb.classList.add('lc-on');
+  lcEpEnsureGlobal();
+}
+function lcEpClose() {
+  if (!epOpen && !epHost) return;
+  const wasRemote = !!(epOpen && epRmtWin);
+  epOpen = false;
+  epOwner = null;
+  epDraft = null;
+  if (wasRemote) {
+    /* 通知子帧收尾（按钮 lc-on 高亮、状态复位）；子帧不会再回发，
+     * 它的 close 处理有 epRemoteOpen 门禁，不会成环 */
+    lcEpPostTo(epRmtWin, { type: 'close' });
+    epRmtWin = null;
+    epRmtFrame = null;
+    epRmtBr = null;
+    epRmtInputRight = null;
+  }
+  if (epHost) {
+    const finishClose = () => {
+      epHost.className = 'lc-ep-host' + (lcEpHostDark() ? ' lc-dk' : '');
+      const t = epHost.querySelector('.lc-ep-toast');
+      if (t) t.remove();
+    };
+    if (epHost.classList.contains('lc-open')) {
+      /* 收起动画：先保住 display:flex 播 120ms 退场，再整体复位。
+       * 期间 epOpen 已为 false——几何跟随/插入等全部停走，纯视觉 */
+      epHost.classList.add('lc-out');
+      clearTimeout(epAnimT);
+      epAnimT = setTimeout(finishClose, 120);
+    } else {
+      finishClose();
+    }
+  }
+  document.querySelectorAll('.lc-cmt-tb .lc-emoji.lc-on').forEach((el) => {
+    el.classList.remove('lc-on');
+  });
+}
+function lcEpToggle(bar) {
+  if (!lcEpOn()) return;
+  if (epRemote) {
+    if (epRemoteOpen && epOwner === bar) {
+      lcEpRemoteClose();
+      return;
+    }
+    lcEpRemoteOpenFor(bar);
+    return;
+  }
+  if (epOpen && epOwner === bar) {
+    lcEpClose();
+    return;
+  }
+  lcEpOpenFor(bar);
+}
+
+/* ---------- 跨帧桥：子帧侧 ---------- */
+/* 专栏文章页的评论区整体在 comment.do 子帧里，面板若画在子帧内会被
+ * iframe 边界裁切。子帧只保留工具行/输入框/插入逻辑，面板由顶层帧
+ * 托管渲染；几何上报用「子帧视口坐标」，顶层乘上 iframe 实时矩形换算 */
+function lcEpRemoteGeom(bar) {
+  let br = { top: 0, bottom: 0, right: 0 };
+  try {
+    br = bar.getBoundingClientRect();
+  } catch (e) {}
+  let inputRight = null;
+  try {
+    const input = lcEpInputOf(bar);
+    if (input) inputRight = input.getBoundingClientRect().right;
+  } catch (e) {}
+  return {
+    br: { top: br.top, bottom: br.bottom, right: br.right },
+    inputRight: inputRight,
+  };
+}
+function lcEpRemoteSend(type, extra) {
+  try {
+    const t = window.top;
+    if (t && t !== window) {
+      t.postMessage(Object.assign({ __lcEp: 1, type: type }, extra), '*');
+    }
+  } catch (e) {}
+}
+function lcEpRemoteBindSub() {
+  if (epRmtBound) return;
+  epRmtBound = true;
+  /* 子帧滚动 → 按钮在 iframe 视口里的位置变了 → 上报新几何 */
+  let moveRaf = 0;
+  const sendMove = () => {
+    moveRaf = 0;
+    if (!epRemoteOpen || !epOwner) return;
+    lcEpRemoteSend('move', lcEpRemoteGeom(epOwner));
+  };
+  window.addEventListener(
+    'scroll',
+    () => {
+      if (!epRemoteOpen || moveRaf) return;
+      moveRaf = requestAnimationFrame(sendMove);
+    },
+    { capture: true, passive: true },
+  );
+  window.addEventListener('resize', () => {
+    if (!epRemoteOpen || moveRaf) return;
+    moveRaf = requestAnimationFrame(sendMove);
+  });
+  /* 顶层看不见 iframe 内部的点击：面板开着时，点子帧内任何地方
+   * （除表情按钮本身）都视为点外，转发顶层收面板 */
+  document.addEventListener(
+    'mousedown',
+    (e) => {
+      if (!epRemoteOpen) return;
+      const t = e.target;
+      try {
+        if (t && t.nodeType === 1 && t.closest && t.closest('.lc-emoji')) return;
+      } catch (err) {}
+      lcEpRemoteSend('outside', {});
+    },
+    true,
+  );
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (epRemoteOpen && e.key === 'Escape') lcEpRemoteSend('outside', {});
+    },
+    true,
+  );
+  /* 顶层指挥：插入 / 收面板 */
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (!d || d.__lcEp !== 1) return;
+    if (e.source !== window.top) return; /* 只听顶层指挥 */
+    if (d.type === 'insert') {
+      if (!epOwner) return;
+      const ok = lcEpInsert(d.text);
+      if (!ok) {
+        lcEpRemoteSend('toast', { msg: '插入失败：输入框不可用，关掉面板重开再试' });
+      }
+    } else if (d.type === 'close') {
+      lcEpRemoteClose();
+    }
+  });
+}
+function lcEpRemoteOpenFor(bar) {
+  lcEpRemoteBindSub();
+  epOwner = bar;
+  epRemoteOpen = true;
+  lcEpRemoteSend('open', lcEpRemoteGeom(bar));
+  const eb = bar && bar.querySelector ? bar.querySelector('.lc-emoji') : null;
+  if (eb) eb.classList.add('lc-on');
+}
+function lcEpRemoteClose() {
+  if (!epRemoteOpen) return;
+  epRemoteOpen = false;
+  epOwner = null;
+  document.querySelectorAll('.lc-cmt-tb .lc-emoji.lc-on').forEach((el) => {
+    el.classList.remove('lc-on');
+  });
+  lcEpRemoteSend('close', {});
+}
+
+/* ---------- 跨帧桥：顶层托管侧 ---------- */
+/* 顶层帧收到子帧的 open/move 后在本页渲染面板；插入指令发回子帧。
+ * 只认「本页 iframe 的 contentWindow」发来的消息，防外部页面伪造 */
+function lcEpBindTopHost() {
+  if (epTopHostBound || epRemote) return;
+  epTopHostBound = true;
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (!d || d.__lcEp !== 1) return;
+    let frame = null;
+    try {
+      const ifs = document.querySelectorAll('iframe');
+      for (let i = 0; i < ifs.length; i++) {
+        if (ifs[i].contentWindow === e.source) {
+          frame = ifs[i];
+          break;
+        }
+      }
+    } catch (err) {}
+    if (!frame) return;
+    if (d.type === 'bye') {
+      /* 子帧文档被站点重建（导航/重载）：旧会话作废，收面板 */
+      if (epOpen && epRmtWin === e.source) lcEpClose();
+      return;
+    }
+    if (!lcEpOn()) return;
+    if (d.type === 'open' || d.type === 'move') {
+      epRmtWin = e.source;
+      epRmtFrame = frame;
+      epRmtBr = d.br || null;
+      epRmtInputRight = d.inputRight != null ? d.inputRight : null;
+      if (d.type === 'open') {
+        if (epOpen && !epRmtWin) lcEpClose(); /* 本地会话让位 */
+        if (!epOpen) {
+          epOpen = true;
+          epView = 'normal';
+          epDraft = null;
+          lcEpEnsureDom();
+          if (!epHost) return;
+          clearTimeout(epAnimT);
+          if (epHost.classList.contains('lc-out')) epHost.classList.remove('lc-out');
+          lcEpRender();
+          lcEpEnsureGlobal(); /* Esc/点外/滚动跟随与本地路径共用 */
+        }
+      }
+      if (epOpen) lcEpPlace();
+    } else if (d.type === 'outside') {
+      if (epOpen && epRmtWin) lcEpClose();
+    } else if (d.type === 'close') {
+      /* 子帧侧自己收了面板（toggle / 工具行被 React 洗掉 / 总开关关闭） */
+      if (epOpen && epRmtWin === e.source) lcEpClose();
+    } else if (d.type === 'toast') {
+      if (epOpen) lcEpToast(d.msg || '');
+    }
+  });
+}
+/* 装配：顶层帧挂托管监听；子帧向顶层报到——若顶层还留着本 iframe
+ * 旧文档的遗留面板（站点重建了 comment.do），立即作废收起 */
+lcEpBindTopHost();
+if (epRemote) lcEpRemoteSend('bye', {});
 
 function lcSetupCommentFilter() {
   cmtDiag.ran = true;
@@ -1353,24 +3746,36 @@ function lcSetupCommentFilter() {
     const old = document.getElementById(CMT_STYLE_ID);
     if (old) old.remove();
   } catch (e) {}
-  chrome.storage.local.get(['lc_settings_v1', 'lc_official_bl_v1'], (res) => {
-    cmtSettings = res['lc_settings_v1'] || {};
-    const obl = res['lc_official_bl_v1'] || {};
-    cmtOfficialNames = new Set(
-      (Array.isArray(obl.names) ? obl.names : []).map(String),
-    );
-    cmtTick();
-    /* 观察当前这一份 documentElement（重挂后可能已经是新的那个） */
-    if (cmtObserver || !document.documentElement) return;
-    cmtObserver = new MutationObserver(() => {
-      clearTimeout(cmtTimer);
-      cmtTimer = setTimeout(cmtTick, 120);
-    });
-    cmtObserver.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-    });
-  });
+  chrome.storage.local.get(
+    ['lc_settings_v1', 'lc_official_bl_v1', EP_KEY],
+    (res) => {
+      cmtSettings = res['lc_settings_v1'] || {};
+      const obl = res['lc_official_bl_v1'] || {};
+      cmtOfficialNames = new Set(
+        (Array.isArray(obl.names) ? obl.names : []).map(String),
+      );
+      lcEpLoad(res[EP_KEY]);
+      cmtTick();
+      /* 观察当前这一份 documentElement（重挂后可能已经是新的那个） */
+      if (cmtObserver || !document.documentElement) return;
+      cmtObserver = new MutationObserver(() => {
+        /* 节流（非防抖）：首笔变异就排定 tick，后续变异不再顺延。
+         * tag 页展开评论时站点连绵不断地写 DOM（列表分批插入、图片
+         * 占位替换），防抖会把 tick 一直推到风暴停歇之后——工具行发
+         * 现输入框就迟到 ~3s（真机实测 3.8s）。tick 幂等全量重算，
+         * 跑在风暴中也安全，限频 ~8Hz 足够 */
+        if (cmtTimer) return;
+        cmtTimer = setTimeout(() => {
+          cmtTimer = 0;
+          cmtTick();
+        }, 120);
+      });
+      cmtObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+      });
+    },
+  );
   if (cmtStorageBound) return;
   cmtStorageBound = true;
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -1385,6 +3790,10 @@ function lcSetupCommentFilter() {
         (Array.isArray(v.names) ? v.names : []).map(String),
       );
       cmtTick();
+    }
+    /* 自定义表情（跨帧共享：面板开在哪个帧，哪个帧就用同一份数据） */
+    if (changes[EP_KEY]) {
+      lcEpLoad(changes[EP_KEY].newValue);
     }
     /* 跨帧诊断中继（见 lcCmtPublishSelf）：子帧收到顶层帧的探测请求就自报；
      * 顶层帧收到任何一帧的诊断就重新汇总。只认这两个键，不会自激循环。 */
@@ -1447,12 +3856,52 @@ function lcCmtArm() {
  * DevTools 的帧选择器里切到该帧再执行。事件最好带 {bubbles:true} 才能
  * 到达 window（另在 documentElement 上也挂一份，兼容不冒泡的派发）。 */
 function lcCmtPayload() {
-  return {
+  const payload = {
+    /* 构建标记：浏览器里跑探针看不到这个字段 = 扩展没重载 / 页面没刷新，
+     * 三处修复（0 评论退化、z 探测、面板几何）都还在旧版本上。
+     * 20260924d：玻璃透出优先——navZ 数字可信时不裁切（backdrop-filter
+     * 直接糊住面板），仅 z:auto/扫描兜底/蒙版盖过导航栏时几何裁切；
+     * 20260924c：蒙版只认近乎全屏覆盖层 + 导航栏全量扫描兜底 +
+     * 蒙版只认近乎全屏的覆盖层 + 导航栏探测加全量扫描兜底（2s 缓存），
+     * EP_DIAG 新增 navZ/maskZ */
+    probeVer: '20260926f', /* f：popup 排版整轮（进阶调节软底容器/胶囊子开关/滑杆行统一名称|拖动条|百分比右对齐/去尾分割线动态显隐/hint 精简）；字体状态条（chips 三态+生效中独占行+点已装切换+点生效中停用 font.off+activeFontFamily 逐名加引号修括号非法声明）；导入白名单补登记 sidebar/comment；表情管理加「清空最近使用」；尖角改 clip-path 三角带磨砂 */
     url: location.href.slice(0, 160),
     isTop: window === window.top,
     docSwapped: document.documentElement !== cmtDocEl,
     diag: cmtDiag,
   };
+  /* 表情面板几何（专栏文章面板偏窄的排查字段）：帧宽 / 内联尺寸 /
+   * 实际渲染矩形 / DPR。面板没建时也输出 present:false —— 探针输出
+   * 顶层有 emojiPanel 这个键本身就说明新代码在跑 */
+  try {
+    if (typeof epHost !== 'undefined' && epHost && epHost.isConnected) {
+      const r = epHost.getBoundingClientRect();
+      payload.emojiPanel = {
+        present: true,
+        open: epOpen,
+        pos: getComputedStyle(epHost).position,
+        z: getComputedStyle(epHost).zIndex,
+        inline: epHost.style.width + ' x ' + epHost.style.height,
+        rect: [r.left, r.top, r.width, r.height].map(Math.round),
+        clientW: document.documentElement.clientWidth,
+        dpr: window.devicePixelRatio,
+      };
+    } else {
+      payload.emojiPanel = { present: false };
+    }
+  } catch (e) {}
+  /* 面板多半挂在评论区子帧，本帧看不到 epHost —— 用缓存补上最近一次
+   * 落位几何（任何帧跑探针都能拿到） */
+  try {
+    if (
+      epDiagCache &&
+      !payload.emojiPanel &&
+      Date.now() - (epDiagCache.t || 0) <= 600000
+    ) {
+      payload.epDiag = epDiagCache;
+    }
+  } catch (e) {}
+  return payload;
 }
 
 /* 跨帧汇总 v2（2026-09-21 改走 chrome.storage 中继）。
@@ -1468,19 +3917,15 @@ function lcCmtPayload() {
  * 每条诊断都带 probeId，只汇总本轮结果，跨次探测不串数据。 */
 let cmtProbeId = 0;
 
-function lcCmtPayload() {
-  return {
-    url: location.href.slice(0, 160),
-    isTop: window === window.top,
-    docSwapped: document.documentElement !== cmtDocEl,
-    diag: cmtDiag,
-  };
-}
-
 /* 本帧自报：写中继存储 + 顺手写本帧 <html data-lc-probe-cmt>（在子帧控制台
  * 直接跑探针时也能立刻看到单帧结果） */
 function lcCmtPublishSelf(id) {
   const pid = id || cmtProbeId || Date.now();
+  /* 探针要数据了：开 15s 重诊断窗口并立刻跑一轮 tick，让 cmtDiag 里的
+   * 全文档扫描字段（cmti/avatars/sample/chain）是新鲜的（平时这些被
+   * wantDiag 门禁跳过，见 cmtApply） */
+  cmtDiagFresh = Date.now();
+  cmtTick();
   let payload = null;
   try {
     payload = Object.assign({ probeId: pid }, lcCmtPayload());
@@ -1563,7 +4008,17 @@ const cmtArmTimer = setInterval(() => {
   if (!document.getElementById(CMT_STYLE_ID)) lcCmtArm();
 }, 1000);
 
-if (window !== window.top) {
+/* 子帧分支整体包进 IIFE：原来的提前退出靠顶层 throw（控制台会显示成
+ * 红色 Uncaught Error，用户每次开 DevTools 都被吓一跳），改成 IIFE 里
+ * return —— 语义相同（跳过该帧的后续主逻辑），零报错 */
+/* 子帧分支与主帧主逻辑共用一个外层函数：子帧各分支处理完直接 return
+ * （不会执行到下面的主逻辑），主帧自然落到主逻辑。历史上这里用顶层
+ * throw 提前退出，控制台会显示红色 Uncaught Error；改成 IIFE+return
+ * 又破坏过退出语义（return 只退 IIFE，子帧继续跑主逻辑 → 子帧多出
+ * 悬浮按钮、管线重复执行，2026-09-24 实测回归）。现在同层收编，两种
+ * 问题都不存在 */
+(function () {
+  if (window !== window.top) {
   const href = location.href;
 
   /* about:blank / about:srcdoc 帧：既不是评论区，也不该走评论区的反色管线。
@@ -1573,7 +4028,7 @@ if (window !== window.top) {
    * 编辑器变白底黑字（v1.1.1 实测回归）。这类帧一律不插手：
    * 编辑器暗色由父帧 applyLongpostEditorDark 负责，计数由 wc-frame.js 负责。 */
   if (/^about:/i.test(href) || /^about:/i.test(document.URL || '')) {
-    throw new Error('lc-iframe-exit');
+    return;
   }
 
   /* 模板预览帧（主页设置 → 模板 → 预览）：预览必须展示模板原貌。
@@ -1581,7 +4036,7 @@ if (window !== window.top) {
    * 整帧反转（浅色模板变暗色卡、图片反色，2026-09-21 实证）→
    * 预览帧一律不插手，暗色/过滤等全部不生效。 */
   if (window.name === 'theme_preview' || href.includes('themesettingproxy.html')) {
-    throw new Error('lc-iframe-exit');
+    return;
   }
 
   // 编辑器 iframe (lf127.net)
@@ -1621,7 +4076,7 @@ if (window !== window.top) {
         }
       });
     });
-    throw new Error('lc-iframe-exit');
+    return;
   }
 
   // 评论区 iframe (原有逻辑)
@@ -1722,12 +4177,13 @@ styleEl.textContent = `
     }
   });
 
-  throw new Error('lc-iframe-exit');
-}
-/* ============================================================
- * content.js — Lofter 美化注入
- * ============================================================ */
-(() => {
+  /* 评论区 iframe 分支到此为止，不执行主帧主逻辑 */
+  return;
+  }
+  /* ============================================================
+   * 以下仅主帧执行 —— content.js 主逻辑
+   * ============================================================ */
+  (() => {
   "use strict";
 
   /* ---------- FOUC 防止：页面加载前隐藏 ---------- */
@@ -1941,9 +4397,24 @@ styleEl.textContent = `
 
   function activeFontFamily() {
     const f = settings.font;
+    /* 用户在 popup 状态条点了「停用」：回系统默认字体，字体名列表保留 */
+    if (f.off) return "";
     const stack = [];
     if (f.embedName && f.embedDataUrl) stack.push(`"${f.embedName}"`);
-    if (f.family) stack.push(f.family);
+    if (f.family) {
+      /* 未加引号的 family 名含括号/空格等字符时是非法 CSS，整条声明会被浏览器
+         丢弃（華康超明體(P) 实证：状态条显示生效中但页面回默认字体），所以
+         逐个名字加引号；CSS generic 关键字不能加引号（加了会变成"同名字体"） */
+      for (let name of String(f.family).split(",")) {
+        name = name.trim();
+        if (!name) continue;
+        stack.push(
+          /^(serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-(sans-)?serif|ui-monospace)$/i.test(name)
+            ? name
+            : `"${name}"`
+        );
+      }
+    }
     if (stack.length) stack.push("sans-serif");
     return stack.join(", ");
   }
@@ -5728,18 +8199,16 @@ body.body .content-block:not(:has(.words-area)) {
           box-shadow: 0 8px 24px rgba(0,0,0,0.13) !important;
         }
 
-        /* ===== 排除不需要卡片的模块 ===== */
+        /* ===== 排除不需要卡片的模块 =====
+           台头(.tag-header-w)/最新最热栏(.m-tabbar)已收编进 ensureBubbleCards
+           的磨砂+材质管线（2026-09-25），不再在此排除 */
         #main > .m-mlist:not(:has(> .mlistimg)):not(:has(> .mlistcnt .isay)):not(:has(> .mlistcnt .isayt)):not(:has(> .mlistcnt .isaym)) > .mlistcnt::before,
-        #main > .m-mlist:has(> .mlistcnt .tag-header-w) > .mlistcnt::before,
-        #main > .m-mlist:has(> .mlistcnt .m-tabbar) > .mlistcnt::before,
         #main > .m-mlist:has(> .mlistcnt .isaym3) > .mlistcnt::before,
         #main > .m-mlist:has(> .mlistcnt .publishlayer) > .mlistcnt::before {
           display: none !important;
         }
 
-        /* 排除模块不要下边距 */
-        #main > .m-mlist:has(> .mlistcnt .tag-header-w),
-        #main > .m-mlist:has(> .mlistcnt .m-tabbar),
+        /* 排除模块不要下边距（台头/tab 栏已收编，按标准卡距留缝） */
         #main > .m-mlist:has(> .mlistcnt .isaym3),
         #main > .m-mlist:not(:has(> .mlistimg)):not(:has(> .mlistcnt .isay)):not(:has(> .mlistcnt .isayt)):not(:has(> .mlistcnt .isaym)) {
           margin-bottom: 0 !important;
@@ -5751,11 +8220,12 @@ body.body .content-block:not(:has(.words-area)) {
           z-index: 10 !important;
         }
 
-        /* 导航栏直接给 .mlistcnt 加背景 */
+        /* 最新/最热 tab 栏：保留层级抬升（下拉面板/粘性定位用），
+           卡面交由 ensureBubbleCards 的磨砂+材质管线（::before 自绘） */
         #main > .m-mlist:has(> .mlistcnt .m-tabbar) > .mlistcnt {
-          background-color: #fff !important;
-          border-radius: ${fr} !important;
-          box-shadow: ${shadow} !important;
+          background: transparent !important;
+          background-color: transparent !important;
+          box-shadow: none !important;
           border: none !important;
           overflow: visible !important;
           margin-bottom: 0 !important;
@@ -6205,6 +8675,36 @@ body.body .content-block:not(:has(.words-area)) {
           z-index: 9999 !important;
         }
         .w-sel .selc, .a-w-sel .selc { overflow: visible !important; }
+
+        /* 最热榜下拉面板（日榜/周榜/月榜/全部）：原底是站点雪碧图，
+         * 被台头透明化管线洗掉后整个面板透明、文字浮在下面的博文卡上
+         * （真机实锤）。底色画两处：内层面板（.selc/.selcc）无条件画
+         * （站点以 display:none 收起时不可见）；组件根只在悬停（展开
+         * 态）画——常驻画根的话，收起态根盒子（触发钮大小）的阴影会在
+         * 「全部」下方露出一条横线（box-shadow 不被审查工具命中，
+         * 2026-09-25 实锤） */
+        .tag-header-w .a-w-sel .selc,
+        .tag-header-w .a-w-sel .selcc {
+          background-color: #fff !important;
+          border-radius: ${fr} !important;
+        }
+        /* 组件根 :hover 底色已删（20260925v）：根盒比内层面板大一圈，
+           悬停画底=面板「放大一圈」（真机实锤）。内层 selc/selcc 无条件
+           画底后，根盒底完全是多余的 */
+        /* 榜单选中勾：清雪碧图 + 自绘对勾（主题色，与发布层下拉同款） */
+        .tag-header-w .selected-icon {
+          background: none !important;
+        }
+        .tag-header-w .selected-icon::after {
+          content: "" !important;
+          display: block !important;
+          width: 9px !important;
+          height: 5px !important;
+          border-left: 2px solid ${s.theme.accent || "#667eea"} !important;
+          border-bottom: 2px solid ${s.theme.accent || "#667eea"} !important;
+          transform: rotate(-45deg) !important;
+          margin-top: -2px !important;
+        }
 
         /* ============================================
          * 右侧边栏
@@ -9704,7 +12204,7 @@ body.p-body10 .g-sd a:hover:not(.w-sbtn):not(.cashbtn):not(#j-participate-act):n
   filter: invert(100%) hue-rotate(180deg) !important;
 }
 ${
-  s.darkMode.feedTranslucent
+  s.darkMode.feedTranslucent && s.card && s.card.material
     ? `
 /* 信息流淡透底（实验）v2：容器整块透明（站点白底不再参与反色），
    背景图直接铺在信息流底下；半透明深底只由卡片自绘 ::before 提供
@@ -12361,7 +14861,12 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
   /* 暗色卡面取色：信息流淡透底（实验）开启时用半透明预反色值，
      让卡面与容器一起透出背景图（alpha 不受 invert 影响，只反 RGB） */
   function lcFeedCardBg() {
-    if (settings.darkMode && settings.darkMode.feedTranslucent) {
+    if (
+      settings.darkMode &&
+      settings.darkMode.feedTranslucent &&
+      settings.card &&
+      settings.card.material
+    ) {
       /* 用户可调不透明度（35%~92%）：invert/brightness 都不改 alpha，
          滑杆值与显示值直映射；越界夹取防白字吃进亮背景 */
       const a = Math.min(
@@ -12376,7 +14881,12 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
      给透明玻璃「厚度」。反色区内要写预反色值——黑色经 invert 显示为白，
      且 brightness 乘 0 不变，alpha 原样保留；非淡透底返回 none 与旧观感一致 */
   function lcFeedFaceShadow() {
-    if (settings.darkMode && settings.darkMode.feedTranslucent)
+    if (
+      settings.darkMode &&
+      settings.darkMode.feedTranslucent &&
+      settings.card &&
+      settings.card.material
+    )
       return "inset 0 1px 0 rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(0, 0, 0, 0.1)";
     return "none";
   }
@@ -12391,7 +14901,10 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
     /* 浅色毛玻璃（实验）：无反色祖先 → backdrop-filter 能采到真实背景，
        这是暗色反色区里做不到的（backdrop root 限制）。alpha 夹取 40%~85% */
     const lightFrost =
-      !dark && settings.card && settings.card.lightFrost;
+      !dark &&
+      settings.card &&
+      settings.card.material &&
+      settings.card.lightFrost;
     const frostAlpha = Math.min(
       0.85,
       Math.max(0.4, Number(settings.card && settings.card.frostAlpha) || 0.6),
@@ -12417,7 +14930,8 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
           : animMode === "slideIn"
             ? "translateX(-30px)"
             : "";
-    const faceAdapt = !dark && settings.card && settings.card.faceAdapt;
+    const faceAdapt =
+      !dark && settings.card && settings.card.material && settings.card.faceAdapt;
     /* 悬停轻微放大（面板「卡片 › 卡片外观 › 悬停轻微放大」，默认开）。
        关掉时 ${sel} 的 transition / transform-origin / :hover 三段一起不生成
        （只留 scale 那行会变成死规则），气泡卡其余外观不受影响。
@@ -12469,7 +14983,8 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
       }
       ${pubBase}.lc-face-dark::after,
       ${sel}.lc-face-dark::after {
-        border-right-color: rgba(22, 22, 26, 0.55) !important;
+        background: rgba(22, 22, 26, 0.55) !important;
+        background-color: rgba(22, 22, 26, 0.55) !important;
       }
       ${pubBase}.lc-face-dark a,
       ${pubBase}.lc-face-dark span,
@@ -12502,6 +15017,86 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
       ${pubBase}.lc-face-dark a:hover,
       ${sel}.lc-face-dark a:hover {
         color: #fff !important;
+      }
+      /* 深膜下的站点浅底控件（评论输入框/发布按钮等）：JS 采样时按
+       * 「自带浅色背景」实测贴 .lc-face-ctl（主题色按钮彩底自带白字，
+       * 不贴），统一切半透明深膜样式。不豁免的话 lc-face-dark 的白字
+       * 直接落在控件自带白底上——白底白字，打的字看不见（真机
+       * 2026-09-24 实锤：tag 页深膜卡评论区输入框） */
+      ${pubBase}.lc-face-dark .lc-face-ctl,
+      ${sel}.lc-face-dark .lc-face-ctl {
+        background: rgba(255, 255, 255, 0.1) !important;
+        background-color: rgba(255, 255, 255, 0.1) !important;
+        color: rgba(255, 255, 255, 0.92) !important;
+        border-color: rgba(255, 255, 255, 0.15) !important;
+        /* 站点控件常带 transition:all——标签补挂时白→膜会走一段可见的
+         * 渐变（观感也是「闪一下白」）。换肤瞬变，不过渡 */
+        transition: none !important;
+      }
+      ${pubBase}.lc-face-dark .lc-face-ctl span,
+      ${pubBase}.lc-face-dark .lc-face-ctl div,
+      ${pubBase}.lc-face-dark .lc-face-ctl a,
+      ${sel}.lc-face-dark .lc-face-ctl span,
+      ${sel}.lc-face-dark .lc-face-ctl div,
+      ${sel}.lc-face-dark .lc-face-ctl a {
+        color: rgba(255, 255, 255, 0.92) !important;
+      }
+      ${pubBase}.lc-face-dark .lc-face-ctl:hover,
+      ${sel}.lc-face-dark .lc-face-ctl:hover {
+        background-color: rgba(255, 255, 255, 0.16) !important;
+      }
+      ${pubBase}.lc-face-dark .lc-face-ctl::placeholder,
+      ${pubBase}.lc-face-dark .lc-face-ctl:empty::before,
+      ${sel}.lc-face-dark .lc-face-ctl::placeholder,
+      ${sel}.lc-face-dark .lc-face-ctl:empty::before {
+        color: rgba(255, 255, 255, 0.45) !important;
+      }
+      /* 深膜下的榜单下拉面板：白底会突兀，随深膜切暗底。底色同样
+       * 分内层（无条件）+ 组件根（悬停/展开态）两层，收起不画防横线；
+       * 文字显式写白（不依赖上方通配，面板文字元素结构未核实） */
+      ${pubBase}.lc-face-dark .tag-header-w .a-w-sel .selc,
+      ${pubBase}.lc-face-dark .tag-header-w .a-w-sel .selcc,
+      ${sel}.lc-face-dark .tag-header-w .a-w-sel .selc,
+      ${sel}.lc-face-dark .tag-header-w .a-w-sel .selcc {
+        background-color: rgba(34, 34, 40, 0.96) !important;
+      }
+      /* 组件根 :hover 底色已删（20260925v）：同浅色版，根盒大一圈=「放大一圈」 */
+      ${pubBase}.lc-face-dark .tag-header-w .a-w-sel span,
+      ${pubBase}.lc-face-dark .tag-header-w .a-w-sel li,
+      ${pubBase}.lc-face-dark .tag-header-w .a-w-sel a,
+      ${pubBase}.lc-face-dark .tag-header-w .a-w-sel div,
+      ${sel}.lc-face-dark .tag-header-w .a-w-sel span,
+      ${sel}.lc-face-dark .tag-header-w .a-w-sel li,
+      ${sel}.lc-face-dark .tag-header-w .a-w-sel a,
+      ${sel}.lc-face-dark .tag-header-w .a-w-sel div {
+        color: rgba(255, 255, 255, 0.92) !important;
+      }
+      /* 评论分割线随深膜调暗（2026-09-25 用户反馈）：站点浅灰线在深膜
+       * 上是亮线。分割线类名有两套家族——旧评论组件 .cmti/.bcmti 与
+       * 新 isay 组件 li.isaym2（2026-09-25 真机 DOM 实锤；独立分割线
+       * 元素还与行同类名，猜类名必漏）——改按 [data-lc-cmt-area] 子树
+       * 统一压 border-color，线不管画在谁身上都命中。白 12% 在深膜上
+       * 是「隐约可见」档；评论区输入框边框（lc-face-ctl 白 15%）被
+       * 同化成 12%，肉眼无差 */
+      ${pubBase}.lc-face-dark [data-lc-cmt-area],
+      ${pubBase}.lc-face-dark [data-lc-cmt-area] *,
+      ${sel}.lc-face-dark [data-lc-cmt-area],
+      ${sel}.lc-face-dark [data-lc-cmt-area] * {
+        border-color: rgba(255, 255, 255, 0.12) !important;
+      }
+      /* 「查看更多」分页钮（a.w-more2）：亮灰条是背景精灵图
+       * （icon24.png），深膜规则换色换不掉背景图 → 去图换深膜底，圆角
+       * 自补（原本由精灵图自带）；文字白 88% 已由上方通配规则覆盖 */
+      ${pubBase}.lc-face-dark a.w-more2,
+      ${sel}.lc-face-dark a.w-more2 {
+        background-image: none !important;
+        background-color: rgba(255, 255, 255, 0.1) !important;
+        border-radius: 4px !important;
+        transition: none !important;
+      }
+      ${pubBase}.lc-face-dark a.w-more2:hover,
+      ${sel}.lc-face-dark a.w-more2:hover {
+        background-color: rgba(255, 255, 255, 0.16) !important;
       }`
       : "";
     const color = dark
@@ -12538,6 +15133,22 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
            自动发布页生效；zdfb 卡是 isayt3 结构，被 :has(> .isay .isayt) 排除 */
         sel: "#main:has(.m-zdfb) #mainbox .m-mlist > .mlistcnt:has(> .isay .isayt)",
         radius: "12px",
+      },
+      {
+        name: "tag 页台头（磨砂+材质；无尖角无悬停，卡面贴边不腾头像区）",
+        sel: "#main > .m-mlist:has(> .mlistcnt .tag-header-w) > .mlistcnt",
+        radius: userRadius,
+        noArrow: true,
+        flush: true,
+        stack: true,
+      },
+      {
+        name: "tag 页最新/最热 tab 栏（磨砂+材质；无尖角无悬停）",
+        sel: "#main > .m-mlist:has(> .mlistcnt .m-tabbar) > .mlistcnt",
+        radius: userRadius,
+        noArrow: true,
+        flush: true,
+        stack: true,
       },
     ];
     /* 首页发布栏（publishlayer）专属段：站点雪碧图气泡在暗色下会把头像
@@ -12596,11 +15207,11 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         top: 18px !important;
         left: var(--lc-pub-left, 96px) !important;
         transform: translateX(-100%) !important;
-        width: 0 !important;
-        height: 0 !important;
-        border-top: 11px solid transparent !important;
-        border-bottom: 11px solid transparent !important;
-        border-right: 13px solid ${color} !important;
+        width: 13px !important;
+        height: 22px !important;
+        background: ${color} !important;
+        ${frostCSS}
+        clip-path: polygon(0 50%, 100% 0, 100% 100%) !important;
         z-index: -1 !important;
         pointer-events: none !important;
       }
@@ -12687,10 +15298,15 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         : "") +
       scopes
         .map(
-        ({ name, sel, list, radius, hover }) => `
+        ({ name, sel, list, radius, hover, noArrow, flush, stack }) => `
       /* ===== ${name} ===== */
       ${sel} {
         position: relative !important;
+        /* stack：宿主必须自建堆叠上下文，::before 的 z-index:-1 才会被
+           锁在卡内（垫到内容底下）。博文卡靠暗色滤镜的 filter 建立
+           上下文，tag 页台头/tab 栏是 float 静态流，缺这条时 -1 会
+           穿透到更外层，磨砂跑到容器卡背面（20260925s 用户截图实锤） */
+        ${stack ? "isolation: isolate !important;" : ""}
         background: transparent !important;
         box-shadow: none !important;
         border: none !important;
@@ -12720,7 +15336,7 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         display: block !important;
         position: absolute !important;
         inset: 0 !important;
-        left: var(--lc-bubble-left, 21px) !important;
+        left: ${flush ? "0" : "var(--lc-bubble-left, 21px)"} !important;
         background: ${color} !important;
         border-radius: ${radius} !important;
         box-shadow: ${lcFeedFaceShadow()} !important;
@@ -12735,6 +15351,76 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
       }
       ${frostInCSS}
       ${lcFaceAdaptCSS(sel)}
+      ${stack
+        ? `/* 台头/tab 栏子面（20260925u）：.m-tabbar 在 .isaym3.tag-header-w
+         内、与 .m-itag 同卡（20260925t $0 探针实锤），整卡 ::before 是
+         连续矩形——两块内容之间的空隙也盖着面，观感成「包裹台头和
+         最新最热的大容器卡片」（用户要求隐藏）。改为子面：整卡面
+         隐藏，.m-itag/.m-tabbar 各画各的磨砂面，空隙露出页面背景 */
+      ${sel}::before {
+        display: none !important;
+      }
+      ${sel} .m-itag,
+      ${sel} .m-tabbar {
+        position: relative !important;
+        isolation: isolate !important;
+        background: transparent !important;
+        background-image: none !important;
+        box-shadow: none !important;
+        border: none !important;
+      }
+      ${sel} .m-itag::before,
+      ${sel} .m-tabbar::before {
+        content: "" !important;
+        display: block !important;
+        position: absolute !important;
+        inset: 0 !important;
+        background: ${color} !important;
+        border-radius: ${radius} !important;
+        box-shadow: ${lcFeedFaceShadow()} !important;
+        ${frostCSS}
+        z-index: -1 !important;
+        pointer-events: none !important;
+      }`
+        : ""}
+      ${stack
+        ? `/* 台头/tab 栏内部站点背景清透（20260925t，T2 控制台实证）：
+         管线的透明化规则只覆盖 .isay 家族，台头 .m-itag/.m-activity
+         与最新最热栏 .m-tabbar 自身的白底/雪碧图会把卡面压在下面
+         ——「磨砂做在卡片背面」真凶。注意 .m-tabbar 就在
+         .isaym3.tag-header-w 内（同一张卡）；.a-w-sel 的下拉面板
+         底（selc/selcc）不能动，那是「全部」展开的暗底 */
+      ${sel} .m-itag,
+      ${sel} .m-activity,
+      ${sel} .itagfav,
+      ${sel} .itagt,
+      ${sel} .m-tabbar,
+      ${sel} .tab-w,
+      ${sel} .recommend-type-wrap,
+      ${sel} .update-time {
+        background: transparent !important;
+        background-image: none !important;
+      }`
+        : ""}
+      ${stack
+        ? `/* 深膜下子面换膜色：lcFaceAdaptCSS 的膜色规则挂在
+         ${sel}::before（已 display:none），子面要单独覆盖。
+         无条件输出（同 lcFaceAdaptCSS）：靠 JS 加 .lc-face-dark
+         类切换——dark 只代表全站暗色模式，别拿它当开关
+         （20260925v 修：浅色模式下深膜子面失效真凶） */
+      ${sel}.lc-face-dark .m-itag::before,
+      ${sel}.lc-face-dark .m-tabbar::before {
+        background: rgba(22, 22, 26, 0.55) !important;
+        background-color: rgba(22, 22, 26, 0.55) !important;
+      }
+      /* 深膜下 tab 链接白字：.m-tabbar 在 .tag-header-w 内，但
+         lcFaceAdaptCSS 的白字清单只覆盖 .a-w-sel 区域，最新/最热
+         链接会留在深色（白底清掉后黑字在深膜上看不见） */
+      ${sel}.lc-face-dark .m-tabbar .tab-w a,
+      ${sel}.lc-face-dark .m-tabbar .update-time {
+        color: rgba(255, 255, 255, 0.92) !important;
+      }`
+        : ""}
       ${hover
         ? `/* 悬停轻微放大：scale 加在卡片整体上，矩形+尖角作为整体等比缩放不错位
          （通用规则只 scale ::before 矩形，会与尖角错位，已在上面禁掉）。
@@ -12790,17 +15476,21 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
       }`
         : ""}
       /* 左侧尖角：宽度=箭头区宽度，比其多伸 1px 进卡片补尖端亚像素缝
-         （与卡片同色不可见） */
+         （与卡片同色不可见）。用 clip-path 三角而非 border 三角：
+         磨砂开启时卡面有 backdrop-filter，border 三角画不了模糊、
+         背景直接透上来，观感比卡面「透」一截（20260926 用户截图实锤）；
+         clip-path 元素可以带同款磨砂，与卡面材质一致 */
       ${sel}::after {
+        ${noArrow ? "display: none !important;" : ""}
         content: "" !important;
         position: absolute !important;
         top: 12px !important;
         left: 0 !important;
-        width: 0 !important;
-        height: 0 !important;
-        border-top: calc(var(--lc-bubble-left, 21px) / 2) solid transparent !important;
-        border-bottom: calc(var(--lc-bubble-left, 21px) / 2) solid transparent !important;
-        border-right: calc(var(--lc-bubble-left, 21px) + 1px) solid ${color} !important;
+        width: calc(var(--lc-bubble-left, 21px) + 1px) !important;
+        height: calc(var(--lc-bubble-left, 21px)) !important;
+        background: ${color} !important;
+        ${frostCSS}
+        clip-path: polygon(0 50%, 100% 0, 100% 100%) !important;
         z-index: -1 !important;
         pointer-events: none !important;
       }
@@ -13193,6 +15883,37 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
       html #main .m-itag,
       html #main .m-tabbar {
         background-color: rgb(225, 225, 219) !important;
+      }
+      /* tag页最热榜单下拉面板：面板处于全局反相滤镜区内，浅色管线的
+         白底被反相成纯黑、popupText 的白字反相成黑字（2026-09-25 实锤：
+         纯黑面板看不到文字）。预反色写法：底 rgb(225,225,219) 反相后
+         ≈ #1F1F19 与其他卡片一致；文字预反深灰反相后浅白。组件根只在
+         悬停（展开态）画，收起态不画（防收起阴影露出横线，与浅色同理，
+         且阴影经反相成白晕更明显） */
+      html .tag-header-w .a-w-sel .selc,
+      html .tag-header-w .a-w-sel .selcc {
+        background-color: rgb(225, 225, 219) !important;
+      }
+      html .tag-header-w .a-w-sel:hover {
+        background-color: rgb(225, 225, 219) !important;
+        box-shadow: none !important;
+      }
+      html .tag-header-w .a-w-sel span,
+      html .tag-header-w .a-w-sel li,
+      html .tag-header-w .a-w-sel a,
+      html .tag-header-w .a-w-sel div,
+      html .tag-header-w .a-w-sel em {
+        color: rgb(28, 28, 32) !important;
+      }
+      html .tag-header-w .a-w-sel a:hover,
+      html .tag-header-w .a-w-sel a:hover span {
+        color: rgb(8, 8, 10) !important;
+      }
+      /* 选中勾：浅色管线写的主题色在反相区会变色（用户截图里的紫色勾），
+         换预反色变体（computeDarkAccent 同暗色悬停链接口径） */
+      html .tag-header-w .selected-icon::after {
+        border-left-color: ${computeDarkAccent(settings.theme.accent) || "#dfc7e6"} !important;
+        border-bottom-color: ${computeDarkAccent(settings.theme.accent) || "#dfc7e6"} !important;
       }
       /* tag页右侧参与用户 */
 #rside .m-menu:has(.participate-user-title-w) {
@@ -15204,6 +17925,48 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     .m-mlist :has(> a.lc-blk-btn):hover a.lc-blk-btn:hover {
       opacity: 1;
     }
+    /* tag chip 上的「屏蔽」小按钮：跟在 chip 后面（nextSibling），悬停
+     * chip 唤出。tap 不做两段确认——本地可逆，面板/这里都可即时移除 */
+    /* tag 页头「屏蔽」钮：仿原生 w-vsbtn-3（订阅同款）——高 23px、
+     * 灰底白字、3px 圆角、hover 整体淡到 0.35。对齐实测（20260925o）：
+     * 容器行盒 ~29px 高于按钮 23px，top 对齐把按钮钉在行盒顶（比订阅
+     * 高 6px）；原生键是 baseline 对齐，改回 baseline 让文字基线对齐、
+     * 盒子自然齐平。白字必须内联 !important（样式表输给站点的
+     * a:hover{color:主题色!important} 长链） */
+    a.lc-tag-page-blk {
+      display: inline-block; margin: 0 0 0 6px;
+      height: 23px; line-height: 23px; padding: 0 10px;
+      font-size: 12px; border-radius: 3px;
+      background: #9b9b9b; color: #fff !important;
+      text-decoration: none; vertical-align: baseline;
+      border: 0; cursor: pointer; user-select: none;
+      opacity: 1; transition: opacity 0.3s;
+    }
+    a.lc-tag-page-blk:hover { opacity: 0.35; color: #fff !important; }
+    a.lc-tag-page-blk[data-lc-blked="1"] {
+      opacity: 0.55; text-decoration: line-through;
+    }
+    a.lc-tag-page-blk[data-lc-blked="1"]:hover {
+      opacity: 0.85; color: #fff !important;
+    }
+    a.lc-tag-block-btn {
+      display: inline-block; margin: 0 0 0 4px; padding: 0 6px;
+      font-size: 11px; line-height: 1.6; border-radius: 999px;
+      color: inherit; text-decoration: none;
+      border: 1px solid currentColor; vertical-align: middle;
+      cursor: default; user-select: none;
+      opacity: 0; visibility: hidden;
+      transition: opacity 0.15s ease 0.2s, visibility 0s linear 0.2s;
+    }
+    .m-mlist a:hover + a.lc-tag-block-btn,
+    .m-mlist a.lc-tag-block-btn:hover,
+    .m-mlist a.lc-tag-block-btn:focus-visible {
+      opacity: 0.55; visibility: visible; cursor: pointer;
+      transition-delay: 0s;
+    }
+    .m-mlist a:hover + a.lc-tag-block-btn:hover {
+      opacity: 1;
+    }
     #lc-filter-counter {
       position: fixed; left: 18px; bottom: 18px; z-index: 2147482000;
       padding: 4px 10px; border-radius: 999px; font-size: 12px; line-height: 1.5;
@@ -15263,6 +18026,187 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       if (id) return { id, name: (a.textContent || "").trim(), link: a };
     }
     return null;
+  }
+
+  /* ---------- tag 屏蔽（2026-09-25 新增）----------
+   * tag 名一律从链接 href 解码（/tag/<名>[/new|/total]），不用卡片
+   * 文本：href 是站点生成的稳定原名（大小写/改写都不影响），且天然
+   * 区别于正文里碰巧出现的同名词。候选锚点先认 .opta（卡片 meta 区，
+   * 关键词过滤同款锚点），没有再全卡兜底（网格/瀑布流布局差异兜底），
+   * 但正文区（.cnt/.txt/标题）一律排除——正文里提到某 tag 的链接
+   * 不代表帖子被打了这个 tag。 */
+  function filterTagFromLink(a) {
+    try {
+      const u = new URL(a.href, location.href);
+      if (!/(^|\.)lofter\.com$/i.test(u.hostname)) return "";
+      const m = u.pathname.match(/^\/tag\/([^\/?#]+)/);
+      if (!m) return "";
+      return decodeURIComponent(m[1]).trim();
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function filterCardTagLinks(card) {
+    let as = card.querySelectorAll(".opta a[href]");
+    if (!as.length) as = card.querySelectorAll("a[href]");
+    const out = [];
+    for (const a of as) {
+      if (a.closest(".cnt, .txt, h2.tit")) continue;
+      if (
+        a.classList.contains("lc-tag-block-btn") ||
+        a.classList.contains("lc-mute-btn") ||
+        a.classList.contains("lc-blk-btn")
+      ) {
+        continue;
+      }
+      if (filterTagFromLink(a)) {
+        /* tag 页头部的「分享到」图标和瀑布流/网格切换的 href 也指向
+         * /tag/<名>（分享的是本页链接、切换的是本 tag 的另一视图），
+         * 2026-09-25 实测被误挂「屏蔽」键。真 chip 有可见文字且与
+         * tag 名一致；图标链接 textContent 为空，一条判据全排除 */
+        const txt = (a.textContent || "").trim();
+        if (!txt) continue;
+        out.push(a);
+      }
+    }
+    return out;
+  }
+
+  /* chip 悬停「屏蔽」小按钮：跟着 chip（insertAdjacentElement afterend，
+   * 悬停 chip 由 CSS 兄弟选择器唤出）。点击写入 filter.tags → persist
+   * → applyFilter 重算（本卡即时隐藏）。等值守卫防自激 */
+  function filterEnsureTagBtns(card) {
+    for (const a of filterCardTagLinks(card)) {
+      const next = a.nextElementSibling;
+      if (next && next.classList && next.classList.contains("lc-tag-block-btn")) {
+        continue;
+      }
+      const btn = document.createElement("a");
+      btn.className = "lc-tag-block-btn";
+      btn.textContent = "屏蔽";
+      btn.title = "屏蔽该 tag 的所有帖子（可在扩展面板移除）";
+      const name = filterTagFromLink(a);
+      btn.addEventListener(
+        "click",
+        (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!name) return;
+          if (!settings.filter) settings.filter = LC_clone(LC_DEFAULTS.filter);
+          if (!Array.isArray(settings.filter.tags)) settings.filter.tags = [];
+          if (
+            settings.filter.tags.some(
+              (t) => String(t).toLowerCase() === name.toLowerCase(),
+            )
+          ) {
+            return;
+          }
+          settings.filter.tags.push(name);
+          filterPersist();
+          applyFilter();
+        },
+        true,
+      );
+      a.insertAdjacentElement("afterend", btn);
+    }
+  }
+
+  /* tag 页头部「屏蔽」按钮：插在「订阅」右侧，一键屏蔽当前 tag（再点
+   * 取消）。2026-09-25 用户拍板：不放卡片 chip 悬停里，放页头常驻。
+   * 教训两条（20260925k/l 真机实锤）：
+   * ①锚点列表区 React 每轮重渲染都换节点 → 无唯一约束时孤儿铺一屏；
+   * ②「前邻不是订阅键就拆了重建」的自愈 = 每轮都是 DOM 变异 → 触发
+   *   下一轮扫描 → 再重建……1~2 秒一次自激振荡，台头被 LOFTER 的连
+   *   锁重渲染一点点撑高。所以现在：模块级引用 + 已连接就绝不动 DOM
+   *   （稳定态零写入，振荡无从谈起），只有按钮真被摘掉才重建一次。 */
+  let lcTagPageBtn = null;
+  function filterEnsureTagPageBtn() {
+    if (!/^\/tag\/[^\/?#]+/.test(location.pathname)) return;
+    const m = location.pathname.match(/^\/tag\/([^\/?#]+)/);
+    let tagName = "";
+    try {
+      tagName = decodeURIComponent(m[1]).trim();
+    } catch (e) {
+      return;
+    }
+    if (!tagName) return;
+    if (!(lcTagPageBtn && lcTagPageBtn.isConnected)) {
+      lcTagPageBtn = document.getElementById("lc-tag-page-blk");
+    }
+    if (!(lcTagPageBtn && lcTagPageBtn.isConnected)) {
+      document
+        .querySelectorAll("a.lc-tag-page-blk")
+        .forEach((el) => el.remove());
+      const sub = [...document.querySelectorAll("a,button,span,div")].find(
+        (el) => {
+          const t = (el.textContent || "").trim();
+          return (
+            t.length > 0 &&
+            t.length <= 6 &&
+            t.endsWith("订阅") &&
+            el.offsetParent !== null
+          );
+        },
+      );
+      if (!sub) return;
+      const anchor = sub.closest("a,button") || sub;
+      const btn = document.createElement("a");
+      btn.id = "lc-tag-page-blk";
+      btn.className = "lc-tag-page-blk";
+      /* 站点的 a:hover{color:主题色!important} 规则链里有一串
+       * :not(#id)，特异性在 !important 层面仍可能压过我们的样式表
+       * 规则（20260925n 真机实证 hover 依旧变色）——内联 !important
+       * 高于一切样式表规则，只有这条路稳赢 */
+      btn.style.setProperty("color", "#fff", "important");
+      btn.addEventListener(
+        "click",
+        (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!settings.filter) settings.filter = LC_clone(LC_DEFAULTS.filter);
+          if (!Array.isArray(settings.filter.tags)) settings.filter.tags = [];
+          const i = settings.filter.tags.findIndex(
+            (t) => String(t).toLowerCase() === tagName.toLowerCase(),
+          );
+          const blocked = i >= 0;
+          if (blocked) settings.filter.tags.splice(i, 1);
+          else settings.filter.tags.push(tagName);
+          filterPersist();
+          applyFilter();
+        },
+        true,
+      );
+      anchor.insertAdjacentElement("afterend", btn);
+      /* 对齐自校准（20260925q 控制台实证 before=6/after=0）：容器行盒
+       * 高于按钮、原生键是精灵图基线不规则，静态 vertical-align 三换
+       * 都没对准。插完后实测两键顶差，position:relative 平移归零——
+       * relative 不参与布局流（不挤兄弟、不引发重排循环），且只在
+       * 创建时写一次，稳定态零写入原则不破坏 */
+      try {
+        const dx =
+          anchor.getBoundingClientRect().top -
+          btn.getBoundingClientRect().top;
+        if (Math.abs(dx) > 0.5) {
+          btn.style.position = "relative";
+          btn.style.top = dx.toFixed(1) + "px";
+        }
+      } catch (e2) {}
+      lcTagPageBtn = btn;
+    }
+    const want = (settings.filter.tags || []).some(
+      (t) => String(t).toLowerCase() === tagName.toLowerCase(),
+    )
+      ? "1"
+      : "0";
+    if (lcTagPageBtn.getAttribute("data-lc-blked") !== want) {
+      lcTagPageBtn.textContent = want === "1" ? "已屏蔽" : "屏蔽";
+      lcTagPageBtn.title =
+        want === "1"
+          ? "当前 tag 已隐藏，点击取消隐藏"
+          : "隐藏带「" + tagName + "」tag 的所有帖子（面板可移除）";
+      lcTagPageBtn.setAttribute("data-lc-blked", want);
+    }
   }
 
   /* ---------- 官方拉黑：复刻 LOFTER 设置页的 DWR 调用 ----------
@@ -15482,7 +18426,9 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     /* 「隐藏/拉黑」按钮一并收掉：CSS 已清空，残留按钮会退化成无样式
      * 裸文字（2026-09-21 实测：只删 mute 漏了 blk，「拉黑」常驻叠在头像上） */
     document
-      .querySelectorAll("a.lc-mute-btn, a.lc-blk-btn")
+      .querySelectorAll(
+        "a.lc-mute-btn, a.lc-blk-btn, a.lc-tag-block-btn, a.lc-tag-page-blk",
+      )
       .forEach((el) => el.remove());
     const c = document.getElementById(FILTER_COUNTER_ID);
     if (c) c.remove();
@@ -15534,6 +18480,9 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       .map((k) => String(k).toLowerCase().trim())
       .filter(Boolean);
     const userIds = new Set((f.users || []).map((u) => u.id));
+    const tagSet = new Set(
+      (f.tags || []).map((t) => String(t).toLowerCase().trim()).filter(Boolean),
+    );
     /* 全量幂等重算，不做签名早退。签名优化（规则+卡片数+标记数做指纹跳过
      * 重扫）连修三轮仍有竞态：标记数落盘时序、React 重渲染洗标记、"移除
      * 规则后不恢复/计数卡死"全是它卡住重扫的症状。而扫描本身只是几十张
@@ -15541,6 +18490,9 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
      * 微优化。off 态保留一次性清理去重（filterSig="off"）。 */
 
     let hidden = 0;
+    try {
+      filterEnsureTagPageBtn();
+    } catch (e) {}
     document.querySelectorAll(FILTER_CARD_SELECTOR).forEach((card) => {
       try {
         /* 嵌套列表只算外层：只查祖先、绝不含自身。closest() 会匹配元素
@@ -15551,11 +18503,23 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
           card.parentElement &&
           card.parentElement.closest("[data-lc-filtered]");
         if (anc) return;
+        /* tag 页头卡整卡豁免：台头里藏着指向本 tag 的链接（分享/视图切
+         * 换），当前 tag 被屏蔽时 tagHit 会把整个台头藏掉；隐藏型小按钮
+         * （mute/chip，visibility:hidden 仍占位）在台头里累积也会把它
+         * 一点点撑高（20260925k/l 真机实锤） */
+        if (card.querySelector("#lc-tag-page-blk")) return;
         const author = filterCardAuthor(card);
+        const tagLinks = filterCardTagLinks(card);
         const textHit =
           kws.length && kws.some((kw) => filterCardText(card).includes(kw));
         const userHit = author && userIds.has(author.id);
-        if (textHit || userHit) {
+        const tagHit =
+          tagSet.size &&
+          tagLinks.some((a) => {
+            const n = filterTagFromLink(a);
+            return n && tagSet.has(n.toLowerCase());
+          });
+        if (textHit || userHit || tagHit) {
           card.setAttribute("data-lc-filtered", "");
           /* 双保险：光靠样式表规则藏不住（2026-09-19 线上实证：标记在、
            * CSS 在、帖子却可见——LOFTER 自有规则的级联权重更高）。内联
@@ -15571,6 +18535,9 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
               filterEnsureMuteBtn(card, author);
             } catch (e) {}
           }
+          try {
+            filterEnsureTagBtns(card);
+          } catch (e) {}
         }
       } catch (e) {
         /* 单张卡片异常不拖垮整轮扫描（下一批变异会重试） */
@@ -16044,14 +19011,62 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   let lcFaceMatLast = 0;
   function lcFaceMatCleanup() {
     document
-      .querySelectorAll(".lc-face-dark")
-      .forEach((el) => el.classList.remove("lc-face-dark"));
+      .querySelectorAll(".lc-face-dark, .lc-face-ctl")
+      .forEach((el) => el.classList.remove("lc-face-dark", "lc-face-ctl"));
+  }
+  /* 深膜卡内的「自带浅底控件」贴签：评论输入框/发布按钮这类站点白底
+     控件，深膜白字会落在它们自带的白底上（白底白字）。按 computed
+     background 实测亮度贴 .lc-face-ctl，CSS 侧统一切半透明深膜样式；
+     透明底（无自绘背景）的控件不贴，跟随深膜白字即可 */
+  function lcTagFaceControls(cnt, dark) {
+    let els;
+    try {
+      els = cnt.querySelectorAll(
+        'button, input, textarea, [contenteditable="true"], .w-bbtn, .bcmtipt, .editdiv, .m-cbtn',
+      );
+    } catch (e) {
+      return;
+    }
+    const accent = settings.theme && settings.theme.accent;
+    els.forEach((el) => {
+      if (!dark) {
+        if (el.classList.contains("lc-face-ctl"))
+          el.classList.remove("lc-face-ctl");
+        return;
+      }
+      /* 粘性：已贴签的元素不再重判。我们自己的换肤 CSS 会把已贴签
+       * 元素的计算背景改成半透明膜（alpha 0.1 < 0.3 门槛）——重判必然
+       * 得出「非浅底」撕签 → 白底回来 → 再判再贴……无限振荡（真机
+       * 2026-09-24 实锤：看门上线后不输入也持续闪白）。而未贴签时
+       * 计算背景就是站点真实背景，判定时机天然正确 */
+      if (el.classList.contains("lc-face-ctl")) return;
+      let light = false;
+      try {
+        const bg = getComputedStyle(el).backgroundColor;
+        const m = bg.match(
+          /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)/,
+        );
+        if (m) {
+          const a = m[4] === undefined ? 1 : parseFloat(m[4]);
+          if (a > 0.3) {
+            const l =
+              0.2126 * lcLin(+m[1]) +
+              0.7152 * lcLin(+m[2]) +
+              0.0722 * lcLin(+m[3]);
+            light = l > 0.55;
+          }
+        }
+      } catch (e) {}
+      /* 主题色按钮（accent 彩底自带白字）不贴签：贴了会把彩底洗成半透明膜 */
+      if (light && accent && el.closest && el.closest(".w-bbtn")) light = false;
+      el.classList.toggle("lc-face-ctl", light);
+    });
   }
   function lcUpdateFaceMaterial(force) {
     if (
       !settings.enabled ||
       isDarkMode() ||
-      !(settings.card && settings.card.faceAdapt)
+      !(settings.card && settings.card.material && settings.card.faceAdapt)
     ) {
       lcFaceMatCleanup();
       return;
@@ -16066,7 +19081,10 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         return;
       const L = lcFaceLuma(cnt);
       if (L === null) return; /* 背景图未就绪：保持现状 */
-      cnt.classList.toggle("lc-face-dark", L < 0.45);
+      const darkFace = L < 0.45;
+      cnt.classList.toggle("lc-face-dark", darkFace);
+      /* 深膜卡内的浅底控件（评论输入框/发布按钮）同步贴签换肤 */
+      lcTagFaceControls(cnt, darkFace);
     });
   }
   /* 背景是 fixed 铺法：滚动会改变卡片背后的区域，需要滚动驱动重采样 */
@@ -16076,6 +19094,47 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       "scroll",
       () => lcSafe(lcUpdateFaceMaterial),
       { passive: true },
+    );
+  }
+
+  /* 控件贴签的专职看门：React 重渲染（输入框空↔非空切换，实测每击
+   * 键都可能触发）会重建节点、洗掉 lc-face-ctl，且重渲染提交时机在
+   * rAF/宏任务兜底之后——输入事件监听兜不住（真机 2026-09-24 实锤
+   * 每击键闪白）。观察器在微任务时机感知「变更已提交」，rAF 节流到
+   * 本帧 paint 前补挂，任何提交顺序都赶在绘制前。回调只做 rAF 排程，
+   * 重活全在 rAF；classList.toggle 同值无 DOM 变更，不会自激 */
+  if (!window.__lcFaceCtlWatch) {
+    window.__lcFaceCtlWatch = true;
+    let watchRaf = 0;
+    const watchRetag = () => {
+      watchRaf = 0;
+      if (
+        !settings.enabled ||
+        isDarkMode() ||
+        !(settings.card &&
+          settings.card.material &&
+          settings.card.faceAdapt)
+      )
+        return;
+      document.querySelectorAll(".lc-face-dark").forEach((cnt) => {
+        lcSafe(() => lcTagFaceControls(cnt, true));
+      });
+    };
+    new MutationObserver(() => {
+      if (watchRaf) return;
+      watchRaf = requestAnimationFrame(watchRetag);
+    }).observe(
+      /* content script 在 document_start 注入时 body 尚未创建，
+       * observe(body) 会抛 TypeError 并炸断整个主初始化链路（真机
+       * 2026-09-24 实锤：页面空白、悬浮按钮消失）。html 根节点此时
+       * 必已存在，body 出现后其变更同样落在根节点的观察范围内 */
+      document.documentElement,
+      {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "style"],
+      },
     );
   }
 
@@ -18588,4 +21647,5 @@ function bindGlobalDecListener() {
     }
     applyFabTheme();
   });
+  })();
 })();
