@@ -36,7 +36,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Chrome](https://img.shields.io/badge/Chrome-%3E=88-blue.svg)
 ![Edge](https://img.shields.io/badge/Edge-%3E=88-blue.svg)
-![Version](https://img.shields.io/badge/version-v1.3.0-orange.svg)
+![Version](https://img.shields.io/badge/version-v1.4.0-orange.svg)
 
 ---
 
@@ -253,10 +253,13 @@ LOFTER 构建产物使用混淆哈希类名，样式表版本更迭即失效。�
 - [x] 关键词 / 用户过滤（首页 · 标签页 · 评论区，含官方黑名单并入与评论 iframe）
 - [x] 玻璃材质体系：导航栏两档（毛玻璃 / 液态玻璃）、右侧栏玻璃、卡片材质三档（暗色淡透底 / 浅色毛玻璃 / 卡面自适应）
 - [x] 评论区增强（只看作者 · 从旧到新 · 加载更多评论）
+- [x] 评论工具行表情快捷输入（内置免费表情包 + 自定义包导入管理 + 最近使用）
+- [x] tag 屏蔽面板（chip 悬停屏蔽 · tag 页常驻入口 · 与用户黑名单同卡管理）
+- [x] 卡片材质总开关（含「进阶调节」单项调优）与 tag 页台头/tab 栏磨砂材质
+- [x] 字体名状态条（生效中 / 已装 / 未装三态，点击切换或停用）
 
 **下一批**
 
-- [ ] 评论工具行的表情快捷输入（工具行占位按钮已就位，面板与渲染待做）
 - [ ] 文章导出（Markdown / HTML）
 - [ ] 草稿自动备份（版本管理）
 - [ ] 白噪音（用户自选本地音频，不打包素材）

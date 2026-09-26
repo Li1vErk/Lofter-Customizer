@@ -53,13 +53,18 @@ const LC_DEFAULTS = {
     imageSize: 100,
   },
 
-  font: { preset: "", family: "", embedName: "", embedDataUrl: "", scale: 100 },
+  font: { preset: "", family: "", off: false, embedName: "", embedDataUrl: "", scale: 100 },
 
   card: {
     enabled: true,
     radius: 16,
     gap: 12,
     shadow: true,
+    /* 卡片材质主开关（2026-09-26）：lightFrost / darkMode.feedTranslucent /
+       faceAdapt 三个子功能的总门禁。false = 三者全部停用但子设置保留
+       （关了再开原样回来）；true = 子设置各自生效。老配置由 popup 加载时
+       回填：任一子项开着即 true（升级前后行为零变化） */
+    material: false,
     /* 悬停轻微放大（默认开＝保持既有观感）：鼠标停在博文卡片上时整卡放大
        到 102%（底边锚点 + 0.22s ease-out）。
        关掉 = 两条渲染路径都不再生成悬停缩放规则（气泡卡整卡那条 + 通用
@@ -183,6 +188,7 @@ const LC_DEFAULTS = {
     scope: { home: true, tag: true, comment: false },
     keywords: [],
     users: [],
+    tags: [],
     showCounter: true,
   },
 
@@ -199,8 +205,10 @@ const LC_DEFAULTS = {
 
   /* ========== 评论区增强（功能栏 · 默认开启）==========
    * 工具行常驻在评论输入框正上方：左「只看作者」「从旧到新」，
-   * 右表情快捷入口（占位，下批实现）。控件默认熄灭、状态不跨帖保留，
-   * 不改变页面默认行为；关闭 = 工具行完全不注入，页面零改动。 */
+   * 右表情快捷入口（内置免费表情 + 粘贴导入的付费表情，插入
+   * [包名/情绪] 文字格式）。表情不单列开关，跟随本总开关；
+   * 控件默认熄灭、状态不跨帖保留，不改变页面默认行为；
+   * 关闭 = 工具行与表情面板完全不注入，页面零改动。 */
   comment: {
     toolbar: true,
   },

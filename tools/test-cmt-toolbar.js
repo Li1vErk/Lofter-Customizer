@@ -154,7 +154,11 @@ function assert(cond, msg) {
       })(),
     "表情按钮存在且右置（margin-left:auto）",
   );
-  assert(!!(emoji && emoji.title.indexOf("下批") >= 0), "表情按钮为占位提示");
+  assert(!!(emoji && emoji.title === "表情快捷输入"), "表情按钮标题正确");
+  assert(
+    !!emoji && emoji.style.display !== "none",
+    "表情入口跟随工具行总开关 → 工具行在即显示",
+  );
   assert(chips[0].title.indexOf("hostauthor") >= 0, "区块级楼主 id 探测到 hostauthor");
   assert(t1.w.document.querySelector(".cmtwrap").getAttribute("data-lc-cmt-area") === "1", "区块根已标记");
 

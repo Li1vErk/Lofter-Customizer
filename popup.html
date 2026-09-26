@@ -582,6 +582,174 @@
       left: 22px;
     }
 
+    /* 进阶调节：子项降级 + 胶囊子开关（对齐装饰图「emoji 粒子」样式：
+       点胶囊即开关，on=主题色淡底，off=灰底；容器只做缩进不做底色） */
+    .lc-subpanel {
+      background: transparent;
+      border-radius: 8px;
+      padding: 4px 0 0 8px;
+      margin: 2px 0 10px;
+    }
+
+    .lc-subpanel .toggle {
+      border-bottom: none;
+      padding: 5px 0;
+      display: flex; /* 块级独占一行；width:fit-content 让热区仍只限胶囊 */
+      width: fit-content;
+    }
+
+    /* 字体名状态 chips：生效中=列表里第一个本机可用的；未装=读不到该名称。
+       已装/生效中文字用 --lc-text 混色压深（纯 accent 在浅色胶囊上发灰看不清） */
+    .font-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid var(--lc-line);
+      background: var(--lc-card);
+      color: var(--lc-text);
+      cursor: default;
+    }
+
+    .font-chip .fc-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: 0.45;
+      flex-shrink: 0;
+    }
+
+    /* 生效中独占一行，其余 chips 每个名称也各占一行：字体名长短不一，
+       流式排列会在切换时出现一行两个/一行一个的跳动 */
+    .fc-row {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 6px;
+    }
+
+    .fc-row + .fc-row {
+      margin-top: 6px;
+    }
+
+    .font-chip .fc-badge {
+      font-size: 10px;
+      color: var(--lc-sub);
+    }
+
+    .font-chip.on {
+      background: var(--lc-accent-weak);
+      border-color: color-mix(in srgb, var(--lc-accent) 55%, transparent);
+      color: color-mix(in srgb, var(--lc-accent) 55%, var(--lc-text));
+      font-weight: 500;
+    }
+
+    .font-chip.on .fc-badge {
+      color: inherit;
+      opacity: 0.85;
+    }
+
+    .font-chip.avail {
+      cursor: pointer;
+    }
+
+    .font-chip.avail:hover {
+      border-color: color-mix(in srgb, var(--lc-accent) 55%, transparent);
+    }
+
+    .font-chip.miss {
+      color: var(--lc-sub);
+      background: var(--lc-soft);
+    }
+
+    .font-chip.miss .fc-name {
+      text-decoration: line-through;
+    }
+
+    /* 已停用（点了生效中的 chip 暂停自定义字体，列表保留）：和未装同为灰底，但不划线 */
+    .font-chip.paused {
+      color: var(--lc-sub);
+      background: var(--lc-soft);
+    }
+
+    /* 分割线只在该出现时出现：①卡片末尾的开关（否则悬空一条线）；
+       ②开关后跟着「收起中」的折叠解释——点 ? 展开时线随之出现，
+       正好托住解释文字；收起时和没有解释的卡观感一致 */
+    .grp-card > .toggle:last-child,
+    .grp-card > .toggle:has(+ .hint.collapsible:not(.open)) {
+      border-bottom: none;
+    }
+
+    .lc-subpanel .toggle input[type="checkbox"] {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+      margin: 0;
+    }
+
+    .lc-subpanel .toggle span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--lc-sub);
+      padding: 3px 10px 3px 8px;
+      border-radius: 20px;
+      background: var(--lc-line);
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .lc-subpanel .toggle span::before {
+      content: "";
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: 0.55;
+    }
+
+    .lc-subpanel .toggle input:checked + span {
+      background: var(--lc-accent-weak);
+      color: var(--lc-accent);
+    }
+
+    .lc-subpanel .toggle input:checked + span::before {
+      opacity: 1;
+    }
+
+    .lc-subpanel .row {
+      margin: 2px 0 8px;
+      padding-left: 8px;
+    }
+
+    .lc-subpanel .row label {
+      flex: 0 0 auto;
+      white-space: nowrap;
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--lc-sub);
+    }
+
+    .lc-subpanel .row .value {
+      font-size: 11px;
+    }
+
+    /* 滑杆行统一排布：名称｜拖动条｜数值右对齐（对齐装饰图动态效果） */
+    .row.slider-row label {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+
+    .row .value {
+      flex: 0 0 auto;
+    }
+
     /* ---------- 数据栏（导入导出）：模块勾选 chip ----------
        全局 input[type=checkbox] 被隐藏，这里显式恢复成原生方框 */
     .lc-mods {
@@ -595,6 +763,7 @@
       display: inline-flex;
       align-items: center;
       gap: 5px;
+      flex: 0 0 auto; /* 防 .row label 的 90px 定宽命中 chip（后代选择器误伤） */
       padding: 3px 9px;
       border: 1px solid var(--lc-line);
       border-radius: 999px;
@@ -686,6 +855,46 @@
 
     .lc-mods input[type="checkbox"]:checked::after {
       transform: rotate(45deg) scale(1);
+    }
+
+    /* ---------- 模式切换（单选 chip，官方黑名单卡：拉黑用户 / 屏蔽 tag）----------
+       样式与 checkbox chip 同族，方框换圆点表达「二选一」 */
+    .lc-mods input[type="radio"] {
+      display: inline-block;
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      width: 13px;
+      height: 13px;
+      margin: 0;
+      border: 1px solid var(--lc-line);
+      border-radius: 50%;
+      background: var(--lc-card);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .lc-mods input[type="radio"]::after {
+      content: "";
+      position: absolute;
+      left: 2.5px;
+      top: 2.5px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #fff;
+      transform: scale(0);
+      transition: transform 0.12s ease;
+    }
+
+    .lc-mods input[type="radio"]:checked {
+      background: var(--lc-accent);
+      border-color: var(--lc-accent);
+    }
+
+    .lc-mods input[type="radio"]:checked::after {
+      transform: scale(1);
     }
 
     .lc-mods label:has(input:checked) {
@@ -831,8 +1040,8 @@
         </select>
       </div>
       <p class="hint" data-page-node-id="zHintDarkMode">「跟随系统」依据系统深浅色自动切换</p>
-      <div class="row" id="dark-brightness-row" data-page-node-id="BQa2M6GGnzAfAT1sGZlHvL"><label data-page-node-id="EnfNWXqaVbqlkAQf2BN2BU">卡片亮度 <span class="value"
-            id="dark-brightness-v" data-page-node-id="5zlnM1gBEWlrnRPEUVJftM"></span></label><input type="range" id="dark-brightness" min="60" max="100" data-page-node-id="rgkQy6Ikpwj2Sm5j91tDfy" /></div>
+      <div class="row slider-row" id="dark-brightness-row" data-page-node-id="BQa2M6GGnzAfAT1sGZlHvL"><label data-page-node-id="EnfNWXqaVbqlkAQf2BN2BU">卡片亮度</label><input type="range" id="dark-brightness" min="60" max="100" data-page-node-id="rgkQy6Ikpwj2Sm5j91tDfy" /><span class="value"
+            id="dark-brightness-v" data-page-node-id="5zlnM1gBEWlrnRPEUVJftM"></span></div>
       </div>
       <div class="grp-card"><div class="grp-title">背景</div>
       <div class="row" data-page-node-id="bMIh5j7M7Bp1MCTzsfpMiT"><label data-page-node-id="PZMG4soB2k7jNeU8d04B9n">背景类型</label>
@@ -851,8 +1060,8 @@
       <div class="grp" data-when="gradient" data-page-node-id="N1i1QcmmDQX80r83SDEZLO">
         <div class="row" data-page-node-id="OXNVyboywPI0nvcQaHSYRl"><label data-page-node-id="nsI9GrBJVAQG38fLlLWy6n">起始色</label><input type="color" id="bg-gfrom" data-page-node-id="DnSmjQhlH8NBZV2DZUJZlw" /></div>
         <div class="row" data-page-node-id="uaiyyBfe2SVAuE4q1bJ5zA"><label data-page-node-id="N7DBrfo4hIZinbKRFDy9lG">结束色</label><input type="color" id="bg-gto" data-page-node-id="3CeeyABCW97BkPdsQCNauZ" /></div>
-        <div class="row" data-page-node-id="OeMMbuDorDkaNa0TSeQ2Ee"><label data-page-node-id="g3fcG0o5x0OcFBJdEU3loF">角度 <span class="value" id="bg-gangle-v" data-page-node-id="nZfm4laFEd4hveTgQCWNEf"></span></label><input type="range"
-            id="bg-gangle" min="0" max="360" data-page-node-id="2RC3VBJNk5ggmu8jsruv4K" /></div>
+        <div class="row slider-row" data-page-node-id="OeMMbuDorDkaNa0TSeQ2Ee"><label data-page-node-id="g3fcG0o5x0OcFBJdEU3loF">角度</label><input type="range"
+            id="bg-gangle" min="0" max="360" data-page-node-id="2RC3VBJNk5ggmu8jsruv4K" /><span class="value" id="bg-gangle-v" data-page-node-id="nZfm4laFEd4hveTgQCWNEf"></span></div>
       </div>
       <div class="grp" data-when="pattern" data-page-node-id="1DtuyLJ9ceBrDueOGJoivm">
         <div class="row" data-page-node-id="4jEjxr6JwZotnmJG6jpcjh"><label data-page-node-id="ZGTEM1mOTHD0jDs7VO6YmR">图案</label>
@@ -870,24 +1079,31 @@
             id="bg-file-btn" type="button" data-page-node-id="8OHRDaC0HpGOUyGW1NL5Rp">选择文件</button></div>
         <p class="hint" data-page-node-id="4OldhgwGt6QiNhF9di4TXW">GIF 建议 6MB 以内；PNG/JPG 会自动压缩</p>
         <img id="bg-preview" style="max-width:100%;border-radius:8px;margin-top:8px;display:none;" data-page-node-id="5VuQcUZGR1J6LnFyOFF7iN" />
-        <div class="row" data-page-node-id="R7DNJQeEaUFFbUe4EXR3Az"><label data-page-node-id="jWiihg8AxrKLWLQcxicil0">模糊 <span class="value" id="bg-blur-v" data-page-node-id="7m1GgV5qfeLeHXeFqk1afn"></span></label><input type="range" id="bg-blur"
-            min="0" max="20" data-page-node-id="1RXCQigugzgHxOLTfm38gr" /></div>
+        <div class="row slider-row" data-page-node-id="R7DNJQeEaUFFbUe4EXR3Az"><label data-page-node-id="jWiihg8AxrKLWLQcxicil0">模糊</label><input type="range" id="bg-blur"
+            min="0" max="20" data-page-node-id="1RXCQigugzgHxOLTfm38gr" /><span class="value" id="bg-blur-v" data-page-node-id="7m1GgV5qfeLeHXeFqk1afn"></span></div>
       </div>
       </div>
       <div class="grp-card"><div class="grp-title">内容</div>
-      <div class="row" data-page-node-id="6wlEvysG0OReeUkk5dFB1F"><label data-page-node-id="0A6uZIHYe7nxxDSXBhXYhc">内容透明度 <span class="value" id="bg-alpha-v" data-page-node-id="xIvBMauuMzLDJWcOoW6SSb"></span></label><input type="range" id="bg-alpha"
-          min="20" max="100" data-page-node-id="pzWE10zG7clsjIL0MxLvgP" /></div>
+      <div class="row slider-row" data-page-node-id="6wlEvysG0OReeUkk5dFB1F"><label data-page-node-id="0A6uZIHYe7nxxDSXBhXYhc">内容透明度</label><input type="range" id="bg-alpha"
+          min="20" max="100" data-page-node-id="pzWE10zG7clsjIL0MxLvgP" /><span class="value" id="bg-alpha-v" data-page-node-id="xIvBMauuMzLDJWcOoW6SSb"></span></div>
       <p class="hint" data-page-node-id="GOqzBgBrDXF63Cg9EfSkvm">越低越暗，用于暗色模式下保护眼睛</p>
       </div>
 
       <div class="grp-card"><div class="grp-title">字体</div>
       <div class="row" data-page-node-id="BGL1lYJuqw5kFN2PYjj7aO"><label data-page-node-id="4PHNb3Pb1iro3GIDVolvrU">字体名<button type="button" class="help-dot" title="什么是字体名？" data-hint="font-family-hint" data-page-node-id="4PHNb3Pb1iro3GIDVolvrU">?</button></label><input type="text" id="font-family" placeholder="例：PingFang SC, 霞鹜文楷" data-page-node-id="Yu9E3POr3hdVVV25cbWFzU" />
       </div>
-      <p class="hint collapsible" id="font-family-hint" data-page-node-id="zHintFontFamily">填本机已安装的字体名——没装的填了不生效（字体文件右键"安装"后会进入 C:\Windows\Fonts）。可填多个、用逗号分隔，找不到的会依次往后选。个别字体只有英文名（如京華老宋体写 KingHwa_OldSong），填中文不生效时请填英文名。</p>
+      <p class="hint collapsible" id="font-family-hint" data-page-node-id="zHintFontFamily">填本机已安装的字体名——没装的填了不生效（字体文件右键"安装"后会进入 C:\Windows\Fonts）。可填多个、用逗号分隔，没装本机的会依次往后选；状态条里能看到哪个在生效，点已装的字体可切换主字体，点生效中的可停用回系统默认（列表保留）。个别字体只有英文名（如京華老宋体写 KingHwa_OldSong），填中文不生效时请填英文名。</p>
+      <div id="font-chips-bar" style="display:none;align-items:center;gap:6px;margin:-2px 0 10px;">
+        <button type="button" id="font-chips-toggle" style="padding:3px 0;font-size:11px;background:transparent;border:none;display:flex;align-items:center;gap:4px;color:var(--lc-sub);text-align:left;cursor:pointer;">
+          <span id="font-chips-arrow" style="display:inline-block;transition:transform 0.2s;">▶</span>
+          <span id="font-chips-summary">字体状态</span>
+        </button>
+      </div>
+      <div id="font-chips" style="display:none;flex-wrap:wrap;gap:6px;margin:-4px 0 10px;"></div>
       <div class="row" data-page-node-id="tiZnWzg2uQ2mPBorrpDqwk"><label data-page-node-id="09fIjlMkV8bwr2vUeID3nm">字体预置</label><select id="font-preset" data-page-node-id="ZXEVt9ilWBxYJ45WgM1bLV"></select></div>
       <p class="hint" data-page-node-id="09fIjlMkV8bwr2vUeID3nm-h">一键填入常见字体名，同样需要本机已装该字体</p>
-      <div class="row" data-page-node-id="tTaWNtqFE14TnKs6L3FQbO"><label data-page-node-id="17CZj2T12Pgvz2btektx7V">文字大小 <span class="value" id="font-scale-v" data-page-node-id="WItEBaoGGgB4hBY5Nj11Yt"></span></label><input type="range"
-          id="font-scale" min="100" max="140" data-page-node-id="up95nFMC0jTlcOJitLMlvo" /></div>
+      <div class="row slider-row" data-page-node-id="tTaWNtqFE14TnKs6L3FQbO"><label data-page-node-id="17CZj2T12Pgvz2btektx7V">文字大小</label><input type="range"
+          id="font-scale" min="100" max="140" data-page-node-id="up95nFMC0jTlcOJitLMlvo" /><span class="value" id="font-scale-v" data-page-node-id="WItEBaoGGgB4hBY5Nj11Yt"></span></div>
       </div>
     </section>
 
@@ -913,23 +1129,35 @@
     <section class="pane" data-pane="card" data-page-node-id="q1Xe0viRplktYy31nJctSb">
       <div class="grp-card"><div class="grp-title">卡片外观</div>
       <label class="toggle" data-page-node-id="b0e2hjYpoVTnLi8Lqj7lbA"><span data-page-node-id="30qEuGLIa5o8gGYt9uvocZ">启用圆角卡片</span><input type="checkbox" id="card-enabled" data-page-node-id="xp1EA8D7XsjHozqpLG8Ukt" /></label>
-      <div class="row" data-page-node-id="9uU7pT12p2Zg2HlAWAxVlw"><label data-page-node-id="28MXyC4DB92ENeZvL51gq2">圆角大小 <span class="value" id="card-radius-v" data-page-node-id="AbillJuN1DpdRXisJoQI79"></span></label><input type="range"
-          id="card-radius" min="0" max="28" data-page-node-id="HnFoUTPy6GAImCYlhRnjv1" /></div>
-      <div class="row" data-page-node-id="exyCZpCMgm5wtywKrs5Xhq"><label data-page-node-id="s0zkfSiqVtlypiPDPaG5BQ">卡片间距 <span class="value" id="card-gap-v" data-page-node-id="6Xo4DLKDX2UeTUkdV6QUZY"></span></label><input type="range" id="card-gap"
-          min="15" max="30" data-page-node-id="8txne18CMaONeHMZb2MrWD" /></div>
+      <div class="row slider-row" data-page-node-id="9uU7pT12p2Zg2HlAWAxVlw"><label data-page-node-id="28MXyC4DB92ENeZvL51gq2">圆角大小</label><input type="range"
+          id="card-radius" min="0" max="28" data-page-node-id="HnFoUTPy6GAImCYlhRnjv1" /><span class="value" id="card-radius-v" data-page-node-id="AbillJuN1DpdRXisJoQI79"></span></div>
+      <div class="row slider-row" data-page-node-id="exyCZpCMgm5wtywKrs5Xhq"><label data-page-node-id="s0zkfSiqVtlypiPDPaG5BQ">卡片间距</label><input type="range" id="card-gap"
+          min="15" max="30" data-page-node-id="8txne18CMaONeHMZb2MrWD" /><span class="value" id="card-gap-v" data-page-node-id="6Xo4DLKDX2UeTUkdV6QUZY"></span></div>
       <label class="toggle" data-page-node-id="qNnHKBilADvhjRm8l5vKFc"><span data-page-node-id="HFxdEGHxOPwNRl9UIAohrl">卡片阴影</span><input type="checkbox" id="card-shadow" data-page-node-id="5Fk3pITBoEtF2twY5ousyT" /></label>
       <label class="toggle"><span>悬停轻微放大<button type="button" class="help-dot" data-hint="card-hover-zoom-help" title="悬停放大说明">?</button></span><input type="checkbox" id="card-hover-zoom" /></label>
       <p class="hint collapsible plain" id="card-hover-zoom-help">鼠标停在博文卡片上时，整张卡片轻微放大。关掉只影响这一项，其他外观都不变。</p>
       </div>
       <div class="grp-card"><div class="grp-title">卡片材质<button type="button" class="help-dot" data-hint="card-mat-help" title="卡片材质说明">?</button></div>
-      <p class="hint collapsible plain" id="card-mat-help"><b>暗色 · 半透明底</b>：卡片变半透明深色底，透出背景图。<br><b>浅色 · 毛玻璃</b>（实验）：卡片改成半透明白＋磨砂，背景透过卡面变模糊；掉帧就关掉。<br><b>卡面自适应材质</b>：卡面颜色自动适配背景明暗。</p>
-      <label class="toggle"><span>暗色 · 半透明底</span><input type="checkbox" id="dark-feed-translucent" /></label>
-      <div class="row" id="dark-feed-trans-row" style="display:none;"><label>卡面不透明度 <span class="value"
-            id="dark-feed-trans-v"></span></label><input type="range" id="dark-feed-trans-alpha" min="35" max="92" /></div>
-      <label class="toggle"><span>浅色 · 毛玻璃（实验）</span><input type="checkbox" id="card-light-frost" /></label>
-      <div class="row" id="card-frost-alpha-row" style="display:none;"><label>卡面不透明度 <span class="value"
-            id="card-frost-alpha-v"></span></label><input type="range" id="card-frost-alpha" min="40" max="85" /></div>
-      <label class="toggle"><span>卡面自适应材质</span><input type="checkbox" id="card-face-adapt" /></label>
+      <p class="hint collapsible plain" id="card-mat-help"><b>卡片材质</b>：总开关，浅色卡面磨砂、暗色半透明、按背景自动切换深浅膜。三项都没定制过时开启会一次全亮；单项开关和不透明度在「进阶调节」里调。掉帧就整关或只留自适应材质。</p>
+      <label class="toggle"><span>卡片材质</span><input type="checkbox" id="card-material" /></label>
+      <div style="margin-top:2px;display:flex;align-items:center;gap:6px;">
+        <button type="button" class="btn" id="card-mat-more" style="padding:4px 0;font-size:12px;background:transparent;border:none;text-align:left;display:flex;align-items:center;gap:4px;flex:1;min-width:0;">
+          <span id="card-mat-arrow" style="display:inline-block;transition:transform 0.2s;">▶</span>
+          <span>进阶调节</span>
+        </button>
+        <span id="card-mat-off-hint" style="font-size:11px;color:var(--lc-sub);">开启后可调</span>
+      </div>
+      <div id="card-mat-detail" style="display:none;padding-top:2px;">
+      <div class="lc-subpanel">
+      <label class="toggle"><input type="checkbox" id="dark-feed-translucent" /><span>暗色 · 半透明底</span></label>
+      <div class="row slider-row" id="dark-feed-trans-row" style="display:none;"><label>不透明度</label><input type="range" id="dark-feed-trans-alpha" min="35" max="92" /><span class="value"
+            id="dark-feed-trans-v"></span></div>
+      <label class="toggle"><input type="checkbox" id="card-light-frost" /><span>浅色 · 毛玻璃（实验）</span></label>
+      <div class="row slider-row" id="card-frost-alpha-row" style="display:none;"><label>不透明度</label><input type="range" id="card-frost-alpha" min="40" max="85" /><span class="value"
+            id="card-frost-alpha-v"></span></div>
+      <label class="toggle"><input type="checkbox" id="card-face-adapt" /><span>卡面自适应材质</span></label>
+      </div>
+      </div>
       </div>
       <div class="grp-card"><div class="grp-title">出现动画</div>
       <div class="row" data-page-node-id="6I1PmoMiVRpsEAGfoJuzYW"><label data-page-node-id="sKYWV1PHW4VvhMhBdmuqy2">出现动画</label>
@@ -942,9 +1170,9 @@
         </select>
       </div>
       <p class="hint" data-page-node-id="zHintCardAnim">卡片滚动进入视野时播放入场动画</p>
-      <div class="row" data-page-node-id="cJx4Uu2JPfE7KzKm55Wonp"><label data-page-node-id="AmYDuTZu5BtQKmTU72sagH">动画时长 <span class="value" id="card-duration-v" data-page-node-id="5GPY65PqNOuSiRtWnf89kI"></span></label><input type="range" id="card-duration" min="200" max="1200" step="50" data-page-node-id="nnntOM8vKWYKSGrFsEaL2U" /></div>
+      <div class="row slider-row" data-page-node-id="cJx4Uu2JPfE7KzKm55Wonp"><label data-page-node-id="AmYDuTZu5BtQKmTU72sagH">动画时长</label><input type="range" id="card-duration" min="200" max="1200" step="50" data-page-node-id="nnntOM8vKWYKSGrFsEaL2U" /><span class="value" id="card-duration-v" data-page-node-id="5GPY65PqNOuSiRtWnf89kI"></span></div>
       <label class="toggle" data-page-node-id="jHNh4prIcauQrLx9CsixbV"><span data-page-node-id="NPqubcztETblF7i7H5Q9p4">交错延迟（卡片依次出现）</span><input type="checkbox" id="card-stagger" data-page-node-id="ZIyikVMUVeYpGWazVcqrLW" /></label>
-      <div class="row" data-page-node-id="8bERCKWM0rTVKKTjZG26oG"><label data-page-node-id="sGeGfmaG3APppq942Ssa8V">延迟间隔 <span class="value" id="card-stagger-delay-v" data-page-node-id="QKFHhCw9Dz0RyjB7hEBPD0"></span></label><input type="range" id="card-stagger-delay" min="30" max="200" step="10" data-page-node-id="9JVMHT9rXHlVXo9G40IdCq" /></div>
+      <div class="row slider-row" data-page-node-id="8bERCKWM0rTVKKTjZG26oG"><label data-page-node-id="sGeGfmaG3APppq942Ssa8V">延迟间隔</label><input type="range" id="card-stagger-delay" min="30" max="200" step="10" data-page-node-id="9JVMHT9rXHlVXo9G40IdCq" /><span class="value" id="card-stagger-delay-v" data-page-node-id="QKFHhCw9Dz0RyjB7hEBPD0"></span></div>
       </div>
       <div class="grp-card"><div class="grp-title">页面精简</div>
       <label class="toggle" data-page-node-id="0qsrQidLTFtLfRatTuzY5X"><span data-page-node-id="diA4qavLYy9L01mikOtVmy">隐藏推广内容（广告、二维码、话题推荐等）</span><input type="checkbox" id="tidy-all" data-page-node-id="6Y3nsmHA3FOvXIHG2prWId" /></label>
@@ -957,7 +1185,7 @@
     <!-- 导航 -->
     <section class="pane" data-pane="nav" data-page-node-id="RCoxgKQ5V739iASt25aqq2">
       <div class="grp-card"><div class="grp-title">导航栏<button type="button" class="help-dot" data-hint="nav-help" title="导航栏玻璃说明">?</button></div>
-      <p class="hint collapsible plain" id="nav-help">两个开关互斥（开一个自动关另一个），需先开启自定义背景才生效。毛玻璃：背后内容变模糊；液态玻璃：边缘有折射光感（仅 Chrome / Edge 支持），深色背景自动切白字。</p>
+      <p class="hint collapsible plain" id="nav-help">两个开关互斥（开一个自动关另一个），需先开启自定义背景才生效；深色背景自动切白字，液态玻璃仅 Chrome / Edge 支持。</p>
       <label class="toggle" data-page-node-id="YrVF9sw8GyY0AZmYEbfRA1"><span data-page-node-id="yHd59tfyMbPM7MMesCqplK">导航栏毛玻璃（低透）</span><input type="checkbox" id="nav-blur" data-page-node-id="C2sXwPE2lp94jDC3fXkmIB" /></label>
       <label class="toggle"><span>导航栏液态玻璃（高透·折射）</span><input type="checkbox" id="nav-hyalite" /></label>
       <div class="row" id="nav-mat-row" style="display:none;"><label>玻璃材质</label><select id="nav-mat-mode">
@@ -969,7 +1197,7 @@
       <p class="hint" data-page-node-id="zUCFOj21Hy3IsaOz0K2d3Q">影响链接、按钮和勾选框等可交互元素的颜色（含悬停高亮）</p>
       </div>
       <div class="grp-card"><div class="grp-title">右侧栏<button type="button" class="help-dot" data-hint="side-help" title="右侧栏玻璃说明">?</button></div>
-      <p class="hint collapsible plain" id="side-help">把右侧栏的卡片换成玻璃卡片（只在首页和「查看更多」页生效）。默认「磨砂」：卡片半透明、背后内容变模糊。「边缘折射」才有边缘光感，但很吃性能、可能拖慢整页，所以默认关闭（仅 Chrome / Edge 支持）。</p>
+      <p class="hint collapsible plain" id="side-help">把右侧栏的卡片换成玻璃卡片。默认「磨砂」；「边缘折射」有额外光感但很吃性能、可能拖慢整页，所以默认关闭（仅 Chrome / Edge 支持）。</p>
       <label class="toggle"><span>右侧栏玻璃（磨砂）</span><input type="checkbox" id="sidebar-hyalite" /></label>
       <div class="row" id="side-mat-row" style="display:none;"><label>玻璃材质</label><select id="side-mat-mode">
         <option value="auto">自动适应背景</option>
@@ -988,8 +1216,8 @@
       <p class="hint" data-page-node-id="vEGhZQrdrd2OgtXnESdO1J">GIF 建议 1MB 以内；PNG/JPG 会自动压缩</p>
       <img id="gtotop-preview" style="max-width:60px;border-radius:8px;margin-top:4px;margin-left:90px;display:none;" data-page-node-id="RRkJ8E0eTQUKLiDxQtRNhC" />
       <div class="row" data-page-node-id="DUfZqV6lCnF3fBW9cvHpp0"><button class="btn" id="gtotop-clear" type="button" data-page-node-id="AhJTgaw1GzsSrUgfF0U4en">清除图片</button></div>
-      <div class="row" id="gtotop-size-row" data-page-node-id="IhTIMXLPeDakMuBZ5kBmtT"><label data-page-node-id="94I03tdKL4HBePzWe9C7Zr">图片大小 <span class="value" id="gtotop-size-v" data-page-node-id="LCVcwKRdYAYeIf5GnRBhR2"></span></label><input
-          type="range" id="gtotop-size" min="100" max="300" data-page-node-id="cAXClRilk6K88kQFLIvGW3" /></div>
+      <div class="row slider-row" id="gtotop-size-row" data-page-node-id="IhTIMXLPeDakMuBZ5kBmtT"><label data-page-node-id="94I03tdKL4HBePzWe9C7Zr">图片大小</label><input
+          type="range" id="gtotop-size" min="100" max="300" data-page-node-id="cAXClRilk6K88kQFLIvGW3" /><span class="value" id="gtotop-size-v" data-page-node-id="LCVcwKRdYAYeIf5GnRBhR2"></span></div>
       </div>
     </section>
 
@@ -1000,7 +1228,7 @@
           <span>启用关键词/用户过滤</span>
           <input type="checkbox" id="filter-enabled" />
         </label>
-        <div class="row"><label>生效范围</label>
+        <div class="row" style="flex-wrap:wrap;row-gap:12px;margin-top:12px;"><label style="flex:0 0 100%;">生效范围</label>
           <div class="lc-mods" id="filter-scope">
             <label><input type="checkbox" id="filter-scope-home" checked />首页</label>
             <label><input type="checkbox" id="filter-scope-tag" checked />标签页</label>
@@ -1011,9 +1239,9 @@
         <textarea id="filter-keywords" rows="4"
           style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);resize:vertical;"
           placeholder="一行一个关键词，也可以用逗号分隔"></textarea>
-        <p class="hint collapsible plain" id="filter-keywords-help" style="margin:4px 0 12px 0;">多个关键词写法：一行一个，或用中/英文逗号分隔，命中任一个即隐藏。匹配标题、正文与标签，不区分大小写。关键词只作用于帖子卡片；评论区只按「已屏蔽用户」隐藏，不做关键词匹配。</p>
-        <div class="row" style="margin-bottom:8px;"><label style="flex:0 0 auto;">已屏蔽用户<button type="button" class="help-dot" data-hint="filter-users-help" title="怎么屏蔽用户？">?</button></label><span class="hint" id="filter-user-count" style="margin:0;">0</span></div>
-        <p class="hint collapsible plain" id="filter-users-help" style="margin:4px 0 12px 0;">在首页/标签页帖子的作者名旁点「隐藏」即可屏蔽该用户；被屏蔽的用户在这里移除。</p>
+        <p class="hint collapsible plain" id="filter-keywords-help" style="margin:4px 0 12px 0;">多个关键词写法：一行一个，或用中/英文逗号分隔，命中任一个即隐藏。匹配标题、正文与标签，不区分大小写。关键词只作用于帖子卡片；评论区只按「已隐藏用户」隐藏，不做关键词匹配。</p>
+        <div class="row" style="margin-bottom:8px;"><label style="flex:0 0 auto;">已隐藏用户<button type="button" class="help-dot" data-hint="filter-users-help" title="怎么隐藏用户？">?</button></label><span class="hint" id="filter-user-count" style="margin:0;">0</span></div>
+        <p class="hint collapsible plain" id="filter-users-help" style="margin:4px 0 12px 0;">在首页/标签页帖子的作者名旁或用户评论旁点「隐藏」即可隐藏该用户；被隐藏的用户在这里移除。</p>
         <div id="filter-users"
           style="display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;padding-right:4px;"></div>
         <label class="toggle">
@@ -1022,30 +1250,38 @@
         </label>
       </div>
       <div class="grp-card"><div class="grp-title">官方黑名单<button type="button" class="help-dot" data-hint="official-help" title="什么是官方黑名单？">?</button></div>
+        <div class="row" style="margin-bottom:8px;">
+          <div class="lc-mods" id="official-mode">
+            <label><input type="radio" name="lc-off-mode" value="user" checked />拉黑用户</label>
+            <label><input type="radio" name="lc-off-mode" value="tag" />屏蔽 tag</label>
+          </div>
+        </div>
         <p class="hint collapsible plain" id="official-help" style="margin:4px 0 12px 0;">拉黑由 LOFTER 官方执行：动态和标签页不再显示对方内容，对方也无法评论/私信你；但对方可能感知到（在 App 里进你主页会看到提示）。插件本地的「隐藏」完全无感，两者不通用。</p>
+        <p class="hint collapsible plain" id="official-tag-help" style="margin:4px 0 12px 0;display:none;">屏蔽 tag 是插件本地行为：首页/标签页不再显示带该 tag 的帖子卡片，评论区不受影响，对方无感知。悬停帖子卡片上的 tag 也会出现「屏蔽」小按钮。</p>
         <div style="display:flex;gap:6px;">
           <input id="official-add-input" type="text" placeholder="粘贴对方主页链接或 ID"
             style="flex:1;min-width:0;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);">
           <button id="official-add-btn" class="btn"
             style="padding:6px 12px;font-size:12px;white-space:nowrap;">拉黑</button>
         </div>
-        <p class="hint plain">无需进 LOFTER 设置页，这里直接添加/移除（等价于官方「设置 → 黑名单」）。</p>
-        <div class="row" style="margin-bottom:8px;"><label style="flex:0 0 auto;">黑名单成员</label><span class="hint" id="official-count" style="margin:0;">…</span><span id="official-toast" style="font-size:11px;color:#34a853;display:none;"></span><button id="official-toggle" type="button" class="btn" style="margin-left:auto;padding:1px 10px;font-size:11px;flex-shrink:0;color:var(--lc-sub);background:none;border:1px dashed var(--lc-line);border-radius:6px;cursor:pointer;">展开</button></div>
+        <p class="hint plain" id="official-add-hint">无需进 LOFTER 设置页，这里直接添加/移除（等价于官方「设置 → 黑名单」）。</p>
+        <div class="row" style="margin:14px 0 8px 0;align-items:center;"><label style="flex:0 0 auto;line-height:1.5;"><span id="official-list-label">黑名单成员</span></label><span class="hint" id="official-count" style="margin:0;line-height:1.5;">…</span><span id="official-toast" style="font-size:11px;color:#34a853;display:none;"></span><button id="official-toggle" type="button" class="btn" style="margin-left:auto;padding:2px 10px;font-size:11px;line-height:1.5;flex-shrink:0;color:var(--lc-sub);background:none;border:1px dashed var(--lc-line);border-radius:6px;cursor:pointer;">展开</button></div>
         <div id="official-list"
           style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;padding-right:4px;display:none;"></div>
-        <label class="toggle">
+        <label class="toggle" id="official-comments-row">
           <span>评论区也隐藏黑名单用户</span>
           <input type="checkbox" id="official-comments" />
         </label>
       </div>
-      <div class="grp-card"><div class="grp-title">评论区增强</div>
+      <div class="grp-card"><div class="grp-title">评论区增强<button type="button" class="help-dot" data-hint="cmt-enhance-help" title="表情怎么用？">?</button></div>
         <label class="toggle">
-          <span>评论工具行（只看作者 / 排序）</span>
+          <span>评论工具行（只看作者 / 排序 / 表情）</span>
           <input type="checkbox" id="comment-toolbar" />
         </label>
+        <p class="hint collapsible plain" id="cmt-enhance-help" style="margin:4px 0 0 0;">表情按钮按官方文本格式插入 <b>[包名/情绪]</b>：网页端显示为文字、App 端渲染成表情图。付费表情导入：在 App 里把要的表情点进一条评论 → 复制整段 → 表情面板右上「＋」粘贴导入，之后一直能用。</p>
       </div>
       <div class="grp-card"><div class="grp-title">路线图</div>
-        <p class="hint plain" data-page-node-id="lcFuncRoadmap">表情快捷输入（文字版）、文章导出等功能会陆续加入本栏，每项都是独立开关。</p>
+        <p class="hint plain" data-page-node-id="lcFuncRoadmap">文章导出等功能会陆续加入本栏，每项都是独立开关。</p>
       </div>
     </section>
 
@@ -1076,13 +1312,14 @@
       </div>
       </div>
 
-      <div class="grp-card"><div class="grp-title">数据<span class="lc-mod-count" id="cfg-mod-count" data-page-node-id="lcModCount">已选 6/6</span></div>
+      <div class="grp-card"><div class="grp-title">数据<span class="lc-mod-count" id="cfg-mod-count" data-page-node-id="lcModCount">已选 7/7</span></div>
         <div class="lc-mods" id="cfg-modules" style="margin-bottom:8px;" data-page-node-id="lcMods">
           <label><input type="checkbox" data-mod="display" checked data-page-node-id="lcMod1" />显示</label>
           <label><input type="checkbox" data-mod="deco" checked data-page-node-id="lcMod2" />装饰</label>
           <label><input type="checkbox" data-mod="card" checked data-page-node-id="lcMod3" />卡片</label>
           <label><input type="checkbox" data-mod="nav" checked data-page-node-id="lcMod4" />导航</label>
           <label><input type="checkbox" data-mod="func" checked data-page-node-id="lcMod6" />功能</label>
+          <label><input type="checkbox" data-mod="emoji" checked data-page-node-id="lcMod7" />表情</label>
           <label><input type="checkbox" data-mod="misc" checked data-page-node-id="lcMod5" />其他</label>
         </div>
         <p class="hint plain" style="margin-bottom:12px;" data-page-node-id="lcExpHint">勾选要导出的栏目，与面板标签一一对应，方便只恢复某一栏。</p>
