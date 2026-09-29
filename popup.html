@@ -1280,6 +1280,30 @@
         </label>
         <p class="hint collapsible plain" id="cmt-enhance-help" style="margin:4px 0 0 0;">表情按钮按官方文本格式插入 <b>[包名/情绪]</b>：网页端显示为文字、App 端渲染成表情图。付费表情导入：在 App 里把要的表情点进一条评论 → 复制整段 → 表情面板右上「＋」粘贴导入，之后一直能用。</p>
       </div>
+      <div class="grp-card"><div class="grp-title">文章导出<button type="button" class="help-dot" data-hint="export-help" title="文章导出说明">?</button></div>
+        <label class="toggle">
+          <span>启用文章导出</span>
+          <input type="checkbox" id="export-enabled" />
+        </label>
+        <div class="row" style="flex-wrap:wrap;row-gap:12px;margin-top:12px;"><label style="flex:0 0 100%;">生效范围</label>
+          <div class="lc-mods" id="export-scope">
+            <label><input type="checkbox" id="export-scope-manage" checked />批量管理页</label>
+            <label><input type="checkbox" id="export-scope-detail" />文章详情页</label>
+          </div>
+        </div>
+        <label class="toggle" style="margin-top:12px;">
+          <span>合并为单个 .md（长篇连载）</span>
+          <input type="checkbox" id="export-merged" />
+        </label>
+        <p class="hint collapsible plain" id="export-help" style="margin:4px 0 0 0;">批量管理页顶栏会出现「全选（已加载）」和「导出」：先选中若干篇再点导出，每篇存一个 .md，图片保留 LOFTER 图床外链。导出逐篇抓取详情页（每篇约 0.4 秒），量大请等进度条走完，中途可取消。只导出自己已发布的内容，草稿与他人文章不在此列。</p>
+      </div>
+      <div class="grp-card"><div class="grp-title">编辑防丢<button type="button" class="help-dot" data-hint="draft-help" title="编辑防丢说明">?</button></div>
+        <label class="toggle">
+          <span>正文本地快照（断网 / 崩溃保险）</span>
+          <input type="checkbox" id="draft-guard" />
+        </label>
+        <p class="hint collapsible plain" id="draft-help" style="margin:4px 0 0 0;">写普通文章时每 2 秒在本机快照一次正文（不联网、不上传）。官网草稿要停笔 3 秒才存、断网即失效——连续输入或断网期间，本机快照可能是唯一完整副本；重新打开编辑器会提示一键复制找回。只保正文：标题与标签走官网草稿，断网期间新上传的图片救不回。</p>
+      </div>
       <div class="grp-card"><div class="grp-title">路线图</div>
         <p class="hint plain" data-page-node-id="lcFuncRoadmap">文章导出等功能会陆续加入本栏，每项都是独立开关。</p>
       </div>

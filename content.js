@@ -121,7 +121,14 @@ function cmtUserId(a) {
     if (u.hostname !== 'www.lofter.com' && u.hostname !== 'lofter.com') {
       return u.hostname.split('.')[0] || '';
     }
-    const seg = u.pathname.split('/').filter(Boolean)[0] || '';
+    const segs = u.pathname.split('/').filter(Boolean);
+    const seg = segs[0] || '';
+    /* /blog/<id> 形式：真 id 在第二段（postmanage 页头 h1 链接即此形，
+     * 真机 2026-09-27）——不处理会把 'blog' 当成 id */
+    if (seg === 'blog') {
+      const id = segs[1] || '';
+      return id && !CMT_WWW_PATH_WORDS.has(id) ? id : '';
+    }
     if (CMT_WWW_PATH_WORDS.has(seg)) return '';
     return seg;
   } catch (e) {
@@ -905,22 +912,26 @@ function cmtEnhanceOn() {
  * 空，正是 referrer 里残留的博客域被当成了全页楼主） */
 function cmtFrameHostDetect() {
   if (cmtFrameHostTried) return cmtFrameHost;
-  cmtFrameHostTried = true;
   try {
     const m = location.hostname.match(/^([a-z0-9-]+)\.lofter\.com$/i);
     if (m && !/^(www|api)$/i.test(m[1])) {
       cmtFrameHost = m[1].toLowerCase();
+      cmtFrameHostTried = true;
       return cmtFrameHost;
     }
     const isArticleFrame =
       /\/(lpost|post|d)\//.test(location.pathname) ||
       /comment\.do/i.test(location.pathname + location.search);
-    if (!isArticleFrame) return cmtFrameHost;
+    if (!isArticleFrame) {
+      cmtFrameHostTried = true;
+      return cmtFrameHost;
+    }
     const r = String(document.referrer || '').match(
       /^https?:\/\/([a-z0-9-]+)\.lofter\.com/i,
     );
     if (r && !/^(www|api)$/i.test(r[1])) {
       cmtFrameHost = r[1].toLowerCase();
+      cmtFrameHostTried = true;
       return cmtFrameHost;
     }
     const q = new URLSearchParams(location.search);
@@ -929,7 +940,44 @@ function cmtFrameHostDetect() {
       const v = (q.get(keys[i]) || '').toLowerCase();
       if (/^[a-z0-9][a-z0-9_-]{0,49}$/.test(v)) {
         cmtFrameHost = v;
+        cmtFrameHostTried = true;
         return cmtFrameHost;
+      }
+    }
+    /* www 顶级文章页（/lpost/…）嵌 comment.do 帧：referrer 是 www 被排除、
+     * URL 参数只有 pid/bid 数字 id——帧级三层全空（真机 2026-09-27：专栏
+     * 文章页只看作者置灰）。同源父文档兜底：comment.do 与 www 宿主同源，
+     * 内容脚本可读父文档——定位自身 iframe 元素，沿父文档向上找博客链接
+     * （与区块级探测同法）。跨源父帧（经典子域宿主）在 referrer 一层就已
+     * 成功，走不到这里；parent 访问失败（跨源）同样安全跳过。
+     * 注意不设 tried：父文档是 React 晚渲染，作者链接可能还没出来，
+     * 留待下一次 sync 重试（成功才缓存） */
+    if (window.parent && window.parent !== window) {
+      let pdoc = null;
+      try {
+        pdoc = window.parent.document;
+      } catch (e) {
+        pdoc = null;
+      }
+      if (pdoc) {
+        let anchor = null;
+        try {
+          const fr = pdoc.querySelectorAll('iframe');
+          for (let i = 0; i < fr.length; i++) {
+            try {
+              if (fr[i].contentWindow === window) {
+                anchor = fr[i];
+                break;
+              }
+            } catch (e) {}
+          }
+        } catch (e) {}
+        const id = anchor ? cmtHostFromDom(anchor, null) : '';
+        if (id) {
+          cmtFrameHost = id;
+          cmtFrameHostTried = true;
+          return cmtFrameHost;
+        }
       }
     }
   } catch (e) {}
@@ -1265,6 +1313,16 @@ function cmtTbBuildBar() {
     '<circle cx="10.1" cy="6.6" r="0.7" fill="currentColor" stroke="none"/>' +
     '<path d="M5.4 9.7q2.6 2.1 5.2 0"/></svg>';
   bar.appendChild(emoji);
+  /* 点 chip 不夺焦点（mousedown preventDefault，click 照常触发）：
+   * 否则点表情钮会把焦点从输入框抢走 → 站点对 blur 的响应是收起
+   * 评论表单并重渲染——面板开着时输入框/发布键错位、最近表情行被
+   * React 洗掉。面板本体（epHost）早有同款防护，工具行这里补上。
+   * 全部 chip 统一处理：只看作者/从旧到新/加载更多也不需要抢焦点 */
+  bar.addEventListener('mousedown', (e) => {
+    if (e.target && e.target.closest && e.target.closest('button')) {
+      e.preventDefault();
+    }
+  });
   bar.addEventListener('click', (e) => {
     const b =
       e.target && e.target.closest ? e.target.closest('[data-act]') : null;
@@ -1349,12 +1407,24 @@ function cmtEpRowFill(rec, row) {
 /* 行对齐（2026-09-26 用户反馈：chips 行原来占满 formBlock 全宽顶格
  * 两边）：左右缘都对齐输入框（与工具行同宽，观感统一）。增量 margin
  * 方案同 cmtTbSync 的宽度对齐——margin 生效后的残余差 <0.5px 即收敛，
- * 不回清（回清=0↔pad 振荡，工具行已踩过） */
+ * 不回清（回清=0↔pad 振荡，工具行已踩过）。
+ * 0 评论页毒 margin 实锤（第五轮探针 20260926）：表情面板开合会把表单
+ * 容器切成横向 flex，本行变成输入框右侧的压缩 flex 项（left 顶到输入
+ * 框右缘、top 反而更高）——对齐在这种状态下量到的几何全是错的，写出
+ * ml=-389 冻结回 block 态后行被撑到 778px、推出卡片左缘 389px（「行
+ * 消失 + 输入框发布键错位」的根源）。门禁：行不在输入框正下方 = 异常
+ * 态，display:none 退出布局流（flex 里不生成盒，顺便还站点一个干净布
+ * 局）；回到 block 态后下轮 sync 自动恢复，且增量式对齐一次就冲掉旧
+ * 毒 margin，无需清理例程 */
 function cmtEpRowAlign(row, input) {
   try {
     const ir = input.getBoundingClientRect();
     const rr = row.getBoundingClientRect();
     if (ir.width <= 0 || rr.width <= 0) return;
+    if (rr.top <= ir.top || rr.left >= ir.right - 2) {
+      if (row.style.display !== 'none') row.style.display = 'none';
+      return;
+    }
     const curL = parseFloat(row.style.marginLeft) || 0;
     const curR = parseFloat(row.style.marginRight) || 0;
     const mL = curL + (ir.left - rr.left);
@@ -1370,6 +1440,11 @@ function cmtEpRowSync(rec, input) {
     row = document.createElement('div');
     row.className = 'lc-cmt-eprow';
     row.style.display = 'none';
+    /* 点 chip 不夺焦点（同工具行防护）：mousedown 默认把焦点从输入框
+     * 抢走——contenteditable 的光标选区丢失、插入哑火，站点还会在
+     * blur 时收起表单重渲染（0 评论页「点一次出现再点一次消失」循环
+     * 的根源之一）。mousedown preventDefault，click 照常触发 */
+    row.addEventListener('mousedown', (e) => e.preventDefault());
     row.addEventListener('click', (e) => {
       const b = e.target && e.target.closest ? e.target.closest('.lc-ep-rchip') : null;
       if (!b) return;
@@ -1390,8 +1465,10 @@ function cmtEpRowSync(rec, input) {
   cmtEpRowFill(rec, row);
   if (row.style.display !== 'none') {
     cmtEpRowAlign(row, input);
-    /* 对齐改了 margin → 行宽变了 → 立即重裁一次，不等下轮 tick */
-    cmtEpRowFill(rec, row);
+    /* 对齐改了 margin → 行宽变了 → 立即重裁一次，不等下轮 tick。
+     * 但对齐若判定异常态收起了行（display:none），此处不得再放出来，
+     * 否则刚退出的 flex 布局又被塞回一个污染项 */
+    if (row.style.display !== 'none') cmtEpRowFill(rec, row);
   }
 }
 
@@ -3864,7 +3941,7 @@ function lcCmtPayload() {
      * 20260924c：蒙版只认近乎全屏覆盖层 + 导航栏全量扫描兜底 +
      * 蒙版只认近乎全屏的覆盖层 + 导航栏探测加全量扫描兜底（2s 缓存），
      * EP_DIAG 新增 navZ/maskZ */
-    probeVer: '20260926f', /* f：popup 排版整轮（进阶调节软底容器/胶囊子开关/滑杆行统一名称|拖动条|百分比右对齐/去尾分割线动态显隐/hint 精简）；字体状态条（chips 三态+生效中独占行+点已装切换+点生效中停用 font.off+activeFontFamily 逐名加引号修括号非法声明）；导入白名单补登记 sidebar/comment；表情管理加「清空最近使用」；尖角改 clip-path 三角带磨砂 */
+    probeVer: '20260926n', /* n：回滚 o 轮三个定时触发（开/关面板补 sync + 350ms 回检）——真机实锤「过渡态跑对齐=写毒 margin」：展开评论区动画中触发的对齐写坏 margin，旧行带着毒 margin 骗过几何门禁，每次展开多一行。维持 m 版仅门禁方案；0 评论页行消失（缺恢复触发源）另想不依赖定时器的恢复路径 */
     url: location.href.slice(0, 160),
     isTop: window === window.top,
     docSwapped: document.documentElement !== cmtDocEl,
@@ -4053,8 +4130,10 @@ const cmtArmTimer = setInterval(() => {
           st.id = 'lc-editor-dark';
           (document.head || document.documentElement).appendChild(st);
         }
-        if (isDark) {
-          st.textContent = `
+        /* 暗色基础（仅暗色上色）。底部让位已撤销（2026-09-29）：官方
+         * 提示行与恢复浮条迁至父帧「腾座」空白带（lc-draft 给编辑器
+         * iframe 父容器注入 padding-bottom），编辑区内不再有任何浮层 */
+        st.textContent = (isDark ? `
             html, body, .pc-publish-container, [class*="editor"], [contenteditable] {
               background: rgb(30, 30, 36) !important;
               color: rgba(255, 255, 255, 0.85) !important;
@@ -4064,10 +4143,7 @@ const cmtArmTimer = setInterval(() => {
             ::-webkit-scrollbar { width: 6px; }
             ::-webkit-scrollbar-track { background: rgb(30, 30, 36); }
             ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
-          `;
-        } else {
-          st.textContent = '';
-        }
+          ` : '');
       };
       checkAndApply(s);
       chrome.storage.onChanged.addListener((changes, area) => {
@@ -5580,6 +5656,16 @@ html body .g-bd .m-recom {
           z-index: 99999;
           pointer-events: none;
         }
+        /* 站点自带 tooltip：悬停胶囊时官方 React 会在胶囊**内部**渲染一份
+           同文案提示（div.N66XIfRYsXc7N7WkbeykcQ，2026-09-29 探针实证：
+           parent 链第一环即胶囊、absolute z-index:900、暗色下底色被通用
+           清底规则剥掉成白字裸奔），与上面的 ::after 气泡叠加成双份
+           （真机两轮反馈）→ **暗色下**隐藏站点那份，提示统一由我们的气泡
+           承载；浅色不进本块，站点 tooltip 保持原样（浅色无双份，因我们的
+           气泡只在暗色注入）。限定「胶囊直接子元素」，不误伤站内其它 tooltip */
+        div[class*="dl+rqIrnR1qGO7K68aqRXQ"] > div[class*="N66XIfRYsXc7N7WkbeykcQ"] {
+          display: none !important;
+        }
 
         /* ── 精品连载创建页（新版页面，不在反色区，直接写最终色）──
            类名全混淆，用稳定锚点：aside 的 aria-label + main 内
@@ -6172,9 +6258,11 @@ html body .g-bd .m-recom {
         #application.lofter-root-container [class*="KrL5Oe6b4NCGc0rWTW54QQ"] button[class*="w0QlRuNB1+cwpNnUhw"] {
           margin: 10px 10px 0 0 !important;
         }
-        /* "草稿已保存"胶囊（站点浅绿底）：暗色下改深灰底浅字 */
-        #application.lofter-root-container [class*="KrL5Oe6b4NCGc0rWTW54QQ"] div[class*="GaAFASioYmN-a5Rn6LZpVg"] {
-          background: #2B2B25 !important;
+        /* "草稿已保存"胶囊（站点浅绿底）：暗色下改与编辑区同色的不透明
+           底（2026-09-28 换哈希：旧 GaAFASioYmN 已过期未命中，现行
+           dl+rqIrnR1qGO7K68aqRXQ；同底色主规则另见统一弹窗暗色基础） */
+        #application.lofter-root-container [class*="KrL5Oe6b4NCGc0rWTW54QQ"] div[class*="dl+rqIrnR1qGO7K68aqRXQ"] {
+          background: rgb(30, 30, 36) !important;
           color: rgba(255, 255, 255, 0.85) !important;
         }
         #application.lofter-root-container [class*="KrL5Oe6b4NCGc0rWTW54QQ"] svg[class*="RjFsrAd0qHoFSmRGvVi0uA"] {
@@ -6298,6 +6386,11 @@ html body .g-bd .m-recom {
               });
               /* 3b. 其他设置项边框（加入合集/回礼设置/创作声明等）：调暗 */
               card.querySelectorAll('.rc-dialog-body div[role="button"], .rc-dialog-body [class*="uQThfn8Id0NabYNky5E9WA"] > div').forEach(el => {
+                /* 「草稿已保存」状态行不参与边框压暗（暗色下要与编辑区
+                 * 融为一体，见统一弹窗暗色基础豁免规则；也防明暗切换
+                 * 来回在内联样式上残留边框） */
+                if (String(el.className).indexOf('dl+rqIrnR1qGO7K68aqRXQ') !== -1 ||
+                    String(el.className).indexOf('_5+z9dJrZIs23YiDIxPMWgw') !== -1) return;
                 const style = getComputedStyle(el);
                 if (style.borderColor.includes('255, 255, 255') || style.borderColor.includes('237, 237, 237')) {
                   el.style.setProperty('border-color', 'rgba(255, 255, 255, 0.08)', 'important');
@@ -6382,6 +6475,11 @@ html body .g-bd .m-recom {
               });
               /* 3b. 其他设置项边框（加入合集/回礼设置/创作声明等）：调暗 */
               card.querySelectorAll('.rc-dialog-body div[role="button"], .rc-dialog-body [class*="uQThfn8Id0NabYNky5E9WA"] > div').forEach(el => {
+                /* 「草稿已保存」状态行不参与边框压暗（暗色下要与编辑区
+                 * 融为一体，见统一弹窗暗色基础豁免规则；也防明暗切换
+                 * 来回在内联样式上残留边框） */
+                if (String(el.className).indexOf('dl+rqIrnR1qGO7K68aqRXQ') !== -1 ||
+                    String(el.className).indexOf('_5+z9dJrZIs23YiDIxPMWgw') !== -1) return;
                 const style = getComputedStyle(el);
                 if (style.borderColor.includes('255, 255, 255') || style.borderColor.includes('237, 237, 237')) {
                   el.style.setProperty('border-color', 'rgba(255, 255, 255, 0.08)', 'important');
@@ -8778,6 +8876,19 @@ body.body .content-block:not(:has(.words-area)) {
           margin-bottom: ${gap} !important;
         }
         .isaym3:has(.m-ilike) > * { background: transparent !important; }
+        ${isDarkMode() ? `
+        /* 暗色：上面两条把 #fff 写进 #main 反色区 → 反相成纯黑。2026-09-29
+           真机 DevTools 实锤：他人喜欢页台头 #favpageheader .isaym3（内含
+           .m-ilike）正命中「推荐卡片」规则，整块台头纯黑；推荐页推荐卡
+           同理。写预反色值（经反相显示 #1F1F19，与信息流卡片一致）+
+           杀站点雪碧图 + 去投影（rgba 黑影在反色区反成白晕）。
+           html #main 前缀抬特异性，稳压上方同块浅色规则 */
+        html #main .isaym3:has(.m-ilike) {
+          background: rgb(225, 225, 219) !important;
+          background-image: none !important;
+          box-shadow: none !important;
+        }
+        ` : ""}
 
         /* 个人主页标题卡片 */
         .box.wid700:not(.postwrapper) {
@@ -11258,6 +11369,16 @@ main.lc-gift-dark > div > button:hover {
       .lc-dialog-dark
         div[class*="_3J7ln-Cqb7p8UKaKPbmhRw"][class*="v8TbCPnT0AbKm5+DAKo1NQ"]:not(:empty) {
         background: #1a1a1a !important;
+      }
+      /* 「草稿已保存」状态行（div._5+z9dJrZIs23YiDIxPMWgw，内含字数与
+         提示胶囊 div.dl+rqIrnR1qGO7K68aqRXQ）：lc-draft 给编辑器 iframe
+         父容器注入 padding-bottom:44px 后，该行（absolute bottom:12px）
+         落进腾出的底部空白带——身后是弹窗背景而非正文，无需再「盖」。
+         暗色只需清底 + 去边框融合弹窗底（3b 边框修复已跳过该行） */
+      .lc-dialog-dark .rc-dialog-body div[class*="_5+z9dJrZIs23YiDIxPMWgw"]:not(:empty),
+      .lc-dialog-dark .rc-dialog-body div[class*="dl+rqIrnR1qGO7K68aqRXQ"]:not(:empty) {
+        background: transparent !important;
+        border-color: transparent !important;
       }
 
       /* 关闭按钮 */
@@ -13980,10 +14101,14 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
     if (sideHy) {
       out.push(`
         /* ① 反色让位：滤镜祖先会让 backdrop-filter 采不到页面背景
-           （blur 同样受 backdrop root 限制，故与折射模式一并让位） */
-        #rside > *,
-        #rside img,
-        #rside .lc-emoji-wrap {
+           （blur 同样受 backdrop root 限制，故与折射模式一并让位）。
+           2026-09-29 收紧：只让给真的挂玻璃的页面（#rside 下存在
+           slide-bar 玻璃卡）。原先无条件全局让位，玻璃不覆盖的侧栏
+           （他人喜欢页 .m-menu 等）反色没了、玻璃也没来 → 站点原生
+           白板直接暴露在暗色里（真机实锤） */
+        #rside:has(#slide-bar [class*="-box-web"]) > *,
+        #rside:has(#slide-bar [class*="-box-web"]) img,
+        #rside:has(#slide-bar [class*="-box-web"]) .lc-emoji-wrap {
           filter: none !important;
         }
 
@@ -15964,6 +16089,20 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       }
       html #tageditor .g-box:has(.participate-user-title-w) {
         filter: invert(100%) hue-rotate(180deg) brightness(${(settings.darkMode.brightness || 90) / 100}) !important;
+      }
+      /* 他人喜欢页右栏（#rside > .g-box > .m-menu，内含 #likesidelist）：
+         浅色管线「推荐页右侧栏」规则写 #fff，在 #rside 反色区会反成纯黑；
+         站点白底还烙在 menu24.png 雪碧图上（.menum/.menut/.menub 各一片，
+         2026-09-29 探针实证 .m-menu 白底 rgb(255,255,255) + .menum 雪碧图）。
+         与上方参与用户卡同口径：预反色 + 杀雪碧图，经反相显示 #1F1F19
+         卡片、文字随反相变浅色；头像由下方 #rside img 补偿滤镜还原。
+         html 前缀 + 同构选择器压过浅色 #fff 规则 */
+      html #rside .g-box .m-menu:has(#likesidelist),
+      html #rside .g-box .m-menu:has(#likesidelist) .menum,
+      html #rside .g-box .m-menu:has(#likesidelist) .menum ul,
+      html #rside .g-box .m-menu:has(#likesidelist) .menum ul li {
+        background: rgb(225, 225, 219) !important;
+        background-image: none !important;
       }
       /* 个人主页台头 */
 .box.wid700:not(.postwrapper) {

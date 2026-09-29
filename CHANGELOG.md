@@ -3,6 +3,53 @@
 本文件记录 Lofter Customizer 的重要变更。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.6.0] - 2026-09-29
+
+> 编辑防丢快照批次（#12 B-lite）：demo（26 项断言）→ 正式版实施 → 真机七轮验收
+> （top 帧探针 ×4 定位归属与空间死局、「腾座」布局探针四项实证、双 tooltip 归因）。
+> 位置问题的两条主线：①状态徽标与官方提示的「融入 vs 挪出」；②恢复浮条的「编辑器帧
+> fixed = 视口即正文区」方位死局——最终两者都落进 padding 腾出的编辑区外空白带。
+
+### 新增
+
+- **编辑防丢快照（`draft.guard`，默认关，popup「功能」栏「正文本地快照（断网 / 崩溃保险）」）**：写普通文章时每 2 秒在本机快照一次正文（`lc-draft.js`，独立键 `lc_draft_snap_v1`，不联网不上传）。
+  - **快照时机**：输入 2s 节流 + `pagehide` 兜底；pagehide 先**同步写 sessionStorage** 再合并落盘——防「打完字 2s 内刷新」时异步写竞态丢失（真机复验实锤过的丢快照场景）。环形保留 5 版、14 天过期自动清理
+  - **恢复提示**：启动时快照比当前正文新且内容不同 → 编辑区外左下**单行细条**「复制全文 / 忽略并清除」（摘要进条内、长说明进原生 title）；内容追平自动收起。复制走隐藏容器选区 + `execCommand`——**复制的就是快照本身**，`Ctrl+V` 直接找回
+  - **状态徽标**：top 帧徽标宿主挂官方「草稿已保存」胶囊行首（`防丢快照 · hh:mm · n 字`），官方提示未出现时在编辑区下方空白带自立门户、出现即迁入；`storage.onChanged` 实时刷新，guard 关 = 零注入零 UI
+  - **「腾座」布局**：给编辑器 iframe 父容器注入 `padding-bottom:44px`（absolute 以 padding box 为参照）——官方提示行（含字数）、状态徽标、恢复浮条整体落进编辑区**下方**空白带，tag 区完整让位；两轮真机探针实证（父容器 +44 / iframe 矩形不变 / tag 区精确 +44 / 落点无遮挡）。浅暗共用一套位置
+- 回归：`tools/test-lc-draft.js`（55 项 jsdom 断言）、`tools/test-draft-tooltip-css.js`（9 项）；真机探针 `probe-savehint` / `probe-moveout` / `probe-moveout2` / `probe-sitetip`
+
+### 修复
+
+- **暗色模式下官方「草稿已保存」提示掉进正文**：「统一弹窗暗色基础」清底规则把官方提示胶囊的白底也清成透明——浅色白底融白底看不出来，暗色一上色就露馅；附带修正过期哈希 `GaAFASioYmN-a5Rn6LZpVg` → 现行 `dl+rqIrnR1qGO7K68aqRXQ`（页面 0 命中的失效锚点）
+- **悬停「草稿已保存」出现两份「自动保存编辑中的内容」**：站点悬停时会在胶囊**内部** JS 渲染一份同文案 tooltip（`div.N66XIfRYsXc7N7WkbeykcQ`，底色被清底规则剥掉成白字裸奔），与我们暗色专用的 `::after` 气泡叠加成双份（归因链：DevTools 强制 `:hover` 只剩一份 + 那份能被气泡遮挡 ⇒ 排除原生 title）→ 暗色下隐藏站点那份（限定「胶囊直接子元素」，不误伤站内其它位置同名 tooltip）；另沿父链清除官方原生 `title` 并加属性监听自愈（防 React 重渲染补回）
+- **他人喜欢页（`www.lofter.com/favblog/<ID>`）暗色两处失配**：①台头整块纯黑——浅色「推荐卡片」规则 `.isaym3:has(.m-ilike)` 写 `#fff`，而该页台头内层正命中它且处于 `#main` 反色滤镜区内，白底经反相成纯黑（DevTools 截图实锤）→ 暗色写预反色值（终显 `#1F1F19`，与信息流卡片一致）；②右栏整块纯白——侧栏玻璃开启时 `#rside > *` 反色滤镜被无条件全局让位，而玻璃只覆盖首页 `#slide-bar` 卡片，玻璃不及的侧栏反色没了、玻璃也没来 → 让位收紧为「`#rside` 下确有 slide-bar 玻璃卡」的页面，并给该页右栏全链（`.m-menu/.menum/ul/li`）补预反色底 + 杀 `menu24.png` 雪碧图（白底烙在图上，纯改背景色治不了）
+
+### 变更
+
+- **协议 MIT → GPL-3.0**（1.6.0 未发布前的授权调整，此前从未有外部贡献）：免费使用、修改、再分发（含商用）不变，但衍生版本必须同样以 GPL-3.0 开源并保留版权与许可声明；第三方 `hyalite.js` 保留其原有 MIT 许可与声明
+
+## [1.5.0] - 2026-09-27
+
+> 文章导出批次（#10）：方案讨论 → DOM 实证 → demo（29 项断言 + 真机验收）→ 正式版实施（21 项断言）→
+> 真机四轮修复（注入判定、跨域 404、按钮布局、禁用态类）。附带修复专栏文章（lpost）评论区
+> 「只看作者」失效的旧 bug。真机验收覆盖连载 / 文章 / 长文章 / 图片四类作品（单篇 + 批量）。
+
+### 新增
+
+- **文章导出（Markdown）**：新配置段 `export`（popup「功能」栏「文章导出」组：总开关**默认关** + 生效范围勾选「管理页 / 详情页」+ 合并导出；已登记导入白名单 LC_MODULES）。两个入口：
+  - **批量管理页（主入口）**：postmanage 顶栏原生工具条新增「导出」「全选」按钮（克隆「删除」键的类名融入、剥掉禁用态类 `w-tbtn-dis` 避免文字发暗；顺序＝导出、全选、取消选择、编辑授权、删除）。页面原生没有全选，「全选」由插件补齐——勾选全部已加载 `li.ptag`，原生「取消选择」照常生效；「导出」无选中时置灰（导出是显式意图，不默认"全部"——误触会静默起一个几百篇的抓取队列）
+  - **详情页单篇**：/post 与 /lpost 详情页标题旁小链接一键导出当前篇
+  - **数据管道**：postmanage（www 域）抓博客子域详情页是跨域重定向，fetch 走 background Service Worker 中继（`lcExportFetch`，带 cookie——登录态下详情页 SSR 全文直出，未登录只得 React 空壳）；批量逐篇 400ms 限速，进度条显示 n/N、可取消，结束时汇报失败清单。注意 `www.lofter.com/post/xxx` 是 404，真实地址在博客子域，博客 id 从管理页 URL `/postmanage/<id>` 解析
+  - **Markdown 产物**：YAML front matter（标题 / 日期 / 链接 / 来源 / 授权）+ 正文（段落、引用块、1080 图床外链图片、链接）；lpost 另带副标题；转载文导出引用块 + 「转载自 X」出处。文件名 `标题.md`（非法字符替换、80 字符截断，图片类无标题退化为 post-id）；默认逐篇一个 .md，可选合并为单个 .md（`---` 分隔）
+  - **年份精确化**：列表年份从月份分组 `ul#YYYY_M_list` 取（demo 版「当年近似」的已知限制正式修正）
+  - 明确不做：导出他人文章（版权 + 站点条款）、草稿、图片转存（保留图床外链）、自动连页（DWR 翻页）
+- 回归与 demo：`tools/test-lc-export.js`（21 项 jsdom 断言）、demo 转换器 `tools/demo-export.js` + `tools/test-demo-export.js`（29 项）；fixture 取自真机实证 DOM（postmanage 列表 / 经典文章页 / 长文章页）
+
+### 修复
+
+- **专栏文章（lpost）评论区「只看作者」显示「未识别到楼主，本区块暂不支持」**：lpost 的评论区是 www 宿主下**同源** comment.do 帧（不是博客子域），帧级三层探测在该形态下全部落空——帧域名是 www、referrer 也是 www、URL 只有 pid/bid 参数。修复：`cmtFrameHostDetect()` 加**同源父文档兜底**——referrer 与 URL 参数都拿不到时，定位自身 iframe 在父文档中的位置、沿父文档向上找博客链接（复用区块级探测）；探测失败**不缓存**，随同步节奏自动重试；`cmtUserId` 补 `/blog/<id>` 路径第二段解析。回归 `tools/test-cmt-toolbar.js` 全过
+
 ## [1.4.0] - 2026-09-26
 
 > tag 屏蔽 + 表情快捷输入收口 + 卡片材质总开关批次（2026-09-25/26 两日迭代，全部经真机逐轮验收）。
@@ -173,9 +220,9 @@
 - **深色背景 + 液态玻璃时全页文字变白 / 面板文字不可读**：`.lc-glass-dark` 曾挂在 `[class*="box-web"]`（子串匹配取首个）上，而不同页面首个匹配可能是页壳（含全部内容与右侧栏）或页脚——后代白字规则把全页超链接刷白；老管线 `#lofter-top-bar.lc-glass-dark div` 则把 top-bar 子树里的搜索/其他下拉面板文字一并刷白。修复：材质类一律挂玻璃条自身（新管线新增 `lcFindNavBox()`：遍历所有 `box-web` 匹配、取第 3 层 div 高度在 28~140px 的第一个，避开页壳/页脚）；文字规则只刷 `a`/`span` 不再刷 `div`；下拉面板（`-content-web`/`-body-web`，控制台实测新版为 `style-xx-content-web`/`-body-web`，与老管线同语义）做豁免——老管线用同块靠后的字面色规则，新管线改用 **CSS 变量继承**（`--lc-nav-ink` / `--lc-nav-fill` 定义在玻璃条上、面板容器重定义），面板子树自动回到深色且不参与优先级排序；深色模式下新管线的面板豁免不生成（那里面板是暗底白字）。**两条管线的材质颜色统一改为 CSS 变量制**（`--lc-nav-ink` / `--lc-nav-fill` 定义在玻璃条上、面板容器重定义）——老管线原先是「浅色一套 `:not(.lc-glass-dark)` 黑字 + 深色一套白字 + 面板字面 `#333` 豁免」，现已与新管线同构。面板内的强调色 tag 用 `:not([class*="GpLmHKrgQS9DGUHQapUffw=="]):not([class*="AV8Mt74pTEHQXrEBEKFaUg=="])` 从刷色规则里排除，保留站点自身强调色（前者取自用户实测的搜索下拉「相关的文章」行，后者是站内 tag 锚点；类名变更时优先查这里）
 
 - **评论区隐藏官方黑名单用户（预留开关转正）**：`official.hideInComments`（面板「官方黑名单」区的「评论区也隐藏黑名单用户」，此前标注"预留"、内容脚本从未实现）正式生效——开启后评论过滤把**官方黑名单成员并入隐藏名单**。架构：官方名单镜像存 `chrome.storage.local` 的新键 `lc_official_bl_v1`（`{names: [小写 blogName], ts}`）——popup 能调 DWR（面板读取/添加/移除成功后都写镜像），www 域页面帧的 `lcOfficialBlReady()` 拉取成功也写镜像；评论过滤模块在**任意帧只读存储**（子域博文页跨域调不通 DWR 也能用），onChanged 双键监听实时生效。id 口径与评论作者解析一致（blogName = 子域名首段，统一小写比较）。默认值改为 `true`（拉黑了就该看不到，开关作为退出口）；**老用户若曾保存过设置，存储里可能是显式 `false`，需在面板手动打开一次**。诊断桥 `cmt` 段新增 `official`（镜像成员数）与 `useOfficial`（开关是否生效）
-- **「拉黑」在博文页点了没反应（本地隐藏被官方接口绑死）**：拉黑按钮的本地隐藏写入排在 `addBlacklist` 的 `.then` 里——子域博文页（如 `lofguancha.lofter.com/post/xxx`）跨域调不通 DWR，走失败分支，于是「官方没拉黑 + 本地也没隐藏」，表现为点完拉黑帖子与评论照旧可见（2026-09-21 探针实证：屏蔽名单为空，`blocked:0`）。修复：**本地隐藏先行**（无条件写入 `filter.users` + 立即 `applyFilter()`），官方拉黑异步补，失败也不回滚本地隐藏（按钮短暂显示「已本地隐藏」并在 title 里说明原因）
+- **「拉黑」在博文页点了没反应（本地隐藏被官方接口绑死）**：拉黑按钮的本地隐藏写入排在 `addBlacklist` 的 `.then` 里——子域博文页（如 `占位子域.lofter.com/post/xxx`）跨域调不通 DWR，走失败分支，于是「官方没拉黑 + 本地也没隐藏」，表现为点完拉黑帖子与评论照旧可见（2026-09-21 探针实证：屏蔽名单为空，`blocked:0`）。修复：**本地隐藏先行**（无条件写入 `filter.users` + 立即 `applyFilter()`），官方拉黑异步补，失败也不回滚本地隐藏（按钮短暂显示「已本地隐藏」并在 title 里说明原因）
 - **探针增加作者 id 采样 / 评论过滤专用帧内桥**：`<html data-lc-probe>` 的 `cmt.sample` 字段在名单为空时也能列出前 5 个抓到的评论作者 id——用于区分「没人被屏蔽」与「选择器/id 解析坏了」；另加**任意帧**可用的 `lc-probe-cmt` 事件桥（主帧那个完整桥进不了子帧，子帧在本文件更早处 `throw` 退出），写回 `<html data-lc-probe-cmt>`（含帧 URL、是否顶层帧、`cmtDiag`）——子域博文页的评论 iframe 若是跨域，需在控制台帧选择器切到该帧再执行
-- **博文页（子域）评论 iframe 里评论过滤完全不生效**：`lofguancha.lofter.com/post/…` 的评论区是 `https://www.lofter.com/comment.do?pid=…` 这个 iframe（探针实测帧内 76 个 `.bcmtlstf`，manifest 的 matches 与 `all_frames` 都覆盖它）。该帧探针显示「本帧无桥」、样式表也不存在——该页是旧式服务端渲染页，解析过程中 `document.write()` 触发隐式 `document.open()`，会清空文档并连带抹掉已注入的 `<style>` 与挂在 `document`/`<html>` 上的监听，而 content script 每帧只执行一次，此后无人补挂。修复：评论过滤模块改为**可重入 + 自发现文档重建**——`lcCmtArm()` 记录挂载时的 `documentElement` 引用，前 20 秒每秒比对一次（引用变了或样式表被抹掉就重跑，之后自动停掉，不留常驻定时器）；重挂时先 `disconnect()` 旧观察者（它指向已废弃的旧 `<html>`）、重建样式表、把观察者挂到当前 `documentElement`；调试桥从 `documentElement` 迁到 **`window`**（`document.open()` 清不掉 window 上的监听），并在当前 `documentElement` 上再挂一份，兼容不冒泡的事件派发。诊断段新增 `style`（本帧样式表是否存在 = 「content script 到底跑没跑」）、`docSwaps`（文档被重建过几次）、`chain`（从首个正文锚点向上 5 层的 `tag.class`，换结构时不用猜容器类名）
+- **博文页（子域）评论 iframe 里评论过滤完全不生效**：`占位子域.lofter.com/post/…` 的评论区是 `https://www.lofter.com/comment.do?pid=…` 这个 iframe（探针实测帧内 76 个 `.bcmtlstf`，manifest 的 matches 与 `all_frames` 都覆盖它）。该帧探针显示「本帧无桥」、样式表也不存在——该页是旧式服务端渲染页，解析过程中 `document.write()` 触发隐式 `document.open()`，会清空文档并连带抹掉已注入的 `<style>` 与挂在 `document`/`<html>` 上的监听，而 content script 每帧只执行一次，此后无人补挂。修复：评论过滤模块改为**可重入 + 自发现文档重建**——`lcCmtArm()` 记录挂载时的 `documentElement` 引用，前 20 秒每秒比对一次（引用变了或样式表被抹掉就重跑，之后自动停掉，不留常驻定时器）；重挂时先 `disconnect()` 旧观察者（它指向已废弃的旧 `<html>`）、重建样式表、把观察者挂到当前 `documentElement`；调试桥从 `documentElement` 迁到 **`window`**（`document.open()` 清不掉 window 上的监听），并在当前 `documentElement` 上再挂一份，兼容不冒泡的事件派发。诊断段新增 `style`（本帧样式表是否存在 = 「content script 到底跑没跑」）、`docSwaps`（文档被重建过几次）、`chain`（从首个正文锚点向上 5 层的 `tag.class`，换结构时不用猜容器类名）
 - **探针升级为跨帧汇总**：`comment.do` 与帖子页不同源，父帧读不到子帧 DOM，此前必须先在 DevTools 帧选择器里切到评论帧才能看到它的状态（2026-09-21 两次跑错帧，白折腾一轮）。现在顶层帧探测时广播 `cmt-req`，各子帧用 `postMessage` 自报 `cmt-res`（隔离世界里 `ev.source` 常为 `null`，回退 `window.parent`），全部汇总进同一个 `<html data-lc-probe-cmt>`（只有自身一帧时仍是单个对象，多帧时为数组）——在顶层帧跑一次即可看到评论 iframe 里插件的真实状态，包括 `style`（该帧的 content script 到底跑没跑）
 - **旧式评论条目藏不准（只藏正文行 / 整条不藏）**：`cmtFindItem()` 原按「含 1 个正文锚点的**最小/最高**祖先」收敛，实测两处硬伤——① 评论区 iframe 里 `.bcmtlstf` 是作者名后那个「：」分隔符（样例 `<span class="bcmtlstf s-fc4">：</span>`，并非正文容器），取最小祖先只藏到 `.bcmthot` 正文行、头像与「回复/投诉」留在原地；② 含「回复 @xx：」楼层的行正文锚点 ≥2，第一个祖先就被判「已越级到评论列表」而整条放弃（2026-09-21 探针：`comment.do` 帧 `bodies:78`、`matched:["huayuflowerxuan"]` 却 `items:0`）。现改为**正文锚点 + 头像锚点双判据**向上收敛：取「含正文锚点、且头像唯一」的最高祖先 = 整行（`av > 1` 或「正文 > 1 且 头像 ≠ 1」即判定越级并停止；评论区每行 1 个头像 vs 列表几十个，正好补上正文锚点判据的死角），实测收敛到 `.bcmtbox`。另加**候选必须含正文锚点**的保护——帖子页的帖子卡片（0 正文锚点、1 头像）永不成为候选，避免误藏整张卡片。上行上限 10 层。诊断段新增 `avatars` / `unresolved` 与 `trace`（收敛失败时逐层给出 `tag.class` + 正文锚点/头像/博客链接计数，一次即可定位真实结构）；jsdom 断言通过：双判据规则 8 项（常规行、扁平行、帖子卡片不误伤、@提及不误杀、关开关还原）+ 重挂/`document.write` 重建 14 项
 

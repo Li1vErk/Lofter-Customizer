@@ -906,6 +906,17 @@
     // 表情快捷输入跟随本开关，不单列）
     $("comment-toolbar").checked = !(s.comment && s.comment.toolbar === false);
 
+    // 文章导出
+    const ex = s.export || LC_clone(LC_DEFAULTS.export);
+    $("export-enabled").checked = !!ex.enabled;
+    $("export-scope-manage").checked = !!(ex.scope && ex.scope.manage !== false);
+    $("export-scope-detail").checked = !!(ex.scope && ex.scope.detail);
+    $("export-merged").checked = !!(ex.merged);
+
+    // 编辑防丢（#12 B-lite）
+    const dr = s.draft || LC_clone(LC_DEFAULTS.draft);
+    $("draft-guard").checked = !!dr.guard;
+
     renderDecorations();
 
     // 词卡弹窗事件（只绑一次，确保 DOM 已加载）
@@ -1499,6 +1510,37 @@
     state.comment.toolbar = e.target.checked;
     save();
   });
+
+  /* ---------- 功能栏：文章导出 ---------- */
+  function ensureExport() {
+    if (!state.export) state.export = LC_clone(LC_DEFAULTS.export);
+    if (!state.export.scope) state.export.scope = { manage: true, detail: false };
+    return state.export;
+  }
+  on("export-enabled", "change", (e) => {
+    ensureExport().enabled = e.target.checked;
+    save();
+  });
+  on("export-scope-manage", "change", (e) => {
+    ensureExport().scope.manage = e.target.checked;
+    save();
+  });
+  on("export-scope-detail", "change", (e) => {
+    ensureExport().scope.detail = e.target.checked;
+    save();
+  });
+  on("export-merged", "change", (e) => {
+    ensureExport().merged = e.target.checked;
+    save();
+  });
+
+  /* ---------- 功能栏：编辑防丢（#12 B-lite） ---------- */
+  on("draft-guard", "change", (e) => {
+    if (!state.draft) state.draft = LC_clone(LC_DEFAULTS.draft);
+    state.draft.guard = e.target.checked;
+    save();
+  });
+
   on("filter-keywords", "input", (e) => {
     const f = ensureFilter();
     const seen = new Set();
@@ -1981,7 +2023,10 @@
        UI 在功能 pane 里——两个键必须登记在对应模块下，否则导入时
        会被白名单当脏数据剔除（20260926 用户导入实测丢右侧栏磨砂） */
     { id: "nav", label: "导航", keys: ["navbar", "sidebar", "searchPlaceholder", "gtotop"] },
-    { id: "func", label: "功能", keys: ["tools", "filter", "official", "comment"] },
+    { id: "func", label: "功能", keys: ["tools", "filter", "official", "comment", "draft"] },
+  /* export（文章导出）单独一段：顶层配置键，漏登记 = 导入被白名单静默剔除
+     （1.4.0 sidebar/comment 的教训） */
+  { id: "export", label: "导出", keys: ["export"] },
     /* 表情：自定义表情包存在独立存储键（不在 lc_settings_v1 里），
      * 用 raw 声明要一起带走的原始 storage 键——用户一条条攒出来的
      * 资产，换机/重装必须能带走 */

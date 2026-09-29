@@ -213,6 +213,26 @@ const LC_DEFAULTS = {
     toolbar: true,
   },
 
+  /* 文章导出（#10）：批量管理页顶栏「全选（已加载）+ 导出」+ 详情页单篇入口。
+   * 默认关——导出会逐篇抓详情页，是重操作，不能升级后自动激活。
+   * scope.manage = 批量管理页（body.p-body7）；scope.detail = 文章详情页单篇。
+   * merged = 合并为单个 .md（长篇连载用），默认逐篇。 */
+  export: {
+    enabled: false,
+    scope: { manage: true, detail: false },
+    merged: false,
+  },
+
+  /* 编辑防丢兜底（#12 B-lite）：普通文章编辑器（pc-publish.html 帧）的
+   * 正文本地快照。默认关——往用户盘上写数据的 feature 必须显式开启。
+   * 快照存 chrome.storage.local 独立键 lc_draft_snap_v1（环形 5 版、
+   * 14 天过期），只保正文：标题/标签走官方草稿兜底，断网期间新上传
+   * 的图片救不回（blob 引用刷新即失效）。恢复=浮条复制全文手动粘贴，
+   * 不自动回填（ProseMirror 自管状态，直写 DOM 有风险）。 */
+  draft: {
+    guard: false,
+  },
+
   darkMode: {
     mode: "off",
     brightness: 90,
