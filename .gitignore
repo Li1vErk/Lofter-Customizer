@@ -35,10 +35,5 @@ docs/todo-priorities.md
 docs/panel-ia.md
 docs/handoff.md
 
-# 本地调试脚本与实测报告（不入库）
-tools/test-dwr.js
-tools/debug-*
-
-# tools 产物：截图 / 实测输出 / 中间页（脚本入库、产物不入库）
-tools/*.png
-tools/*.out.txt
+# tools：本地调试脚本与实测产物，整目录只保留本地（不入库、不推送）
+tools/
