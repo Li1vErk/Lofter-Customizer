@@ -8299,9 +8299,14 @@ body.body .content-block:not(:has(.words-area)) {
 
         /* ===== 排除不需要卡片的模块 =====
            台头(.tag-header-w)/最新最热栏(.m-tabbar)已收编进 ensureBubbleCards
-           的磨砂+材质管线（2026-09-25），不再在此排除 */
+           的磨砂+材质管线（2026-09-25），不再在此排除。
+           2026-09-29 真机实锤（probe-mat3 face.display="none"）：他人喜欢页
+           台头宿主（#favpageheader > .mlistcnt，内含 .isaym3）也被下面第二
+           条命中、整条 ::before 卡面被 display:none 藏掉——isaym3 收编进
+           气泡管线（favblog 台头 scope）后必须豁免 #favpageheader，否则
+           卡面规则写得再对也画不出来（computed 有 bg 但 display 无效） */
         #main > .m-mlist:not(:has(> .mlistimg)):not(:has(> .mlistcnt .isay)):not(:has(> .mlistcnt .isayt)):not(:has(> .mlistcnt .isaym)) > .mlistcnt::before,
-        #main > .m-mlist:has(> .mlistcnt .isaym3) > .mlistcnt::before,
+        #main > .m-mlist:not(#favpageheader):has(> .mlistcnt .isaym3) > .mlistcnt::before,
         #main > .m-mlist:has(> .mlistcnt .publishlayer) > .mlistcnt::before {
           display: none !important;
         }
@@ -14099,16 +14104,76 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
     /* 首页块：sideHy 开即输出。① 的「反色让位」是首页反色管线的对应面，
        与玻璃同开同关 */
     if (sideHy) {
+      /* 玻璃卡锚选择器：首页 slide-bar 玻璃卡 + 他人喜欢页喜欢列表卡
+         （2026-09-29 扩）——同一开关、同一套膜/深膜/白字规则。
+         ⚠️ favblog 形态必须**无条件输出**、用纯 CSS `:not(:has(#slide-bar))`
+         判页（2026-09-29 第二次真机实锤）：此前用 buildCSS 执行时刻的
+         querySelector 判页，而 buildCSS 有版本缓存（invalidateCSS 只在
+         配置变更时调用），#rside 由 React 晚渲染时首build判 false 后
+         缓存终身 → 让位/膜 CSS 整块缺失，收集链照常挂类 → 玻璃膜在、
+         暗色反色也在 → 深膜白字被反色反成「白底黑字」。纯 CSS 判页
+         随 DOM 实时生效，无时序敏感；:has(#likesidelist) 本身就排除了
+         首页/tag 页（它们没有该节点），:not(:has(#slide-bar)) 再排除
+         有 slide-bar 的页面（推荐页等），首页语义与扩前完全一致 */
+      /* 选择器对拼接（2026-09-29 第四次真机实锤后的定案形态）：
+         ⚠️ 绝不能把多选择器存成「A, B」字符串再写 `${sel}.xxx` ——
+         后缀只落在最后一个选择器（B/favblog）上，A（首页）裸奔：
+         ③ 深膜失去 .lc-glass-dark 条件（一直暗材质）、④⑥⑥b 的
+         后代部分在首页全灭（暗字/白条头/白分割线）、⑥ 的裸 A 还
+         命中卡片本身把膜打成 transparent。改为 parts 数组 +
+         withSuffix 逐个拼后缀 */
+      const sideCardParts = [
+        '#rside #slide-bar [class*="-box-web"]',
+        "#rside:not(:has(#slide-bar)) .g-box .m-menu:has(#likesidelist)",
+        /* tag 页参与用户卡（2026-09-30 双探针实证：站点改版后挂在
+           #rside > #tageditor > .g-box > .m-menu）。无 #slide-bar 守卫
+           同样适用（tag 页本就没有 slide-bar）；锚 .participate-user-title-w
+           与其他形态互不命中 */
+        "#rside:not(:has(#slide-bar)) .g-box .m-menu:has(.participate-user-title-w)",
+      ];
+      const sideAnyParts = [
+        "#rside #slide-bar .lc-side-glass",
+        "#rside:not(:has(#slide-bar)) .g-box .m-menu.lc-side-glass",
+      ];
+      const lcSideJoin = (parts, suffix) =>
+        parts.map((p) => p + suffix).join(",\n        ");
+      /* ②③ 膜锚（带 .lc-side-glass 的卡自身） */
+      const sideCardSel = lcSideJoin(sideCardParts, ".lc-side-glass");
+      const sideCardDark = lcSideJoin(
+        sideCardParts,
+        ".lc-side-glass.lc-glass-dark",
+      );
+      /* ④-⑧ 内容锚（卡自身/后代；suf 为空串时即卡自身） */
+      const sideCardAny = lcSideJoin(sideAnyParts, "");
+      const sideCardEl = (el) => lcSideJoin(sideAnyParts, " " + el);
+      const sideCardDarkEl = (el) =>
+        lcSideJoin(sideAnyParts, ".lc-glass-dark" + (el ? " " + el : ""));
+      /* 让位选择器表用 join 组装（防悬挂逗号整条规则非法）。
+         favblog 形态同样带 :not(:has(#slide-bar)) 纯 CSS 判页 */
+      const yieldSel = [
+        '#rside:has(#slide-bar [class*="-box-web"]) > *',
+        '#rside:has(#slide-bar [class*="-box-web"]) img',
+        '#rside:has(#slide-bar [class*="-box-web"]) .lc-emoji-wrap',
+        "#rside:not(:has(#slide-bar)):has(.g-box .m-menu #likesidelist) > *",
+        "#rside:not(:has(#slide-bar)):has(.g-box .m-menu #likesidelist) img",
+        "#rside:not(:has(#slide-bar)):has(.g-box .m-menu #likesidelist) .lc-emoji-wrap",
+        /* tag 页：反相挂在 #rside > #tageditor 上（整列容器），但整列里
+           只有参与用户卡一块可见内容（2026-09-30 探针：其余 5 个子级全 0×0），
+           故只让 #tageditor 一层——兄弟容器（#tagManager 等 React 晚挂）
+           保留各自反相，将来渲染也不受影响。比 favblog/首页的整列让位更精准。
+           ⚠️ 判据用单层 :has(.participate-user-title-w)（不要嵌套
+           :has(#tageditor ... :has(...))——嵌套 :has 在 jsdom/nwsapi 下
+           匹配不到，回归测试无法自证） */
+        "#rside:has(.participate-user-title-w) #tageditor",
+      ].join(",\n        ");
       out.push(`
         /* ① 反色让位：滤镜祖先会让 backdrop-filter 采不到页面背景
            （blur 同样受 backdrop root 限制，故与折射模式一并让位）。
-           2026-09-29 收紧：只让给真的挂玻璃的页面（#rside 下存在
-           slide-bar 玻璃卡）。原先无条件全局让位，玻璃不覆盖的侧栏
-           （他人喜欢页 .m-menu 等）反色没了、玻璃也没来 → 站点原生
-           白板直接暴露在暗色里（真机实锤） */
-        #rside:has(#slide-bar [class*="-box-web"]) > *,
-        #rside:has(#slide-bar [class*="-box-web"]) img,
-        #rside:has(#slide-bar [class*="-box-web"]) .lc-emoji-wrap {
+           只让给真的挂玻璃的页面：首页（slide-bar 玻璃卡）与
+           他人喜欢页（#likesidelist 卡，仅无 #slide-bar 的页面，
+           2026-09-29 扩）。原先无条件全局让位时，玻璃不覆盖的侧栏
+           反色没了、玻璃也没来 → 站点原生白板直接暴露在暗色里（真机实锤） */
+        ${yieldSel} {
           filter: none !important;
         }
 
@@ -14117,7 +14182,7 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
            纯磨砂档直接 blur(18px) saturate，用一层 inset 高光冒充玻璃边缘。
            box-shadow 单列一层：变量缺失时用透明 inset 占位，
            保证整条 box-shadow 仍是合法值（"X, none" 会整条失效） */
-        #rside #slide-bar [class*="-box-web"].lc-side-glass {
+        ${sideCardSel} {
           background: rgba(255, 255, 255, ${sideRefract ? "0.35" : "0.6"}) !important;
           background-color: rgba(255, 255, 255, ${sideRefract ? "0.35" : "0.6"}) !important;
           background-image: none !important;
@@ -14143,8 +14208,40 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
           } !important;
         }
 
-        /* ③ 深材质（深色背景 / 暗色模式）：深膜 + 白字 */
-        #rside #slide-bar [class*="-box-web"].lc-side-glass.lc-glass-dark {
+        /* ②b favblog 卡内层清底：站点把白底烙在 .menum/ul/li 上
+           （menu24.png 雪碧图各一片，2026-09-29 探针实证）。暗材质由
+           ⑥ 的 .lc-glass-dark * 通配覆盖；浅材质此前无对应规则 →
+           浅色模式隔着半透膜露出一层实底白卡（真机「磨砂没生效/
+           下面叠了一层」）。挂在玻璃块内随开关走：关玻璃时浅色
+           #fff 兜底（8865）原样生效。首页 slide-bar 卡内无 .menum，
+           选择器空转无害 */
+        ${sideCardEl(".menum")},
+        ${sideCardEl(".menum ul")},
+        ${sideCardEl(".menum ul li")} {
+          background: transparent !important;
+          background-image: none !important;
+        }
+
+        /* ②c tag 页参与用户卡专属收尾（2026-09-30 浅/暗双探针实证）。
+           玻璃膜挂在 .m-menu 上（与 favblog 同构），但两处 tag 页独有：
+           ① 父级 .g-box 在暗色管线里也被写了预反色底（16171 段，暗色实测
+              rgb(225,225,219)）——反色让位后原样显示成米色包边，膜盖不住
+              父层，故在玻璃路径下清掉（浅色下 .g-box 本就透明，空转无害）；
+           ② 卡内头像靠 #rside img / 16189 的 invert 补偿抵消外层反相，
+              让位后补偿反转成负片，须归零（浅色本就无滤镜，空转无害）。
+           两条都用 html + 双 id 前缀压过暗色管线原规则（1 id） */
+        html #rside #tageditor .g-box:has(.participate-user-title-w) {
+          background: transparent !important;
+          background-image: none !important;
+        }
+        html #rside #tageditor .g-box:has(.participate-user-title-w) img {
+          filter: none !important;
+        }
+
+        /* ③ 深材质（深色背景 / 暗色模式）：深膜 + 白字。
+           ⚠️ 首页部分也必须带 .lc-glass-dark（曾因拼接缺陷裸奔成
+           「浅色模式也一直深膜」） */
+        ${sideCardDark} {
           background: rgba(22, 22, 26, 0.38) !important;
           background-color: rgba(22, 22, 26, 0.38) !important;
           --lc-side-ink: rgba(255, 255, 255, 0.9);
@@ -14154,44 +14251,48 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
 
         /* ④ 文字/图标跟随材质：走变量（按元素解析、沿继承传递），
            面板无需重定义；比逐条 !important 混战好维护 */
-        #rside #slide-bar .lc-side-glass,
-        #rside #slide-bar .lc-side-glass a,
-        #rside #slide-bar .lc-side-glass span,
-        #rside #slide-bar .lc-side-glass p,
-        #rside #slide-bar .lc-side-glass div,
-        #rside #slide-bar .lc-side-glass li,
-        #rside #slide-bar .lc-side-glass i,
-        #rside #slide-bar .lc-side-glass em,
-        #rside #slide-bar .lc-side-glass strong,
-        #rside #slide-bar .lc-side-glass b,
-        #rside #slide-bar .lc-side-glass time,
-        #rside #slide-bar .lc-side-glass label,
-        #rside #slide-bar .lc-side-glass h1,
-        #rside #slide-bar .lc-side-glass h2,
-        #rside #slide-bar .lc-side-glass h3,
-        #rside #slide-bar .lc-side-glass h4 {
+        ${sideCardAny},
+        ${[
+          "a",
+          "span",
+          "p",
+          "div",
+          "li",
+          "i",
+          "em",
+          "strong",
+          "b",
+          "time",
+          "label",
+          "h1",
+          "h2",
+          "h3",
+          "h4",
+        ]
+          .map(sideCardEl)
+          .join(",\n        ")} {
           color: var(--lc-side-ink, rgba(0, 0, 0, 0.8)) !important;
         }
-        #rside #slide-bar .lc-side-glass svg path:not([fill="none"]) {
+        ${sideCardEl('svg path:not([fill="none"])')} {
           fill: var(--lc-side-fill, rgba(0, 0, 0, 0.62)) !important;
         }
-        #rside #slide-bar .lc-side-glass svg path[stroke]:not([stroke="none"]) {
+        ${sideCardEl('svg path[stroke]:not([stroke="none"])')} {
           stroke: var(--lc-side-fill, rgba(0, 0, 0, 0.62)) !important;
         }
 
         /* ⑤ 强调色还原：原反色方案写的是预反色值 + brightness 补偿，
            反色撤掉后要改回站点原色（否则显示为"脏色"） */
-        #rside #slide-bar .lc-side-glass p[class*="count-web"] {
+        ${sideCardEl('p[class*="count-web"]')} {
           color: #8EB902 !important;
           filter: none !important;
         }
-        #rside #slide-bar .lc-side-glass span[class*="listItemHot-web"] {
+        ${sideCardEl('span[class*="listItemHot-web"]')} {
           color: #FF6C93 !important;
           filter: none !important;
         }
         ${
           s.theme.accent
-            ? `#rside #slide-bar .lc-side-glass a:hover {
+            ? `${sideCardEl("a:hover")} {
           color: ${s.theme.accent} !important;
         }`
             : ""
@@ -14200,43 +14301,27 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         /* ⑥ 暗材质下站点内层底色一概透明（创作者中心头部、菜单悬停白底
            都是 hash 类，且标签类型不可枚举——div 清单漏过一次，改用 *）。
            全部露出深色玻璃膜本身，即「和暗色模式一样的暗色底」 */
-        #rside #slide-bar .lc-side-glass.lc-glass-dark * {
+        ${sideCardDarkEl("*")} {
           background-color: transparent !important;
         }
         /* 结构容器连 background-image 一并清（渐变/图片白底）；
            i/span 等内联元素不动 bg-image，防误杀雪碧图图标 */
-        #rside #slide-bar .lc-side-glass.lc-glass-dark div,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark li,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark a,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark ul,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark ol,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark dl,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark header,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark section,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark nav,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark aside,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark article,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark footer,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark main {
+        ${["div", "li", "a", "ul", "ol", "dl", "header", "section", "nav", "aside", "article", "footer", "main"]
+          .map(sideCardDarkEl)
+          .join(",\n        ")} {
           background-image: none !important;
         }
         /* 伪元素铺底（::before 白底头部/行） */
-        #rside #slide-bar .lc-side-glass.lc-glass-dark div::before,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark li::before,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark a::before,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark header::before,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark p::before,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark span::before,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark div::after,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark li::after,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark a::after,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark header::after {
+        ${["div", "li", "a", "header", "p", "span"]
+          .map((t) => sideCardDarkEl(t + "::before"))
+          .concat(["div", "li", "a", "header"].map((t) => sideCardDarkEl(t + "::after")))
+          .join(",\n        ")} {
           background-color: transparent !important;
         }
         /* 行悬停高亮自给：只给最内层被悬停元素上白膜（:has 排除容器层） */
-        #rside #slide-bar .lc-side-glass.lc-glass-dark div:hover:not(:has(:hover)),
-        #rside #slide-bar .lc-side-glass.lc-glass-dark li:hover:not(:has(:hover)),
-        #rside #slide-bar .lc-side-glass.lc-glass-dark a:hover:not(:has(:hover)) {
+        ${["div", "li", "a"]
+          .map((t) => sideCardDarkEl(t + ":hover:not(:has(:hover))"))
+          .join(",\n        ")} {
           background-color: rgba(255, 255, 255, 0.09) !important;
         }
         /* ⑥b 分割线暗化：站点边框是配浅色底设计的（创作者中心菜单分隔、
@@ -14244,8 +14329,8 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
            与 inset 边缘光同族，保留分隔功能不破玻璃质感。
            只动 border-color（不改宽度/样式，零布局风险）；浅材质不动，
            站点浅灰线本来就配浅底 */
-        #rside #slide-bar .lc-side-glass.lc-glass-dark,
-        #rside #slide-bar .lc-side-glass.lc-glass-dark * {
+        ${sideCardDarkEl("")},
+        ${sideCardDarkEl("*")} {
           border-color: rgba(255, 255, 255, 0.1) !important;
         }
 
@@ -14254,9 +14339,9 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
            只提升「真正会做放大动画」的行元素——**不能图省事写 div**：
            卡内几十个 div（含 hyalite 自插节点）会一次性常驻几十个合成层，
            GPU 内存与每帧合成开销上升，全页其他动效一起变慢 */
-        #rside #slide-bar .lc-side-glass li,
-        #rside #slide-bar .lc-side-glass a,
-        #rside #slide-bar .lc-side-glass [class*="item"] {
+        ${["li", "a", '[class*="item"]']
+          .map(sideCardEl)
+          .join(",\n        ")} {
           will-change: transform;
         }
 
@@ -14265,11 +14350,9 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
            光栅化下整卡重绘。深材质下底色被钉成透明（两端同值）无绘制
            所以不慢；浅材质保留站点悬停白底就会慢。把内层元素过渡限制
            在 transform/opacity（走合成层），颜色/阴影瞬时切换不动画 */
-        #rside #slide-bar .lc-side-glass li,
-        #rside #slide-bar .lc-side-glass a,
-        #rside #slide-bar .lc-side-glass div,
-        #rside #slide-bar .lc-side-glass span,
-        #rside #slide-bar .lc-side-glass [class*="item"] {
+        ${["li", "a", "div", "span", '[class*="item"]']
+          .map(sideCardEl)
+          .join(",\n        ")} {
           transition-property: transform, opacity !important;
         }
       `);
@@ -15276,6 +15359,36 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         stack: true,
       },
     ];
+    /* 他人喜欢页台头（「xx的喜欢」，#favpageheader > .mlistcnt > .isay >
+       .isaym3）：由「卡片材质」总开关控制——开 = 进本管线自绘画卡面
+       （磨砂/半透明随材质，暗色与首页卡同为预反色底），关 = 保持
+       buildCSS 的实底兜底（浅色 #fff / 暗色预反色），两态互斥不叠加。
+       结构与首页博文卡同构（.mlistcnt > .isay 系切片）；单块内容，
+       不能用 stack（stack 会把整卡 ::before 藏掉改画 .m-itag/.m-tabbar
+       子面，台头里没有这两块 → 等于没卡面）；贴边 flush（left:0，
+       不依赖 --lc-bubble-left 测量）；无尖角。
+       isolate 必须带（2026-09-29 真机实锤）：favblog 页宿主没有暗色
+       滤镜兜底的堆叠上下文（#main 整体 filter 的语境里，::before 的
+       z-index:-1 落到 #main 语境底、被后续绘制的内容层盖掉），浅暗两
+       模式台头卡面全部不可见 → 「台头消失」。与 tag 页台头 20260925s
+       是同一类病，只是那页用 stack 连子面一起改了。
+       特异性必须压过 buildCSS 的通用白卡规则（2026-09-29 浅色实锤）：
+       `#main > .m-mlist > .mlistcnt::before` 字面 #fff 是 1 id 2 class，
+       scope 原选择器 `#favpageheader > .mlistcnt` 只有 1 id 1 class →
+       浅色卡面被压回不透明白（blur 还在 → 「磨砂没生效」）；暗色没暴露
+       是因为暗色补丁（html 前缀）恰好把值修正成同样的半透明预反色。
+       宿主自带 .m-mlist 类（真机 classList 实锤），加 html 前缀 +
+       .m-mlist 类 → 1 id 2 class 1 type，严格必胜且不受注入顺序影响 */
+    if (settings.card && settings.card.material) {
+      scopes.push({
+        name: "他人喜欢页台头（xx的喜欢；磨砂+材质；无尖角无悬停，卡面贴边）",
+        sel: "html #favpageheader.m-mlist > .mlistcnt",
+        radius: userRadius,
+        noArrow: true,
+        flush: true,
+        isolate: true,
+      });
+    }
     /* 首页发布栏（publishlayer）专属段：站点雪碧图气泡在暗色下会把头像
        包进去（浅色白底上结构不可见，控制台枚举实锤 isayt/isaym/isayb
        全宽 585px 是唯一残存画底者）。与博文卡同思路改为自绘：
@@ -15339,6 +15452,71 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         clip-path: polygon(0 50%, 100% 0, 100% 100%) !important;
         z-index: -1 !important;
         pointer-events: none !important;
+      }
+      /* ===== 收起态发布栏（#publishBarArea 实底白卡 → 自绘卡面） =====
+          白底唯一画在 #publishBarArea（2026-09-30 探针实锤：computed
+          rgb(255,255,255) + radius 15px，栏内五个 .publishlink 是整张
+          活动 PNG 的 <a>、无子元素，paints.self 再无他人）。在 #main
+          反相区内，暗色被反相成纯黑 → 与展开态同思路：清站点实底，
+          ::before 自绘画卡面（暗色 = 预反色深底不再是纯黑，浅色 =
+          白/磨砂随卡片材质）。isolate 锁卡面：宿主无滤镜兜底的堆叠
+          上下文，z-index:-1 会逃逸被内容层盖掉（favblog 台头同病） */
+      html #publishBarArea {
+        position: relative !important;
+        isolation: isolate !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        border: none !important;
+      }
+      html #publishBarArea::before {
+        content: "" !important;
+        display: block !important;
+        position: absolute !important;
+        inset: 0 !important;
+        background: ${color} !important;
+        border-radius: ${userRadius} !important;
+        box-shadow: ${lcFeedFaceShadow()} !important;
+        ${frostCSS}
+        z-index: -1 !important;
+        pointer-events: none !important;
+      }
+      /* ===== 键位白砖消除：活动 PNG 自带纯白实底 =====
+          2026-09-30 真机两轮实锤：①磨砂卡面上五键各一块白砖（图底
+          烤死纯白非透明）；②mix-blend-mode:multiply 无效——隔离组内
+          backdrop 是半透明白磨砂面，白×白=不透明白，blend 数学上
+          走不通。改用 SVG 滤镜按亮度扣白（alpha = 1 − 亮度，
+          sRGB 插值）：黑图标/文字保留、白底变透明，不依赖 backdrop、
+          隔离组内外都成立；暗色经祖先反相图标自然变白。滤镜宿主
+          SVG 由 fixDraftBubble 注入（不能 display:none，部分浏览器
+          拒绝渲染引用滤镜），0×0 绝对定位。头像照片非白底、不在
+          .publishlink 圈内，不受影响 */
+      html #publishPostBar .publishlink {
+        filter: url(#lc-knockout-white) !important;
+      }
+      /* ===== 深膜态（浅色模式 + 背景图偏暗）：随卡面自适应 =====
+          lcUpdateFaceMaterial 对 #publishBarArea 采样，亮度低于阈值贴
+          lc-pub-dark（与信息流卡 .lc-face-dark 同源同阈值，frost 保留）。
+          图标是扣白后的黑色（浅色无祖先反相），深膜上必须反相成白 */
+      html #publishBarArea.lc-pub-dark::before {
+        background: rgba(22, 22, 26, 0.55) !important;
+        background-color: rgba(22, 22, 26, 0.55) !important;
+      }
+      html #publishBarArea.lc-pub-dark .publishlink {
+        filter: url(#lc-knockout-white) invert(1) !important;
+      }
+      /* ===== 浅色悬停主题色染色（材质开即接管，不依赖 faceAdapt） =====
+          站点 :hover 换绿色活动 PNG，反相观感差，且绿底经扣白后是半透明
+          混色 → 染出来的主题色发灰发暗（2026-09-30 作者反馈「比主题色
+          暗一点」）。与暗色同法：钉回 base 图（字形与静息一致）+ accent-l
+          滤镜（扣白 + feFlood 灌原始主题色）→ 字形内实色即精确主题色。
+          材质关 = 原版观感，绿色悬停保留 */
+      ${
+        settings.card && settings.card.material
+          ? `html #publishPostBar[data-lc-pub-imgs] .publishlink:hover {
+        background-image: var(--lc-pub-img) !important;
+        filter: url(#lc-knockout-accent-l) !important;
+      }`
+          : ""
       }
       /* ===== 加入合集下拉选中勾：清掉雪碧图，自绘主题色对勾 =====
           （浅暗两用；下拉面板在 #main 反色区内，暗色写预反色） */
@@ -15408,6 +15586,22 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         background: rgba(255, 255, 255, 0.62) !important;
         background-image: none !important;
       }
+      /* ===== 暗色：收起态按键悬停钉回原图 + 主题色染色 =====
+          站点 :hover 换绿色活动 PNG（.m-nav2 .n21:hover 等五条
+          background-image 规则，DevTools 实锤），反相后成怪异粉色。
+          fixDraftBubble 已把每键 base 图 URL 写进 --lc-pub-img 并在
+          栏上打 data-lc-pub-imgs 标记 → :hover 钉回原图；真机实锤
+          钉回后与静息态同图、「悬停没颜色」→ 再叠 lc-knockout-accent
+          滤镜（扣白 + feFlood 灌预反色主题色）把图标染成主题色；
+          悬停位移反馈由既有下沉动画承担（lc-style）。钉图规则带标记
+          才输出：var 未设时悬停会变空白键。
+          特异性 html#…[data] .publishlink:hover = (1,3,1) 压站点
+          .m-nav2 .n21:hover 的 (0,3,0) 与常驻扣白规则的 (1,1,2)。
+          浅色保留站点绿色悬停不动 */
+      html #publishPostBar[data-lc-pub-imgs] .publishlink:hover {
+        background-image: var(--lc-pub-img) !important;
+        filter: url(#lc-knockout-accent) !important;
+      }
       ` : ""}
     `;
     const css =
@@ -15421,17 +15615,35 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
       }
     `
         : "") +
+      (settings.card && settings.card.material
+        ? `
+      /* ===== favblog 台头切片透明化补丁 =====
+         buildCSS 的「推荐卡片」规则（浅色 .isaym3:has(.m-ilike) 写 #fff
+         实底 / 暗色 html #main .isaym3:has(.m-ilike) 写预反色）同时服务
+         推荐页推荐卡，不能按开关删；这里用更高特异性
+         （#favpageheader + .mlistcnt + :has = 1 id 3 class 1 type，
+         压过暗色补丁的 1 id 2 class 1 type 与浅色的 0 id 2 class）
+         把台头切片钉成透明，卡面交给上方 ${"::before"} 自绘 */
+      html #favpageheader > .mlistcnt .isaym3:has(.m-ilike) {
+        background: transparent !important;
+        background-image: none !important;
+        box-shadow: none !important;
+      }`
+        : "") +
       scopes
         .map(
-        ({ name, sel, list, radius, hover, noArrow, flush, stack }) => `
+        ({ name, sel, list, radius, hover, noArrow, flush, stack, isolate }) => `
       /* ===== ${name} ===== */
       ${sel} {
         position: relative !important;
-        /* stack：宿主必须自建堆叠上下文，::before 的 z-index:-1 才会被
+        /* stack/isolate：宿主必须自建堆叠上下文，::before 的 z-index:-1 才会被
            锁在卡内（垫到内容底下）。博文卡靠暗色滤镜的 filter 建立
            上下文，tag 页台头/tab 栏是 float 静态流，缺这条时 -1 会
-           穿透到更外层，磨砂跑到容器卡背面（20260925s 用户截图实锤） */
-        ${stack ? "isolation: isolate !important;" : ""}
+           穿透到更外层，磨砂跑到容器卡背面（20260925s 用户截图实锤）。
+           isolate 与 stack 的区别：只建上下文锁卡面，不做子面改造——
+           供单块内容台头用（2026-09-29 favblog 台头：宿主无 filter 无
+           isolation，-1 逃逸后卡面被页面层盖掉，浅暗两模式台头「消失」） */
+        ${stack || isolate ? "isolation: isolate !important;" : ""}
         background: transparent !important;
         box-shadow: none !important;
         border: none !important;
@@ -15676,6 +15888,10 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
        「再开启没反应」。gate 自会处理关闭/暗色分支的清理；force 绕过
        400ms 节流（本函数只在设置变更/首次注入时跑一次，不是热路径） */
     lcSafe(() => lcUpdateFaceMaterial(true));
+    /* 首跑不依赖 observer：fixDraftBubble 原本只挂在 MutationObserver
+       回调与 resize 上，静态首屏（如收起态发布栏钉图、切片量测）要等
+       第一次 #main 变动才生效。函数幂等（dataset 标记），直跑零风险 */
+    lcSafe(fixDraftBubble);
   }
 
   /* 草稿页/审核中心气泡 JS 侧处理（浅暗通用）：
@@ -15765,6 +15981,134 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         }
         cnt.style.setProperty("--lc-pub-left", left.toFixed(1) + "px");
       });
+
+    /* 键位白砖消除的滤镜宿主：活动 PNG 白底按亮度扣透明
+       （alpha = 1 − 亮度，sRGB 插值；推导与取舍见 pubCss 段注释）。
+       幂等注入；SVG 不能 display:none（部分浏览器拒绝渲染被引用的
+       滤镜），0×0 绝对定位零占位。
+       第二个滤镜 lc-knockout-accent 供暗色悬停染色：扣白后 feFlood
+       灌预反色主题色（computeDarkAccent）+ feComposite in 按扣白
+       alpha 合成 → 悬停图标变主题色。
+       第三个 lc-knockout-accent-l 供浅色悬停染色，灌原始主题色
+       （浅色无祖先反相）。
+       主题色/亮度可变 → data-lc-accent / data-lc-accent-l 记录当前
+       值，变更时重建 */
+    const NS_SVG = "http://www.w3.org/2000/svg";
+    const KNOCKOUT_MATRIX =
+      "1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  -0.2126 -0.7152 -0.0722 1 0";
+    const pubAccentRaw = (settings.theme && settings.theme.accent) || "#667eea";
+    /* 暗色祖先滤镜是 invert+hue-rotate+brightness(b)（buildCSS 的 #main
+       反色规则，b = 暗色亮度设置，默认 90%）。computeDarkAccent 只逆了
+       invert + hue-rotate：T(x) = 1 − HR(x) 与自身互逆，但祖先还会整体
+       乘 b → 直接灌 T(accent) 显示出来是 0.9×accent（真机 2026-09-30
+       作者反馈「悬停色比主题色暗一点」）。把目标色先除以 b 再走 T：
+       b·T(T(accent/b)) = accent，显示即精确主题色（超出色域的上限夹取，
+       仅极饱和蓝紫略有 1~2% 出入） */
+    const lcDarkB = Math.min(
+      1,
+      Math.max(
+        0.3,
+        ((settings.darkMode && settings.darkMode.brightness) || 90) / 100,
+      ),
+    );
+    const lcBoostHex = (hex) => {
+      if (!/^#[0-9a-fA-F]{6}$/.test(hex) || lcDarkB >= 0.999) return hex;
+      const cl = (v) =>
+        Math.max(0, Math.min(255, Math.round(v / lcDarkB)))
+          .toString(16)
+          .padStart(2, "0");
+      return (
+        "#" +
+        cl(parseInt(hex.slice(1, 3), 16)) +
+        cl(parseInt(hex.slice(3, 5), 16)) +
+        cl(parseInt(hex.slice(5, 7), 16))
+      );
+    };
+    const pubAccentHover = computeDarkAccent(lcBoostHex(pubAccentRaw));
+    const pubAccentLight = pubAccentRaw;
+    /* ⚠️ 宿主 id 必须与滤镜 id 不同：getElementById 找宿主时若用滤镜 id，
+       第二轮 fixDraftBubble（observer 高频触发）会找到滤镜元素本身 →
+       清空它的 feColorMatrix 并往滤镜里嵌套滤镜，常驻扣白变空壳
+       （真机 2026-09-30 实锤：暗色悬停 accent 正常、其余全回白砖） */
+    let koSvg = document.getElementById("lc-knockout-host");
+    if (!koSvg) {
+      koSvg = document.createElementNS(NS_SVG, "svg");
+      koSvg.setAttribute("id", "lc-knockout-host");
+      koSvg.setAttribute("width", "0");
+      koSvg.setAttribute("height", "0");
+      koSvg.style.position = "absolute";
+      (document.body || document.documentElement).appendChild(koSvg);
+    }
+    if (
+      koSvg.dataset.lcAccent !== pubAccentHover ||
+      koSvg.dataset.lcAccentL !== pubAccentLight
+    ) {
+      koSvg.dataset.lcAccent = pubAccentHover;
+      koSvg.dataset.lcAccentL = pubAccentLight;
+      /* 逐节点构建（createElementNS）：innerHTML 写 SVG 在浏览器没问题，
+         但 jsdom 的 HTML 解析器会把 <filter> 包装层吃掉，回归测不了 */
+      while (koSvg.firstChild) koSvg.removeChild(koSvg.firstChild);
+      const mkFilter = (id, flood) => {
+        const f = document.createElementNS(NS_SVG, "filter");
+        f.setAttribute("id", id);
+        f.setAttribute("color-interpolation-filters", "sRGB");
+        const cm = document.createElementNS(NS_SVG, "feColorMatrix");
+        cm.setAttribute("type", "matrix");
+        cm.setAttribute("values", KNOCKOUT_MATRIX);
+        f.appendChild(cm);
+        if (flood) {
+          cm.setAttribute("result", "ko");
+          const fl = document.createElementNS(NS_SVG, "feFlood");
+          fl.setAttribute("flood-color", flood);
+          fl.setAttribute("result", "fl");
+          const comp = document.createElementNS(NS_SVG, "feComposite");
+          comp.setAttribute("in", "fl");
+          comp.setAttribute("in2", "ko");
+          comp.setAttribute("operator", "in");
+          f.appendChild(fl);
+          f.appendChild(comp);
+          /* 字形 alpha 增益：活动图最暗像素只有 #585E62（luma 0.36，
+             2026-09-30 下载原件实测：92.1% 纯白 + 最暗 0.36），扣白后
+             alpha 上限 = 1−0.36 = 0.64 → 灌进去的主题色最多 64% 不透明，
+             观感发灰发闷（叠深色磨砂上即「比主题色暗一点」）。slope 1.6
+             把 0.64 提到 1.0，抗锯齿边缘按比例增强，白底 alpha 0 仍是 0。
+             RGB 不动——只提不透明度，不改色相 */
+          const tr = document.createElementNS(NS_SVG, "feComponentTransfer");
+          const fa = document.createElementNS(NS_SVG, "feFuncA");
+          fa.setAttribute("type", "linear");
+          fa.setAttribute("slope", "1.6");
+          fa.setAttribute("intercept", "0");
+          tr.appendChild(fa);
+          f.appendChild(tr);
+        }
+        koSvg.appendChild(f);
+      };
+      mkFilter("lc-knockout-white", null);
+      mkFilter("lc-knockout-accent", pubAccentHover);
+      mkFilter("lc-knockout-accent-l", pubAccentLight);
+    }
+
+    /* 收起态发布栏：把每个按键的 base 背景图 URL 写进 --lc-pub-img，
+       供暗色 :hover 钉回原图（站点 hover 换绿色活动 PNG，反相后观感
+       差；URL 带活动时间戳会轮换，不能写死在 CSS——2026-09-30 探针
+       实锤 Frame%20…-1.png）。全部取到后在栏上打 data-lc-pub-imgs
+       标记，CSS 侧据此才输出钉图规则（防 var 未设时悬停变空白键）。
+       悬停中的键 computed background-image 会读到悬停图 → 跳过本轮
+       （observer 会带下一轮，标记未打不影响其它键）。发布栏在 #main
+       内，observer 覆盖得到；标记幂等，重复跑零成本 */
+    document.querySelectorAll("#publishPostBar").forEach((bar) => {
+      if (bar.dataset.lcPubImgs) return;
+      const links = bar.querySelectorAll(".publishlink");
+      if (!links.length) return;
+      let ok = true;
+      links.forEach((a) => {
+        if (a.matches(":hover")) { ok = false; return; }
+        const img = getComputedStyle(a).backgroundImage;
+        if (!img || img === "none") { ok = false; return; }
+        a.style.setProperty("--lc-pub-img", img);
+      });
+      if (ok) bar.dataset.lcPubImgs = "1";
+    });
 
     /* 自动发布页大卡（m-zdfb）与空状态卡（m-end）：量切片左偏移写入
        --lc-zdfb-left，卡片矩形左缘与下方队列卡的气泡对齐
@@ -16089,6 +16433,18 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       }
       html #tageditor .g-box:has(.participate-user-title-w) {
         filter: invert(100%) hue-rotate(180deg) brightness(${(settings.darkMode.brightness || 90) / 100}) !important;
+      }
+      /* 2026-09-29 真机实锤（probe-mat3）：站点改版后 #tageditor 挂进了
+         #rside（#rside > #tageditor > .g-box）——上方 2026-09-23 方案预设
+         「卡不在任何反色区」，而现在 #rside > * 的整栏反相已覆盖
+         #tageditor，再叠 .g-box 本地反相 = 双重反相：预反色底显回原色
+         （白底）、头像净反相一次（负片感）。卡在 #rside 内时撤 .g-box
+         本地反相只留外层一层：预反色底经一层反相终显 #1F1F19 与其他卡
+         一致；img 单次补偿（上条规则，与 #rside img 补偿同值）+ 外层
+         反相净零，头像正常。豁免前置的旧布局（#tageditor 不在 #rside）
+         仍由上方本地反相完整覆盖，两版布局兼容 */
+      html #rside #tageditor .g-box:has(.participate-user-title-w) {
+        filter: none !important;
       }
       /* 他人喜欢页右栏（#rside > .g-box > .m-menu，内含 #likesidelist）：
          浅色管线「推荐页右侧栏」规则写 #fff，在 #rside 反色区会反成纯黑；
@@ -18937,7 +19293,17 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   }
 
   /* 卡片级元素：slide-bar 下的 *-box-web，且祖先里没有别的 *-box-web
-     （排除卡片内部的嵌套块）；尺寸过小的组件（图标、按钮）跳过 */
+     （排除卡片内部的嵌套块）；尺寸过小的组件（图标、按钮）跳过。
+     2026-09-29 扩：他人喜欢页右栏（#rside .g-box .m-menu，内含
+     #likesidelist）纳入同一套玻璃——同一开关控制、同一 CSS 锚
+     （.lc-side-glass）。2026-09-30 再扩：tag 页参与用户卡
+     （#rside #tageditor .m-menu，内含 .participate-user-title-w）。
+     分源收集（真机实锤教训）：首页 slide-bar 卡的
+     嵌套排除**只看同类**（[class*="-box-web"]）——首轮把 .m-menu 塞进
+     同一张 closest 排除表，首页侧栏卡的祖先链若经过 .m-menu 容器就整卡
+     被跳过，玻璃与暗色双双失效；favblog 来源只在无 #slide-bar 的页面
+     收集（判页口径与 buildCSS 的 favblogSide 一致），排除嵌套在另一个
+     .m-menu 里的候选（closest 不含自己，不会误杀） */
   function lcSideGlassEls() {
     const els = [];
     document.querySelectorAll('#slide-bar [class*="-box-web"]').forEach((el) => {
@@ -18947,6 +19313,25 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       if (r.width < 160 || r.height < 44) return;
       els.push(el);
     });
+    if (!document.getElementById("slide-bar")) {
+      /* 无 #slide-bar 页面上的玻璃卡来源（判页口径与 buildCSS 的
+         `:not(:has(#slide-bar))` 守卫一致）：
+         - favblog：喜欢列表卡 .m-menu:has(#likesidelist)
+         - tag 页：参与用户卡 .m-menu:has(.participate-user-title-w)
+             （2026-09-30 扩；挂在 #tageditor 下，锚与其他形态互不命中） */
+      [
+        "#rside .g-box .m-menu:has(#likesidelist)",
+        "#rside #tageditor .m-menu:has(.participate-user-title-w)",
+      ].forEach((sel) => {
+        document.querySelectorAll(sel).forEach((el) => {
+          const p = el.parentElement;
+          if (p && p.closest && p.closest("#rside .g-box .m-menu")) return;
+          const r = el.getBoundingClientRect();
+          if (r.width < 160 || r.height < 44) return;
+          els.push(el);
+        });
+      });
+    }
     return els;
   }
 
@@ -19150,8 +19535,10 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   let lcFaceMatLast = 0;
   function lcFaceMatCleanup() {
     document
-      .querySelectorAll(".lc-face-dark, .lc-face-ctl")
-      .forEach((el) => el.classList.remove("lc-face-dark", "lc-face-ctl"));
+      .querySelectorAll(".lc-face-dark, .lc-face-ctl, .lc-pub-dark")
+      .forEach((el) =>
+        el.classList.remove("lc-face-dark", "lc-face-ctl", "lc-pub-dark"),
+      );
   }
   /* 深膜卡内的「自带浅底控件」贴签：评论输入框/发布按钮这类站点白底
      控件，深膜白字会落在它们自带的白底上（白底白字）。按 computed
@@ -19225,6 +19612,13 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       /* 深膜卡内的浅底控件（评论输入框/发布按钮）同步贴签换肤 */
       lcTagFaceControls(cnt, darkFace);
     });
+    /* 收起态发布栏搭同一班采样车：背后区域偏暗 → 贴 lc-pub-dark 深膜
+       （同阈值；CSS 侧深膜 + 图标反相/悬停染色见 pubCss 段） */
+    const pubArea = document.getElementById("publishBarArea");
+    if (pubArea) {
+      const L = lcFaceLuma(pubArea);
+      if (L !== null) pubArea.classList.toggle("lc-pub-dark", L < 0.45);
+    }
   }
   /* 背景是 fixed 铺法：滚动会改变卡片背后的区域，需要滚动驱动重采样 */
   if (!window.__lcFaceMatScroll) {

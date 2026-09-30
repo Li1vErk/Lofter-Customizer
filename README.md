@@ -6,7 +6,7 @@
   <img src="assets/screenshots/panel-light.png" width="270" alt="设置面板 · 浅色">
   <img src="assets/screenshots/panel-dark.png" width="270" alt="设置面板 · 暗色跟随">
   <br>
-  <sub>设置面板：六栏信息架构 + 暗色自动跟随（真实渲染截图，重出图见 <code>tools/panel-shot.py</code>）</sub>
+  <sub>设置面板：六栏信息架构 + 暗色自动跟随（真实渲染截图）</sub>
 </p>
 
 <p align="center">
