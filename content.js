@@ -8300,13 +8300,15 @@ body.body .content-block:not(:has(.words-area)) {
         /* ===== 排除不需要卡片的模块 =====
            台头(.tag-header-w)/最新最热栏(.m-tabbar)已收编进 ensureBubbleCards
            的磨砂+材质管线（2026-09-25），不再在此排除。
-           2026-09-29 真机实锤（probe-mat3 face.display="none"）：他人喜欢页
-           台头宿主（#favpageheader > .mlistcnt，内含 .isaym3）也被下面第二
-           条命中、整条 ::before 卡面被 display:none 藏掉——isaym3 收编进
-           气泡管线（favblog 台头 scope）后必须豁免 #favpageheader，否则
-           卡面规则写得再对也画不出来（computed 有 bg 但 display 无效） */
+           他人喜欢页台头（#favpageheader > .mlistcnt > .isay > .isaym3）：
+           宿主 ::before 是一张比台头内容高出一截的大卡，下缘与下方作品卡
+           相接（2026-10-02 用户截图实锤「台头叠两层」）。台头卡面改由
+           .isaym3 切片自持（材质开 = ensureBubbleCards 直接给切片上磨砂
+           材质；关 = buildCSS 推荐卡片实底），宿主卡面两种材质态都藏。
+           （2026-09-29 曾在此加 :not(#favpageheader) 豁免，供当时的宿主
+           自绘 scope 画卡面；2026-10-02 scope 移除后豁免一并撤掉） */
         #main > .m-mlist:not(:has(> .mlistimg)):not(:has(> .mlistcnt .isay)):not(:has(> .mlistcnt .isayt)):not(:has(> .mlistcnt .isaym)) > .mlistcnt::before,
-        #main > .m-mlist:not(#favpageheader):has(> .mlistcnt .isaym3) > .mlistcnt::before,
+        #main > .m-mlist:has(> .mlistcnt .isaym3) > .mlistcnt::before,
         #main > .m-mlist:has(> .mlistcnt .publishlayer) > .mlistcnt::before {
           display: none !important;
         }
@@ -15360,35 +15362,17 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
       },
     ];
     /* 他人喜欢页台头（「xx的喜欢」，#favpageheader > .mlistcnt > .isay >
-       .isaym3）：由「卡片材质」总开关控制——开 = 进本管线自绘画卡面
-       （磨砂/半透明随材质，暗色与首页卡同为预反色底），关 = 保持
-       buildCSS 的实底兜底（浅色 #fff / 暗色预反色），两态互斥不叠加。
-       结构与首页博文卡同构（.mlistcnt > .isay 系切片）；单块内容，
-       不能用 stack（stack 会把整卡 ::before 藏掉改画 .m-itag/.m-tabbar
-       子面，台头里没有这两块 → 等于没卡面）；贴边 flush（left:0，
-       不依赖 --lc-bubble-left 测量）；无尖角。
-       isolate 必须带（2026-09-29 真机实锤）：favblog 页宿主没有暗色
-       滤镜兜底的堆叠上下文（#main 整体 filter 的语境里，::before 的
-       z-index:-1 落到 #main 语境底、被后续绘制的内容层盖掉），浅暗两
-       模式台头卡面全部不可见 → 「台头消失」。与 tag 页台头 20260925s
-       是同一类病，只是那页用 stack 连子面一起改了。
-       特异性必须压过 buildCSS 的通用白卡规则（2026-09-29 浅色实锤）：
-       `#main > .m-mlist > .mlistcnt::before` 字面 #fff 是 1 id 2 class，
-       scope 原选择器 `#favpageheader > .mlistcnt` 只有 1 id 1 class →
-       浅色卡面被压回不透明白（blur 还在 → 「磨砂没生效」）；暗色没暴露
-       是因为暗色补丁（html 前缀）恰好把值修正成同样的半透明预反色。
-       宿主自带 .m-mlist 类（真机 classList 实锤），加 html 前缀 +
-       .m-mlist 类 → 1 id 2 class 1 type，严格必胜且不受注入顺序影响 */
-    if (settings.card && settings.card.material) {
-      scopes.push({
-        name: "他人喜欢页台头（xx的喜欢；磨砂+材质；无尖角无悬停，卡面贴边）",
-        sel: "html #favpageheader.m-mlist > .mlistcnt",
-        radius: userRadius,
-        noArrow: true,
-        flush: true,
-        isolate: true,
-      });
-    }
+       .isaym3）：不再进本管线（2026-10-02 改版）。原方案是宿主 ::before
+       自绘整卡——但宿主盒比台头内容高出一截，卡面下缘与下方作品卡相接，
+       材质关时还与 .isaym3 切片的实底叠成「两层卡片」（用户截图实锤）。
+       现改为：宿主卡面由 buildCSS 排除规则统一 display:none（材质开关
+       都藏），卡面由 .isaym3 切片自持——
+         · 材质关：buildCSS 推荐卡片实底（浅 #fff / 暗预反色）原样保留；
+         · 材质开：见下方「他人喜欢页台头切片材质补丁」，直接给 .isaym3
+           上磨砂/材质面（与下方作品卡不相接的台头小卡）。
+       （2026-09-29 的宿主自绘 scope——html #favpageheader.m-mlist +
+       isolate 锁堆叠 + flush 贴边——连同 buildCSS 的 :not(#favpageheader)
+       豁免一并作废：不再画宿主 ::before，无需堆叠上下文） */
     /* 首页发布栏（publishlayer）专属段：站点雪碧图气泡在暗色下会把头像
        包进去（浅色白底上结构不可见，控制台枚举实锤 isayt/isaym/isayb
        全宽 585px 是唯一残存画底者）。与博文卡同思路改为自绘：
@@ -15617,17 +15601,22 @@ html body .g-bdc:has(.m-goodcnt) .m-pushtag .w-huoy span[class*="js-act"] > b {
         : "") +
       (settings.card && settings.card.material
         ? `
-      /* ===== favblog 台头切片透明化补丁 =====
+      /* ===== 他人喜欢页台头切片材质补丁（xx的喜欢；2026-10-02 改版） =====
          buildCSS 的「推荐卡片」规则（浅色 .isaym3:has(.m-ilike) 写 #fff
          实底 / 暗色 html #main .isaym3:has(.m-ilike) 写预反色）同时服务
          推荐页推荐卡，不能按开关删；这里用更高特异性
          （#favpageheader + .mlistcnt + :has = 1 id 3 class 1 type，
          压过暗色补丁的 1 id 2 class 1 type 与浅色的 0 id 2 class）
-         把台头切片钉成透明，卡面交给上方 ${"::before"} 自绘 */
+         把材质面直接写进台头切片 .isaym3（磨砂/半透明随材质，暗色
+         预反色底与首页卡同源 lcFeedCardBg，阴影同 lcFeedFaceShadow）：
+         宿主大卡已由 buildCSS 排除规则统一 display:none（材质开关都
+         藏），台头只剩这张与下方作品卡不相接的小卡 */
       html #favpageheader > .mlistcnt .isaym3:has(.m-ilike) {
-        background: transparent !important;
+        background: ${color} !important;
         background-image: none !important;
-        box-shadow: none !important;
+        box-shadow: ${lcFeedFaceShadow()} !important;
+        border-radius: ${userRadius} !important;
+        ${frostCSS}
       }`
         : "") +
       scopes
