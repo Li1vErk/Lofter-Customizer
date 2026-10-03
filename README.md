@@ -36,7 +36,7 @@
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 ![Chrome](https://img.shields.io/badge/Chrome-%3E=88-blue.svg)
 ![Edge](https://img.shields.io/badge/Edge-%3E=88-blue.svg)
-![Version](https://img.shields.io/badge/version-v1.6.0-orange.svg)
+![Version](https://img.shields.io/badge/version-v1.7.0-orange.svg)
 
 ---
 
