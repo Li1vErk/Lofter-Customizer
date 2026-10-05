@@ -4748,6 +4748,119 @@ styleEl.textContent = `
         background: rgba(0,0,0,0.1) !important;
         color: #333 !important;
       }
+
+      /* ── 私信对话：我方消息气泡补底色 ──
+         官方我方气泡是透明底 + 0.57px 细边（对方气泡 #f3f3f3 填充），
+         观感是「自己发的消息没有对话框」。补上与对方一致的 #f3f3f3：
+         浅色模式直接生效；暗色模式该值位于 #msgcontainer 子元素反色区内，
+         会被自动反成 ≈#0c0c0c，与对方气泡暗色一致，无需另写暗色规则。
+         选择器只命中消息 li 内的气泡；输入框 .txt.w-inputxt 不在 li 里，不受影响。 */
+      .m-talk ul.f-cb li:not(.ta) .txt {
+        background: #f3f3f3 !important;
+      }
+      /* ── 私信对话：尖角随气泡同色（v7 连续边框版）──
+         官方尖角是 .txt > span.cor 雪碧图贴片（probe-dm-cor 实证：13x12 绝对
+         定位、四边 border 全 0、无底色、innerHTML 空——白三角和沿轮廓的
+         边框线都烧在图里，且与气泡边框连成一体）。重画方案：
+         ① span.cor 本体 = 描边色 border 三角（12x12，45° 直角：竖边贴气泡、
+            顶边平齐气泡顶、斜边回到气泡），定位比官方内移 1px，让竖边描边
+            与气泡边框重合为一条线；
+         ② ::before = clip-path 填充多边形，向气泡方向多伸 1px 盖掉接口处的
+            竖边描边 + 气泡边框段（原版的「开口」），与斜边留 ≈0.7px 距离
+            形成描边圈（与官方 0.57px 细边观感同级）。
+         ⚠ 官方 .cor 自带 overflow:hidden（probe-dm-cor2 实证），会裁掉落在
+         0 尺寸 padding box 之外的 ::before——必须钉回 visible。
+         box-sizing 钉 content-box，防站点全局 border-box 把 0 宽度压没。 */
+      .m-talk ul.f-cb li .txt .cor {
+        background: none !important;
+        box-sizing: content-box !important;
+        /* 官方 .cor 自带 overflow:hidden（probe-dm-cor2 实证），会把
+           ::before 填充层（位于 0 尺寸 padding box 之外）整个裁掉，
+           只剩描边色实心三角——必须钉回 visible */
+        overflow: visible !important;
+        width: 0 !important;
+        height: 0 !important;
+        border-style: solid !important;
+        border-color: transparent !important;
+      }
+      /* 我方：竖边在左（贴气泡右侧），描边=气泡边框色 #e7e7e7。
+         官方贴片在 right:-13px，这里钉成 -12px：竖边描边与气泡右边框
+         重合成一条线（v7 连续性——原版尖角与气泡边框是连体的） */
+      .m-talk ul.f-cb li:not(.ta) .txt .cor {
+        left: auto !important;
+        right: -12px !important;
+        border-left-width: 12px !important;
+        border-bottom-width: 12px !important;
+        border-top-width: 0 !important;
+        border-right-width: 0 !important;
+        border-left-color: #e7e7e7 !important;
+      }
+      /* 对方：竖边在右（贴气泡左侧），镜像 */
+      .m-talk ul.f-cb li.ta .txt .cor {
+        right: auto !important;
+        left: -12px !important;
+        border-right-width: 12px !important;
+        border-bottom-width: 12px !important;
+        border-top-width: 0 !important;
+        border-left-width: 0 !important;
+        border-right-color: #e7e7e7 !important;
+      }
+      /* 内层填充（v7）：不再用 border 三角，改 clip-path 多边形——
+         填充要向气泡方向多伸 1px，把接口处的竖边描边 + 气泡边框段盖掉
+         （= 原版的「开口」），同时与外层斜边保持 ≈0.7px 距离留出描边圈。
+         定位基准仍是 span.cor 的 padding box（我方原点在 (12,0)，
+         对方在 (0,0)）；clip-path 坐标相对 13x13 盒子：
+         我方 polygon(0 1px, 11px 1px, 0 12px)——顶留 1px、斜边内缩 1px、
+         左侧伸到盒子外 1px（盖掉气泡边框）；对方为镜像。 */
+      .m-talk ul.f-cb li:not(.ta) .txt .cor::before {
+        content: "" !important;
+        position: absolute !important;
+        left: -13px !important;
+        top: 0 !important;
+        width: 13px !important;
+        height: 13px !important;
+        background: #f3f3f3 !important;
+        clip-path: polygon(0 1px, 11px 1px, 0 12px) !important;
+      }
+      .m-talk ul.f-cb li.ta .txt .cor::before {
+        content: "" !important;
+        position: absolute !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 13px !important;
+        height: 13px !important;
+        background: #f3f3f3 !important;
+        clip-path: polygon(2px 1px, 13px 1px, 13px 12px) !important;
+      }
+      /* 输入框旁的同款尖角（官方贴图暗色下同样反成纯黑，一并重画）：
+         描边=输入框边框色 #d7d7d7，浅色填充随输入框白底；
+         暗色填充走暗色段 preInv。元素不存在时规则空转。 */
+      .m-talk .add .txt .cor {
+        background: none !important;
+        box-sizing: content-box !important;
+        overflow: visible !important; /* 同上：防官方 overflow:hidden 裁掉填充层 */
+        left: auto !important;
+        right: -12px !important; /* 同消息气泡：竖边描边与输入框边框重合 */
+        width: 0 !important;
+        height: 0 !important;
+        border-style: solid !important;
+        border-color: transparent !important;
+        border-left-width: 12px !important;
+        border-bottom-width: 12px !important;
+        border-top-width: 0 !important;
+        border-right-width: 0 !important;
+        border-left-color: #d7d7d7 !important;
+      }
+      .m-talk .add .txt .cor::before {
+        content: "" !important;
+        position: absolute !important;
+        left: -13px !important;
+        top: 0 !important;
+        width: 13px !important;
+        height: 13px !important;
+        background: #ffffff !important;
+        clip-path: polygon(0 1px, 11px 1px, 0 12px) !important;
+      }
       /* ── 个人主页设置：所有标签页内容卡片圆角 ── */
       .info_menu.menu.ztag,
       .theme_menu.menu.ztag,
@@ -7993,11 +8106,11 @@ a:hover:not(.w-sbtn):not(.cashbtn):not(#j-participate-act):not(.cnt):not(.isaym)
 `);
     }
 
-    /* ── 圆角卡片 ── */
-    if (s.card.enabled) {
-      out.push(`
+    /* ── 私信页：纯毛玻璃卡（2026-10-03 拍板：无条件生效，不受卡片开关控制；
+       圆角仍跟全局圆角设置、投影跟卡片投影开关走）── */
+    out.push(`
 
-/* ── 私信页：圆角毛玻璃 ── */
+/* ── 私信页：圆角毛玻璃（无条件） ── */
 #msgcontainer {
   background: rgba(255,255,255,0.82) !important;
   backdrop-filter: blur(16px) saturate(160%) !important;
@@ -8039,6 +8152,11 @@ a:hover:not(.w-sbtn):not(.cashbtn):not(#j-participate-act):not(.cnt):not(.isaym)
 #msgcontainer .xtxt {
   float: none !important;
 }
+`);
+
+    /* ── 圆角卡片 ── */
+    if (s.card.enabled) {
+      out.push(`
 
 /* 通知栏浅色模式卡片 */
 .g-bdc:has(#blognotice) {
@@ -10666,6 +10784,15 @@ span.rc-checkbox.post-check.rc-checkbox-checked .rc-checkbox-inner {
       const draftDrop = `rgba(${Math.max(0, d - 2)}, ${Math.max(0, d - 2)}, ${Math.max(0, d)}, 0.88)`;
       const draftDropSolid = `rgba(${Math.max(0, d - 2)}, ${Math.max(0, d - 2)}, ${Math.max(0, d)}, 0.97)`;
       const draftModal = `rgba(${Math.max(0, d - 4)}, ${Math.max(0, d - 4)}, ${Math.max(0, d - 2)}, 0.92)`;
+      /* 预反色直写：目标暗色 T（近灰）→ 反写亮值 V。V 经子元素反色链
+         invert(100%) + hue-rotate(180deg) + brightness(b) 还原为 ≈T。
+         近灰色 hue-rotate 影响极小，忽略；V = 255 - T/brightness。 */
+      const preInv = (hex) => {
+        const t = hex.replace("#", "").match(/../g).map((x) => parseInt(x, 16));
+        return "#" + t
+          .map((c) => Math.round(255 - Math.min(255, c / b)).toString(16).padStart(2, "0"))
+          .join("");
+      };
       out.push(`
 
 /* 话题页/模板页/趋势页卡片底色统一 #1F1F19（预反色值 rgb(225,225,219)）。
@@ -11196,16 +11323,61 @@ body#longpost-publish-page #alert-tip .icon-close {
 }
 
 
-/* 私信页暗色 */
+/* 私信页暗色 —— 拆层反色。
+   filter 不能挂在 #msgcontainer 本体：圆角毛玻璃卡开时它带 backdrop-filter，
+   backdrop 采样的是反色之前的原始背景，模糊结果随元素一起被 invert，
+   磨砂透出的背景明暗反转（暗处变亮、亮处变暗）。
+   修法（无头实证 tools/debug-dm-glass-repro.html：本体反色暗侧43/亮侧3 反转，
+   拆层后 23/63 方向正确）：卡面预反色直写暗色 + filter 下沉到直接子元素，
+   backdrop-filter 留在容器上，采样正常亮度的背景。img 双反还原同前。 */
 #msgcontainer {
+  background: rgba(25, 25, 30, 0.82) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+#msgcontainer > * {
   filter: invert(100%) hue-rotate(180deg) brightness(${(settings.darkMode.brightness || 90) / 100}) !important;
 }
 #msgcontainer img {
   filter: invert(100%) hue-rotate(180deg) !important;
 }
+/* 私信气泡/输入框暗色配色（2026-10-03 拍板：双灰层次）。
+   自动反色会把 #f3f3f3 压成 ≈#0c0c0c 纯黑，观感差；改预反色直写，
+   写亮值经上方反色链还原为目标暗色（preInv 定义见本管线顶部）。
+   对方 = li.ta / 我方 = li:not(.ta)（probe-dm 实证）；两条特异性同为
+   (0,3,2) 且位于全局段我方底色规则之后，暗色下按源序胜出。 */
+.m-talk ul.f-cb li.ta .txt {
+  background: ${preInv("1d2025")} !important; /* → ≈#1d2025 对方：深灰 */
+}
+.m-talk ul.f-cb li:not(.ta) .txt {
+  background: ${preInv("2a2e35")} !important; /* → ≈#2a2e35 我方：亮一档 */
+}
+/* 输入框（probe-dm-tail 实证：白底+0.57px #d7d7d7 边挂在 div.txt.w-inputxt，
+   自动反色成纯黑）→ 目标 ≈#22252b + ≈#3a3e46 细边 */
+.m-talk .add .txt.w-inputxt {
+  background: ${preInv("22252b")} !important;
+  border-color: ${preInv("3a3e46")} !important;
+}
+/* 尖角（双层重画，见全局段）：v7 起 ::before 是 clip-path 填充层，
+   暗色只覆盖其 background（预反色随双灰气泡/输入框）。外层描边
+   #e7e7e7/#d7d7d7 本身是浅灰，经反色链自动变成 ≈#151515/#242424，
+   恰为暗色边框色，无需覆盖。 */
+.m-talk ul.f-cb li.ta .txt .cor::before {
+  background: ${preInv("1d2025")} !important;
+}
+.m-talk ul.f-cb li:not(.ta) .txt .cor::before {
+  background: ${preInv("2a2e35")} !important;
+}
+.m-talk .add .txt .cor::before {
+  background: ${preInv("22252b")} !important;
+}
 
-      /* 通知卡片：暗色毛玻璃 */
+      /* 通知卡片：暗色毛玻璃 —— 同私信页拆层修法（.g-mn 本体在毛玻璃批次
+     带 backdrop-filter，本体反色会把磨砂透出的背景一起反转） */
 .g-mn:has(#blognotice) {
+  background: rgba(25, 25, 30, 0.82) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+.g-mn:has(#blognotice) > * {
   filter: invert(100%) hue-rotate(180deg) brightness(${(settings.darkMode.brightness || 90) / 100}) !important;
 }
 .g-mn:has(#blognotice) img {
@@ -17701,6 +17873,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       clearFouc();
       lcSafe(applyWordCounter); /* 总开关关闭 → 收掉字数角标与轮询 */
       lcSafe(applyFilter); /* 总开关关闭 → 摘掉过滤标记与提示 */
+      lcSafe(applyDmSearch); /* 总开关关闭 → 收掉私信搜索框与标记 */
       lcSafe(applySidebarGlass); /* 总开关关闭 → 摘掉侧栏玻璃（lcSideGlassOn 自会 false） */
       return;
     }
@@ -17725,6 +17898,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     lcSafe(applyLongpostEditorDark);
     lcSafe(applyWordCounter);
     lcSafe(applyFilter);
+    lcSafe(applyDmSearch);
     lcSafe(initDraftManager);
     lcSafe(applyCustomPlaceholder);
     lcSafe(lcApplySettingPageTheme);
@@ -17782,6 +17956,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         lcSafe(applyLongpostEditorDark);
         lcSafe(applyWordCounter);
         lcSafe(applyFilter);
+        lcSafe(applyDmSearch);
         lcSafe(applyCardAnimations);
         lcSafe(applyCustomPlaceholder);
         lcSafe(applySidebarGlass); /* 侧栏卡片可能由 React 晚渲染 → 补挂玻璃 */
@@ -18355,6 +18530,127 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         }
         wcUpdate();
       }, 1200);
+    }
+  }
+
+  /* ---------- 私信列表：会话搜索（功能栏 · 默认开）----------
+   * 位置 = 列表卡 header（`.g-box3 h2.w-fttl`）右端（作者拍板「卡片右上角」）。
+   * 口径 = 纯 DOM 过滤当前页已加载会话：`.m-xlist li` 的昵称 `.xtit` +
+   * 摘要 `.xcnt` 文本，lowercase 子串匹配。认账官方分页（约 19 条/页），
+   * 翻页后需重新搜索——写进面板 hint 与空态文案。
+   * 幂等重算：命中摘除 data-lc-dm-filtered、未命中打上，显隐由单条 CSS
+   * 驱动；关键词变动 / 列表重渲染（翻页、新消息）都只是重算，绝不残留。
+   * 暗色：搜索框在 #msgcontainer 反色子树内，按浅色值写、自动反成暗色。 */
+  const DM_SEARCH_STYLE_ID = "lc-dm-search-style";
+  const DM_SEARCH_WRAP_ID = "lc-dm-search-wrap";
+  const DM_SEARCH_EMPTY_ID = "lc-dm-search-empty";
+  const DM_SEARCH_CSS = `
+    [data-lc-dm-filtered] { display: none !important; }
+    .lc-dm-search-wrap {
+      float: right; display: inline-flex; align-items: center; gap: 6px;
+      margin-top: -2px;
+    }
+    .lc-dm-search-wrap input {
+      width: 150px; padding: 3px 10px;
+      border: 1px solid rgba(0,0,0,0.12); border-radius: 999px;
+      background: rgba(255,255,255,0.9);
+      font-size: 12px; line-height: 1.6; outline: none;
+    }
+    .lc-dm-search-wrap input:focus { border-color: #9b8fd0; }
+    .lc-dm-search-hint { font-size: 11px; color: #999; white-space: nowrap; }
+    .lc-dm-search-empty { display: none; margin: 10px 2px; font-size: 12px; }
+    .lc-dm-search-empty.on { display: block; }
+  `;
+  let dmSearchKw = "";
+
+  function applyDmSearch() {
+    const list = document.querySelector("#msgcontainer .m-xlist");
+    const on = !!(settings.enabled && settings.msg && settings.msg.search !== false);
+    /* 清理：总开关关 / 功能关 / 不在私信页（.m-xlist 不存在） */
+    if (!on || !list) {
+      const st = document.getElementById(DM_SEARCH_STYLE_ID);
+      if (st) st.remove();
+      const wrap = document.getElementById(DM_SEARCH_WRAP_ID);
+      if (wrap) wrap.remove();
+      const empty = document.getElementById(DM_SEARCH_EMPTY_ID);
+      if (empty) empty.remove();
+      document
+        .querySelectorAll("#msgcontainer .m-xlist li[data-lc-dm-filtered]")
+        .forEach((li) => li.removeAttribute("data-lc-dm-filtered"));
+      dmSearchKw = "";
+      return;
+    }
+    /* 样式表只插一次 */
+    if (!document.getElementById(DM_SEARCH_STYLE_ID)) {
+      const st = document.createElement("style");
+      st.id = DM_SEARCH_STYLE_ID;
+      st.textContent = DM_SEARCH_CSS;
+      document.head.appendChild(st);
+    }
+    /* UI：列表卡 header 右端。React/官方重渲染把 header 换掉时重建 */
+    const box = list.closest(".g-box3") || list.parentElement;
+    const header = (box && box.querySelector("h2.w-fttl")) || box;
+    let wrap = document.getElementById(DM_SEARCH_WRAP_ID);
+    if (header && (!wrap || wrap.parentElement !== header)) {
+      if (wrap) wrap.remove();
+      wrap = document.createElement("span");
+      wrap.id = DM_SEARCH_WRAP_ID;
+      wrap.className = "lc-dm-search-wrap";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "搜索会话（昵称 / 摘要）";
+      input.value = dmSearchKw;
+      input.addEventListener("input", () => {
+        dmSearchKw = input.value;
+        lcSafe(() => runDmFilter(list));
+      });
+      const hint = document.createElement("span");
+      hint.className = "lc-dm-search-hint";
+      hint.textContent = "仅本页";
+      wrap.appendChild(input);
+      wrap.appendChild(hint);
+      header.appendChild(wrap);
+    }
+    /* 空态块（跟列表后面） */
+    if (!document.getElementById(DM_SEARCH_EMPTY_ID)) {
+      const empty = document.createElement("div");
+      empty.id = DM_SEARCH_EMPTY_ID;
+      empty.className = "lc-dm-search-empty s-fc2";
+      list.insertAdjacentElement("afterend", empty);
+    }
+    runDmFilter(list);
+  }
+
+  function runDmFilter(list) {
+    const kw = dmSearchKw.trim().toLowerCase();
+    let hit = 0;
+    let total = 0;
+    list.querySelectorAll("li").forEach((li) => {
+      const nick = li.querySelector(".xtit");
+      const cnt = li.querySelector(".xcnt");
+      if (!nick && !cnt) return; /* 空占位行不参与统计与过滤 */
+      total++;
+      const text = `${nick ? nick.textContent : ""} ${cnt ? cnt.textContent : ""}`
+        .toLowerCase();
+      if (!kw || text.includes(kw)) {
+        li.removeAttribute("data-lc-dm-filtered");
+        hit++;
+      } else {
+        li.setAttribute("data-lc-dm-filtered", "1");
+      }
+    });
+    const empty = document.getElementById(DM_SEARCH_EMPTY_ID);
+    if (empty) {
+      const show = !!kw && total > 0 && hit === 0;
+      const txt = show
+        ? `没有匹配的会话（只搜索本页已加载的 ${total} 条）`
+        : "";
+      /* 等值不写：无条件重写文本节点会触发 MutationObserver → 链条重跑 →
+         再写 → 自激死循环（同 1108 行注释的教训） */
+      if (empty.textContent !== txt) empty.textContent = txt;
+      if (empty.classList.contains("on") !== show) {
+        empty.classList.toggle("on", show);
+      }
     }
   }
 

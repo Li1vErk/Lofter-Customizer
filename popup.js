@@ -917,6 +917,9 @@
     const dr = s.draft || LC_clone(LC_DEFAULTS.draft);
     $("draft-guard").checked = !!dr.guard;
 
+    // 私信增强：会话搜索（默认开）
+    $("msg-search").checked = !(s.msg && s.msg.search === false);
+
     renderDecorations();
 
     // 词卡弹窗事件（只绑一次，确保 DOM 已加载）
@@ -1541,6 +1544,13 @@
     save();
   });
 
+  /* ---------- 功能栏：私信增强（会话搜索，默认开） ---------- */
+  on("msg-search", "change", (e) => {
+    if (!state.msg) state.msg = LC_clone(LC_DEFAULTS.msg);
+    state.msg.search = e.target.checked;
+    save();
+  });
+
   on("filter-keywords", "input", (e) => {
     const f = ensureFilter();
     const seen = new Set();
@@ -2023,7 +2033,7 @@
        UI 在功能 pane 里——两个键必须登记在对应模块下，否则导入时
        会被白名单当脏数据剔除（20260926 用户导入实测丢右侧栏磨砂） */
     { id: "nav", label: "导航", keys: ["navbar", "sidebar", "searchPlaceholder", "gtotop"] },
-    { id: "func", label: "功能", keys: ["tools", "filter", "official", "comment", "draft"] },
+    { id: "func", label: "功能", keys: ["tools", "filter", "official", "comment", "draft", "msg"] },
   /* export（文章导出）单独一段：顶层配置键，漏登记 = 导入被白名单静默剔除
      （1.4.0 sidebar/comment 的教训） */
   { id: "export", label: "导出", keys: ["export"] },
