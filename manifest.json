@@ -89,6 +89,17 @@
     "run_at": "document_start",
     "all_frames": true,
     "world": "MAIN"
+  },
+  {
+    "matches": [
+      "https://lofter.lf127.net/lofter-admin/*",
+      "https://*.lofter.com/*",
+      "https://lofter.com/*"
+    ],
+    "js": ["lc-lpost-music.js"],
+    "run_at": "document_start",
+    "all_frames": true,
+    "world": "MAIN"
   }
 ]
 }
