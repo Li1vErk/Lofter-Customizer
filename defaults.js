@@ -223,6 +223,13 @@ const LC_DEFAULTS = {
     merged: false,
   },
 
+  /* #14 生成分享图（含二维码）：把当前文章排成一张可下载/复制的分享长图。
+   * 入口恒 auto（作者 2026-10-07 退休了「强制悬浮球」开关）：按实测矩阵自动择一
+   * （官方右上按钮条 → 帧内 li / 横条并排钮 → 竖列侧钮 → 右下角悬浮球兜底）。 */
+  shareCard: {
+    enabled: true,
+  },
+
   /* 编辑防丢兜底（#12 B-lite）：普通文章编辑器（pc-publish.html 帧）的
    * 正文本地快照。默认关——往用户盘上写数据的 feature 必须显式开启。
    * 快照存 chrome.storage.local 独立键 lc_draft_snap_v1（环形 5 版、

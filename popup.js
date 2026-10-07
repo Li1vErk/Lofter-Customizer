@@ -917,6 +917,10 @@
     const dr = s.draft || LC_clone(LC_DEFAULTS.draft);
     $("draft-guard").checked = !!dr.guard;
 
+    // 生成分享图（#14）
+    const sc = s.shareCard || LC_clone(LC_DEFAULTS.shareCard);
+    $("share-card-enabled").checked = sc.enabled !== false;      // 默认开
+
     // 私信增强：会话搜索（默认开）
     $("msg-search").checked = !(s.msg && s.msg.search === false);
 
@@ -1534,6 +1538,18 @@
   });
   on("export-merged", "change", (e) => {
     ensureExport().merged = e.target.checked;
+    save();
+  });
+
+  /* ---------- 功能栏：生成分享图（#14） ----------
+   * 入口恒 auto（作者 2026-10-07 退休「入口并进官方按钮条」开关）：
+   * 官方按钮条 → 帧内 li / 横条并排钮 → 竖列侧钮 → 右下角悬浮球兜底。 */
+  function ensureShareCard() {
+    if (!state.shareCard) state.shareCard = LC_clone(LC_DEFAULTS.shareCard);
+    return state.shareCard;
+  }
+  on("share-card-enabled", "change", (e) => {
+    ensureShareCard().enabled = e.target.checked;
     save();
   });
 

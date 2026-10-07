@@ -240,15 +240,22 @@ function LC_dwrParse(text) {
 
 /* 直连调用（content script 在 lofter.com 页面里用：同源、带 Referer）。
  * params: ["string:xxx", "number:0", ...]（DWR 参数带类型前缀）。
+ * opt（可选，2026-10-06 加，向后兼容）：
+ *   scriptName  默认 "UserBean"；归档接口传 "ArchiveBean"
+ *   base        默认 "https://www.lofter.com"；传 location.origin 可保证同源
+ *               （归档接口在每个 lofter 域下都有，传 location.origin 最稳）
  * 返回 Promise<结果>；网络/HTTP/解析/业务异常统一走 reject。
  * fetch 包在 Promise.resolve().then 里：没有 fetch 的环境下同步
  * 抛错也会变成 rejected promise，不炸调用现场（如扫描循环）。 */
-function LC_dwrDirect(method, params) {
+function LC_dwrDirect(method, params, opt) {
+  opt = opt || {};
+  const scriptName = opt.scriptName || "UserBean";
+  const base = String(opt.base || "https://www.lofter.com").replace(/\/+$/, "");
   const lines = [
     "callCount=1",
     "scriptSessionId=${scriptSessionId}187", /* 官方原样发占位符，服务端不校验 */
     "httpSessionId=", /* 空：鉴权全靠 Cookie */
-    "c0-scriptName=UserBean",
+    "c0-scriptName=" + scriptName,
     "c0-methodName=" + method,
     "c0-id=0",
   ];
@@ -256,23 +263,26 @@ function LC_dwrDirect(method, params) {
   lines.push("batchId=" + ((Date.now() % 100000000) | 0));
   return Promise.resolve()
     .then(() =>
-      fetch(
-        "https://www.lofter.com/dwr/call/plaincall/UserBean." +
-          method +
-          ".dwr",
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "text/plain" },
-          body: lines.join("\n"),
-        },
-      ),
+      fetch(base + "/dwr/call/plaincall/" + scriptName + "." + method + ".dwr", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "text/plain" },
+        /* ★ 必须换行分隔：DWR plaincall 按 \n 切行，单行会报
+         *   "The specified call count is not a number"（200 但无数据）。
+         *   User-Agent / Referer 由浏览器自动带上，二者缺一服务端回空 body。 */
+        body: lines.join("\n"),
+      }),
     )
     .then((r) => {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.text();
     })
     .then((text) => {
+      /* 服务端批处理异常（如缺 Referer / 参数格式错）：把 message 显形 */
+      const be = /_remoteHandleBatchException\(\{\s*name:'[^']*',\s*message:'([^']*)'/.exec(
+        text,
+      );
+      if (be) throw new Error("DWR 服务端拒绝：" + be[1]);
       if (/java\.lang\.\w+Exception/.test(text)) {
         throw new Error("接口异常（未登录或会话过期）");
       }
@@ -286,7 +296,8 @@ function LC_dwrDirect(method, params) {
  * chrome-extension:// 且无 Referer，实测 200 + 空响应）。改为把请求
  * 转发给已打开的 LOFTER 标签页里的 content script，由它同源执行——
  * 与用户在页面控制台探测完全同环境，Cookie/Referer 都正确。 */
-function LC_dwrRelay(method, params) {
+function LC_dwrRelay(method, params, opt) {
+  opt = opt || {};
   return new Promise((resolve, reject) => {
     if (typeof chrome === "undefined" || !chrome.tabs) {
       return reject(new Error("NO_TABS_API"));
@@ -307,7 +318,13 @@ function LC_dwrRelay(method, params) {
         let settled = false;
         chrome.tabs.sendMessage(
           tab.id,
-          { type: "lc-dwr", method: method, params: params },
+          {
+            type: "lc-dwr",
+            method: method,
+            params: params,
+            scriptName: opt.scriptName,
+            base: opt.base,
+          },
           (resp) => {
             if (settled) return;
             settled = true;
@@ -327,14 +344,14 @@ function LC_dwrRelay(method, params) {
 }
 
 /* 统一入口：扩展页面（popup）走中继，lofter.com 页面内直连 */
-function LC_dwrCall(method, params) {
+function LC_dwrCall(method, params, opt) {
   if (
     typeof location !== "undefined" &&
     location.protocol === "chrome-extension:"
   ) {
-    return LC_dwrRelay(method, params);
+    return LC_dwrRelay(method, params, opt);
   }
-  return LC_dwrDirect(method, params);
+  return LC_dwrDirect(method, params, opt);
 }
 
 if (typeof window !== "undefined") {

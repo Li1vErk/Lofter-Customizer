@@ -2428,6 +2428,9 @@ function lcEpTeardown() {
   epRmtFrame = null;
   epRmtBr = null;
   epRmtInputRight = null;
+  /* 退场动画的定时器要一并撤（与 lcEpClose 对偶）：留着会在 120ms 后
+     对着已摘除的 epHost 写 className → 未捕获 TypeError */
+  clearTimeout(epAnimT);
   if (epHost && epHost.parentNode) epHost.parentNode.removeChild(epHost);
   epHost = null;
   try {
@@ -3609,6 +3612,10 @@ function lcEpClose() {
   }
   if (epHost) {
     const finishClose = () => {
+      /* 定时器可能在面板被门禁整体摘除之后才到点（lcEpTeardown 置空
+         epHost + 已 clearTimeout，这里是第二道保险）——缺这条时
+         epHost.className 抛未捕获 TypeError 打到控制台 */
+      if (!epHost) return;
       epHost.className = 'lc-ep-host' + (lcEpHostDark() ? ' lc-dk' : '');
       const t = epHost.querySelector('.lc-ep-toast');
       if (t) t.remove();
@@ -5261,9 +5268,15 @@ html body .g-bd .m-recom {
           -webkit-backdrop-filter: blur(16px) saturate(160%) !important;
         }
         /* 更新APP页提示行（"您的版本不支持自动跳转…"）：圆角毛玻璃底。
-            .info 类名较通用，若其他页面出现异常毛玻璃块需收窄范围。
-            宽度按内容收缩（原 div 通栏太长）+ 提高透明度 */
-        .info {
+           .info 类名较通用——2026-10-06 实证：裸选择器会命中**博客子域归档页**
+           （body.p-body10 的卡片悬停浮层 span.info，无 #application 祖先），
+           给它加上 16px 内边距 + width:fit-content → em 日期下移 16px、
+           容器 125→115px，用户看到「日期/热度偏下」。双保险收窄：
+           ① 补 SCOPE 前缀（与同块其他规则一致；博客子域无 #application）
+           ② 限定 div.info —— 目标元素本是 div（注释「原 div 通栏太长」），
+              归档浮层是 span.info，即便该页也有 #application 也不会误伤。
+           宽度按内容收缩（原 div 通栏太长）+ 提高透明度 */
+        ${SCOPE} div.info {
           background: rgba(255, 255, 255, 0.55) !important;
           backdrop-filter: blur(16px) saturate(160%) !important;
           -webkit-backdrop-filter: blur(16px) saturate(160%) !important;
@@ -6287,8 +6300,12 @@ html body .g-bd .m-recom {
         #application.lofter-root-container span[class*="pX+HZHBTcxezWpzTXTL34Q"] {
           background: transparent !important;
         }
-        /* 更新APP页提示行：深卡（更透）+ 浅字 + 宽度按内容收缩 */
-        .info {
+        /* 更新APP页提示行：深卡（更透）+ 浅字 + 宽度按内容收缩
+           （作用域同浅色版：裸 .info 曾误伤博客子域归档页悬停浮层。
+           注意此处必须写字面量 #application.lofter-root-container —— 本块
+           作用域内没有 SCOPE 变量，写插值会 ReferenceError 中断整个
+           buildCSS；与紧邻的 span[class*=...] 规则写法一致） */
+        #application.lofter-root-container div.info {
           background: rgba(31, 31, 25, 0.7) !important;
           backdrop-filter: blur(16px) saturate(140%) !important;
           -webkit-backdrop-filter: blur(16px) saturate(140%) !important;
@@ -21177,7 +21194,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       sendResponse({ ok: false, error: "lc-dwr.js 未加载" });
       return true;
     }
-    LC_dwrCall(msg.method, msg.params)
+    LC_dwrCall(msg.method, msg.params, { scriptName: msg.scriptName, base: msg.base })
       .then((data) =>
         sendResponse({
           ok: true,
