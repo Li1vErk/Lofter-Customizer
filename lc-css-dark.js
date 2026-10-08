@@ -8,6 +8,23 @@
 window.LC_CSS = window.LC_CSS || {};
 LC_CSS.dark = LC_CSS.dark || {};
 
+/* ── 反色宿主全集（「无宿主判据」用，2026-10-08）──────────────────────────
+ * 暗色管线的 invert **不止挂在三个常规宿主**上。实测/源码核对：
+ *   #main / .postwrapper / .box.wid700  旧版 www 页三大宿主（invert 挂本体）
+ *   #masonryWrap                         发现-趋势页瀑布流（invert 挂本体）
+ *   #msgcontainer                        私信页（invert 下沉到 > *）
+ *   #blognotice                          通知页（invert 挂 .g-mn:has(#blognotice) > *）
+ *   #rside                               首页/合集页侧栏（invert 挂 #rside > *）
+ *   .m-vw-nav                            查看更多页（invert 挂 .g-bdc/.g-hd/.g-hdview）
+ * 两个「无宿主修复」（.m-post 直写本体暗色 / .lc-emoji-wrap 清零）用
+ * html:not(:has(本常量)) 反向判定 —— 只要页面存在**任一**反色区就不该命中。
+ * 2026-10-08 趋势页实证：谓词只写三个常规宿主 ⇒ 这页有 #masonryWrap 却被误判成
+ * 「无宿主页」，两条修复同时打歪 —— 卡片被直写 #1f1f19 后又被 #masonryWrap 翻成
+ * 米色（原预反色写法本可翻成暗卡）、emoji 补偿被清掉后又被真反色一次。
+ * ⚠️ 新增任何容器级 invert 都必须回来补这里；tools/test-no-host-dark-css.js
+ *    [D] 组断言两处规则都引用本常量、且源码里不存在硬编码的宿主三元组。 */
+LC_CSS.DARK_HOSTS = "#main, .postwrapper, .box.wid700, #masonryWrap, #msgcontainer, #blognotice, #rside, .m-vw-nav";
+
 /* 原 content.js L5725-6475（751 行）｜文章发布弹窗：编辑区 iframe 内边距归零 + 暗色背景（作用于主页面的 i */
 LC_CSS.dark.s5725 = function ({ s, computeDarkAccent }) {
   return `
@@ -776,13 +793,14 @@ LC_CSS.dark.s10826 = function ({ draftCard, fr, draftDrop, s, computeDarkAccent,
   background: rgb(225, 225, 219) !important;
 }
 
-/* 无反色宿主的页面（自定义主题博客子域页等）：上面的预反色值依赖
-   #main/.postwrapper/.box.wid700 上的 invert 滤镜翻转换成 #1F1F19；
-   这类页面三个宿主全不存在（2026-10-08 lofguancha.lofter.com 主页+详情页
-   diag 实锤：hosts 全 0、.m-post 计算底色 rgb(225,225,219) 原样显示成
-   米色「白卡」），再叠政策页白字规则 = 白底白字。html:has 反向判宿主，
-   无宿主时直接写目标本体色；www 各页有宿主，不命中、维持预反色写法 */
-html:not(:has(#main, .postwrapper, .box.wid700)) .m-post {
+/* 无反色宿主的页面（自定义主题博客子域页等）：上面的预反色值依赖宿主
+   invert 滤镜翻转换成 #1F1F19；这类页面反色区全不存在（2026-10-08
+   lofguancha.lofter.com 主页+详情页 diag 实锤：hosts 全 0、.m-post 计算底色
+   rgb(225,225,219) 原样显示成米色「白卡」），再叠政策页白字规则 = 白底白字。
+   html:has 反向判宿主（全集见本文件顶部 LC_CSS.DARK_HOSTS —— 2026-10-08
+   趋势页实证：宿主全集漏了 #masonryWrap 曾把趋势页误判为无宿主页），
+   无宿主时直写目标本体色；www 各页有宿主，不命中、维持预反色写法 */
+html:not(:has(${LC_CSS.DARK_HOSTS})) .m-post {
   background: #1f1f19 !important;
 }
 
@@ -2213,14 +2231,16 @@ ${
   filter: none !important;
 }
 
-/* 无反色宿主的页面（自定义主题博客子域页等）：三个反色宿主
-   #main/.postwrapper/.box.wid700 全不存在（2026-10-08 lofguancha.lofter.com
-   主页 + 详情页 diag 实锤：hosts 全 0），正文 emoji 本就不在反色区内，
-   这条抵消规则反而把正常 emoji 真正反色（亮变暗、暗变亮）——与账号设置页
-   .m-blackset、弹窗 .lc-dialog-dark 同类坑（emoji 是字体 glyph，被包进
-   .lc-emoji-wrap 后自身带 invert，祖先链上看不出来，故只能按宿主判）。
-   html:has 反向判宿主：有宿主不命中、维持抵消；无宿主清零。 */
-html:not(:has(#main, .postwrapper, .box.wid700)) .lc-emoji-wrap {
+/* 无反色宿主的页面（自定义主题博客子域页等）：反色区全不存在
+   （2026-10-08 lofguancha.lofter.com 主页 + 详情页 diag 实锤：hosts 全 0），
+   正文 emoji 本就不在反色区内，这条抵消规则反而把正常 emoji 真正反色
+   （亮变暗、暗变亮）——与账号设置页 .m-blackset、弹窗 .lc-dialog-dark 同类坑
+   （emoji 是字体 glyph，被包进 .lc-emoji-wrap 后自身带 invert，祖先链上
+   看不出来，故只能按宿主判）。
+   html:has 反向判宿主（全集见文件顶部 LC_CSS.DARK_HOSTS —— 2026-10-08
+   趋势页实证：全集漏了 #masonryWrap 曾把该页误判为无宿主页、emoji 补偿被
+   清掉后又被 #masonryWrap 真反色一次）；有宿主不命中、维持抵消；无宿主清零 */
+html:not(:has(${LC_CSS.DARK_HOSTS})) .lc-emoji-wrap {
   filter: none !important;
 }
 
@@ -2927,10 +2947,15 @@ body:has(#masonryWrap) #masonryWrap video {
   filter: invert(100%) hue-rotate(180deg) !important;
 }
 
-/* 趋势页头像不反色 */
+/* 趋势页卡内头像/用户信息的图片：与同区其他图片一样做反色补偿。
+   ⚠️ 这里原写 filter: none（v1.0.0 起，注释「头像不反色」），但 #masonryWrap
+   的反色是**祖先级**滤镜、会把卡内图片整片反色，清零滤镜 = 撤掉补偿 ⇒ 头像
+   实测呈负片（2026-10-08 probe-trends-dark 实锤：img 计算 filter=none、
+   唯一滤镜祖先 #masonryWrap{filter:invert(1) hue-rotate(180deg) brightness(1)}）
+   —— 与其注释的意图相反。改为与上方通用 img 规则同值补偿 = 净零，原色显示 */
 body:has(#masonryWrap) #masonryWrap .ava img,
 body:has(#masonryWrap) #masonryWrap .userinfo img {
-  filter: none !important;
+  filter: invert(100%) hue-rotate(180deg) !important;
 }
 
 ${
