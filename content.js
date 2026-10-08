@@ -4190,8 +4190,21 @@ styleEl.textContent = `
   body {
     filter: invert(100%) hue-rotate(180deg) !important;
   }
+  /* img 还原不能只做 lpost：body{filter:invert} 会连帧内图片一起反色，
+   * 而 control 帧（博客页顶栏：V 标/关注钮/返回首页）与普通博客页评论帧
+   * 同样落进本分支——2026-10-08 lofguancha 真机实锤 V 标金底白 V 反成
+   * 暗底黑 V（评论区表情图同理）。lpost 页早已全量还原且久经验证，
+   * 各帧内容同类，统一还原。 */
   img {
-    filter: ${isLpost ? 'invert(100%) hue-rotate(180deg)' : 'none'} !important;
+    filter: invert(100%) hue-rotate(180deg) !important;
+  }
+  /* V 标不是 <img>——是 <b> 元素上的 CSS 背景精灵图（.boprt ul .vicon a b，
+   * flagv…），img 规则够不着。与 www 主管线 a.vicon「白色icon反转回来」
+   * （~12655）同款补偿：对精灵元素再做一次反色 = 还原本色。
+   * 2026-10-08 lofguancha 真机实锤（DevTools：b{background:url(flagv)}）。 */
+  .boprt ul .vicon a b,
+  .boprt .vicon b {
+    filter: invert(100%) hue-rotate(180deg) !important;
   }
 .bcmtipt {
   border-color: rgba(255, 255, 255, 0.15) !important;
@@ -10821,6 +10834,16 @@ span.rc-checkbox.post-check.rc-checkbox-checked .rc-checkbox-inner {
   background: rgb(225, 225, 219) !important;
 }
 
+/* 无反色宿主的页面（自定义主题博客子域页等）：上面的预反色值依赖
+   #main/.postwrapper/.box.wid700 上的 invert 滤镜翻转换成 #1F1F19；
+   这类页面三个宿主全不存在（2026-10-08 lofguancha.lofter.com 主页+详情页
+   diag 实锤：hosts 全 0、.m-post 计算底色 rgb(225,225,219) 原样显示成
+   米色「白卡」），再叠政策页白字规则 = 白底白字。html:has 反向判宿主，
+   无宿主时直接写目标本体色；www 各页有宿主，不命中、维持预反色写法 */
+html:not(:has(#main, .postwrapper, .box.wid700)) .m-post {
+  background: #1f1f19 !important;
+}
+
 /* 查看更多页侧边栏用户名、创作者中心文字 */
 #application.lofter-root-container [class*="box-web"] p:not([class*="count-web"]) {
   color: rgba(255, 255, 255, 0.85) !important;
@@ -12245,6 +12268,17 @@ ${
 
 /* 新版页面：没有 filter 反色，不需要抵消，保持原样 */
 #application.lofter-root-container .lc-emoji-wrap {
+  filter: none !important;
+}
+
+/* 无反色宿主的页面（自定义主题博客子域页等）：三个反色宿主
+   #main/.postwrapper/.box.wid700 全不存在（2026-10-08 lofguancha.lofter.com
+   主页 + 详情页 diag 实锤：hosts 全 0），正文 emoji 本就不在反色区内，
+   这条抵消规则反而把正常 emoji 真正反色（亮变暗、暗变亮）——与账号设置页
+   .m-blackset、弹窗 .lc-dialog-dark 同类坑（emoji 是字体 glyph，被包进
+   .lc-emoji-wrap 后自身带 invert，祖先链上看不出来，故只能按宿主判）。
+   html:has 反向判宿主：有宿主不命中、维持抵消；无宿主清零。 */
+html:not(:has(#main, .postwrapper, .box.wid700)) .lc-emoji-wrap {
   filter: none !important;
 }
 
