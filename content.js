@@ -10,6 +10,17 @@ window.decorationsGloballyHidden = false;
  * 悬浮按钮、管线重复执行，2026-09-24 实测回归）。现在同层收编，两种
  * 问题都不存在 */
 (function () {
+  /* i18n（#16 港澳台繁体）：先定界面语言（storage 异步，回调后 LC_I18N 才
+   * 真正可用）。zh-Hans 下全链路恒等，零影响。
+   *   · watch() 由各模块在自己的容器构建点挂（评论面板 / 工具行 / 分享图面板）；
+   *   · observe() 是全文档兜底 —— 只「发现」以 lc-/lcsd- 打头的插件自有
+   *     容器，命中才在其子树内做整节点等值替换，绝不 apply document 本身。
+   * 两者在 lc-i18n.js 内都有幂等守卫，主帧 / 评论帧 / control 帧都安全。 */
+  if (typeof LC_I18N !== "undefined") {
+    LC_I18N.init();
+    LC_I18N.observe();
+  }
+
   if (window !== window.top) {
   const href = location.href;
 

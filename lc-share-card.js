@@ -1703,6 +1703,10 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 
   function openPanel() {
     if (!document.getElementById('lcsd-panel')) buildPanel();
+    /* i18n（#16）：面板是插件自有容器，构建完接管翻译（后续 render() 改字段
+     * 文案由 watcher 跟上）。绝不翻译画布里的分享图内容 —— 那是文章数据。 */
+    var pnl = document.getElementById('lcsd-panel');
+    if (pnl && typeof LC_I18N !== "undefined") LC_I18N.watch(pnl);
     xprobe();
     state.fields = extract();
     render();
@@ -1771,7 +1775,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
   function lcsdToast(msg) {
     var d = document.createElement('div');
     d.id = 'lcsd-toast';
-    d.textContent = msg;
+    d.textContent = (typeof LC_I18N !== "undefined") ? LC_I18N.t(msg) : msg;
     document.body.appendChild(d);
     setTimeout(function () { if (d.parentNode) d.parentNode.removeChild(d); }, 3200);
   }

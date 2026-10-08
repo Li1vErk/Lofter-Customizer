@@ -1377,6 +1377,17 @@
         <p class="hint collapsible plain" id="cfg-import-help" data-page-node-id="lcImpHint2">导入会覆盖对应模块的现有设置，覆盖前会先弹确认框；装饰图可选择覆盖或追加。文件只保存在你电脑上、不会上传；图片、词卡和自定义音效都内嵌在导出的配置文件里，对方无需原文件。</p>
       </div>
 
+      <div class="grp-card"><div class="grp-title">界面语言</div>
+        <div class="row"><label>语言</label>
+          <select id="lang-select">
+            <option value="zh-Hans">简体中文</option>
+            <option value="zh-Hant-TW">繁體中文（台灣）</option>
+            <option value="zh-Hant-HK">繁體中文（香港）</option>
+          </select>
+        </div>
+        <p class="hint" style="margin-left:90px;">只换插件自己的按钮与面板文字；LOFTER 页面本身、导出的 .md 与分享图内容保持原样。</p>
+      </div>
+
       <div class="grp-card"><div class="grp-title">关于</div>
         <div class="row"><label>版本</label><span id="about-version" style="font-size:13px;color:var(--lc-sub);"></span></div>
         <div class="row"><label>项目主页</label><a href="https://github.com/Li1vErk/Lofter-Customizer" target="_blank" rel="noopener" style="font-size:13px;color:#667eea;text-decoration:none;">GitHub 仓库</a></div>
@@ -1573,6 +1584,8 @@
   </div>
 
   <script src="defaults.js"></script>
+  <script src="lc-i18n-dict.js"></script>
+  <script src="lc-i18n.js"></script>
   <script src="lc-dwr.js"></script>
   <script src="popup.js"></script>
 

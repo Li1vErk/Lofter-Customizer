@@ -15,6 +15,14 @@
   let lcStateLoaded = false;
 
   let t = 0;
+
+  /* i18n（#16 港澳台繁体）：内核缺失时全部退化为恒等，功能零影响。
+   * popup 是插件自己的页面，整页可以安全替换 —— 唯一要防的是「从 LOFTER
+   * 抓来的数据」（官方黑名单昵称 / 已隐藏用户 / 屏蔽 tag），那些节点打
+   * data-lc-raw 标记跳过。另外 apply 是「整节点等值」语义：文本节点必须
+   * 整串等于某条字典键才换，所以昵称几乎不可能被误伤。 */
+  const i18n = (typeof LC_I18N !== "undefined") ? LC_I18N : null;
+  const T = (s) => (i18n ? i18n.t(s) : s);
   function save() {
     clearTimeout(t);
     t = setTimeout(() => {
@@ -557,7 +565,7 @@
     list.querySelectorAll('button[data-del]').forEach(btn => {
       btn.addEventListener("click", (e) => {
         const idx = +e.target.dataset.del;
-        if (confirm("( \u02b6> <)\u055e \u055e确定删除这个装饰图吗？")) {
+        if (confirm(T("( \u02b6> <)\u055e \u055e确定删除这个装饰图吗？"))) {
           state.decorations.splice(idx, 1);
           renderDecorations();
           save();
@@ -771,7 +779,7 @@
     }
     container.innerHTML = dialogues.map((text, i) => `
     <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--lc-soft);border-radius:8px;margin-bottom:8px;">
-      <span style="flex:1;font-size:13px;color:var(--lc-text);word-break:break-word;">${text}</span>
+      <span data-lc-raw style="flex:1;font-size:13px;color:var(--lc-text);word-break:break-word;">${text}</span>
       <button class="btn dialogue-del-btn" data-didx="${i}" type="button" style="padding:2px 8px;font-size:11px;background:color-mix(in srgb,#ef4444 12%,var(--lc-card));color:#ef4444;border:none;border-radius:4px;cursor:pointer;">删除</button>
     </div>
   `).join('');
@@ -789,6 +797,7 @@
   function render() {
     const s = state;
     $("enabled").checked = s.enabled;
+    $("lang-select").value = s.lang || "zh-Hans";
 
     // 背景
     $("bg-mode").value = s.background.mode;
@@ -1425,7 +1434,17 @@
   on("th-accent", "input", (e) => { state.theme.accent = e.target.value; save(); });
   on("search-placeholder", "input", (e) => { state.searchPlaceholder = e.target.value.trim() || "搜索用户、标签"; save(); }); 
 
-  on("reset", "click", () => { if (!confirm("确定要全部重置吗？")) return; state = LC_clone(LC_DEFAULTS); render(); save(); });
+  on("reset", "click", () => { if (!confirm(T("确定要全部重置吗？"))) return; state = LC_clone(LC_DEFAULTS); render(); save(); });
+
+  /* 语言切换（#16）：整页重载最稳 —— 文案散在初始渲染与多处动态状态里，
+   * 逐处回滚易漏（译后的文本已不是字典键，就地反查不回来）。
+   * 先落盘再 reload，避免重载后读到旧值。 */
+  on("lang-select", "change", (e) => {
+    state.lang = e.target.value;
+    if (i18n) i18n.set(state.lang);
+    save();
+    setTimeout(() => location.reload(), 250);
+  });
 
   /* ---------- 功能栏：关键词/用户过滤 ---------- */
   function ensureFilter() {
@@ -1448,7 +1467,7 @@
           .map(
             (u, i) =>
               `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-soft);">` +
-              `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(u.name || u.id).replace(/[<>&"]/g, "")}</span>` +
+              `<span data-lc-raw style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(u.name || u.id).replace(/[<>&"]/g, "")}</span>` +
               `<button class="btn" data-filter-unmute="${i}" type="button" style="padding:1px 8px;font-size:11px;flex-shrink:0;">移除</button></div>`,
           )
           .join("")
@@ -1667,7 +1686,7 @@
             ? `<a href="${lcOfficialEsc(home)}" target="_blank" rel="noopener noreferrer" title="访问 TA 的主页" style="flex-shrink:0;line-height:0;">` +
               `<img src="${lcOfficialEsc(u.ava)}" style="width:24px;height:24px;border-radius:50%;object-fit:cover;" onerror="this.style.visibility='hidden'"></a>`
             : `<img src="${lcOfficialEsc(u.ava)}" style="width:24px;height:24px;border-radius:50%;flex-shrink:0;object-fit:cover;" onerror="this.style.visibility='hidden'">`) +
-          `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">` +
+          `<span data-lc-raw style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">` +
           (home
             ? `<a href="${lcOfficialEsc(home)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;">${lcOfficialEsc(u.nick)}</a>`
             : lcOfficialEsc(u.nick)) +
@@ -1749,7 +1768,7 @@
           .map(
             (t, i) =>
               `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-soft);">` +
-              `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(t).replace(/[<>&"]/g, "")}</span>` +
+              `<span data-lc-raw style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(t).replace(/[<>&"]/g, "")}</span>` +
               `<button class="btn" data-tag-unblock="${i}" type="button" style="padding:1px 8px;font-size:11px;flex-shrink:0;">移除</button></div>`,
           )
           .join("")
@@ -1897,7 +1916,7 @@
       lcOfficialPersist();
       $("official-add-input").value = "";
     } catch (err) {
-      alert("拉黑失败：" + err.message);
+      alert(T("拉黑失败：") + err.message);
     } finally {
       btn.disabled = false;
       btn.textContent = "拉黑";
@@ -1934,7 +1953,7 @@
       renderOfficialList();
       lcOfficialPersist();
     } catch (err) {
-      alert("移除失败：" + err.message);
+      alert(T("移除失败：") + err.message);
       b.disabled = false;
       b.textContent = "移除";
     }
@@ -2280,7 +2299,7 @@
     const inputs = [...$("cfg-modules").querySelectorAll("input[data-mod]")];
     const mods = inputs.filter((i) => i.checked).map((i) => i.dataset.mod);
     if (!mods.length) {
-      alert("请先勾选至少一个模块。");
+      alert(T("请先勾选至少一个模块。"));
       return;
     }
     const allSel = mods.length === inputs.length;
@@ -2302,11 +2321,11 @@
     try {
       raw = JSON.parse(await f.text());
     } catch (err) {
-      alert("导入失败：文件不是有效的 JSON 文本。");
+      alert(T("导入失败：文件不是有效的 JSON 文本。"));
       return;
     }
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      alert("导入失败：无法识别的配置文件。");
+      alert(T("导入失败：无法识别的配置文件。"));
       return;
     }
 
@@ -2327,7 +2346,7 @@
       }
     });
     if (!Object.keys(data).length && !Object.keys(rawIn).length) {
-      alert("导入失败：文件中没有本扩展认识的设置项。");
+      alert(T("导入失败：文件中没有本扩展认识的设置项。"));
       return;
     }
 
@@ -2374,7 +2393,7 @@
       );
     }
     if (dropped.length) lines.push("", `已忽略无法识别的项：${dropped.join("、")}`);
-    if (!confirm(lines.join("\n") + "\n\n继续？")) return;
+    if (!confirm(lines.join("\n") + "\n\n" + T("继续？"))) return;
 
     const hasSettings = Object.keys(data).length > 0;
     if (mods) {
@@ -2411,7 +2430,7 @@
       chrome.storage.local.set(LC_clone(rawIn));
       Object.assign(lcRawCache, LC_clone(rawIn));
     }
-    alert("导入完成。刷新 LOFTER 页面后生效。");
+    alert(T("导入完成。刷新 LOFTER 页面后生效。"));
   });
 
   buildFontOptions();
@@ -2422,9 +2441,14 @@
     LC_RAW_KEYS.forEach((k) => {
       if (res[k] !== undefined) lcRawCache[k] = res[k];
     });
+    /* i18n（#16）：先定语言、再首渲染，最后挂 watcher。
+     * watch 自带一次 apply，并守着后续全部增删改（含 popup.js 里那些
+     * `el.textContent = "…"` / `innerHTML = "…"` 的动态文案，不必逐处包 T()）。 */
+    if (i18n) i18n.set(state.lang);
     render();
     initRanges();
     syncCfgMods(); // 装饰图计数/按张入口依赖加载后的 state.decorations，初渲染时还没到手
+    if (i18n) i18n.watch(document.body);
     lcStateLoaded = true; // 真值已到手，可以撤首开防白闪的预判标记了
     applyDarkFollow(state); // 面板暗色跟随（函数声明提升，定义在 IIFE 尾部）
 
@@ -2750,7 +2774,7 @@
       if (!file) return;
 
       if (file.size > 1024 * 1024) {
-        alert('文件超过 1MB 限制，请选择更小的文件');
+        alert(T('文件超过 1MB 限制，请选择更小的文件'));
         return;
       }
 
@@ -2758,7 +2782,7 @@
       const validExts = ['.mp3', '.wav'];
       const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
       if (!validTypes.includes(file.type) && !validExts.includes(ext)) {
-        alert('仅支持 MP3 或 WAV 格式');
+        alert(T('仅支持 MP3 或 WAV 格式'));
         return;
       }
 

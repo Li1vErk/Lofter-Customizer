@@ -65,7 +65,7 @@
       "https://lofter.com/*",
       "https://lofter.lf127.net/lofter-admin/*"
     ],
-    "js": ["defaults.js", "hyalite.js", "lc-dwr.js", "lc-export.js", "lc-draft.js", "lc-like-fx.js", "lc-share-card.js", "lc-css-dark.js", "lc-css-light.js", "lc-css-pages.js", "lc-comment.js", "content.js", "wc-frame.js"],
+    "js": ["defaults.js", "lc-i18n-dict.js", "lc-i18n.js", "hyalite.js", "lc-dwr.js", "lc-export.js", "lc-draft.js", "lc-like-fx.js", "lc-share-card.js", "lc-css-dark.js", "lc-css-light.js", "lc-css-pages.js", "lc-comment.js", "content.js", "wc-frame.js"],
     "run_at": "document_start",
     "all_frames": true,
     "match_about_blank": true

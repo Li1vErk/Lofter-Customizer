@@ -1363,6 +1363,9 @@ function cmtTbBuildBar() {
     }
     cmtTick();
   });
+  /* i18n（#16）：工具行（只看作者 / 从旧到新 / 加载更多评论 / 表情入口）
+   * 是插件注入的独立容器，在此一次接管；后续改文案（lc-dis 态等）由 watcher 跟上 */
+  if (typeof LC_I18N !== "undefined") LC_I18N.watch(bar);
   return bar;
 }
 
@@ -2426,6 +2429,9 @@ function lcEpEnsureDom() {
     e.preventDefault();
   });
   root.appendChild(epHost);
+  /* i18n（#16）：面板是插件自有容器 —— 在此接管翻译，后续 lcEpRender*
+   * 往里写的内容由 watcher 自动跟上（无需逐处包 T()） */
+  if (typeof LC_I18N !== "undefined") LC_I18N.watch(epHost);
   return epHost;
 }
 function lcEpPanelEl() {
@@ -2753,11 +2759,11 @@ function lcEpToast(msg, undo) {
   const d = document.createElement('div');
   d.className = 'lc-ep-toast';
   const s = document.createElement('span');
-  s.textContent = msg;
+  s.textContent = (typeof LC_I18N !== "undefined") ? LC_I18N.t(msg) : msg;
   d.appendChild(s);
   if (undo) {
     const a = document.createElement('a');
-    a.textContent = '撤销';
+    a.textContent = (typeof LC_I18N !== "undefined") ? LC_I18N.t('撤销') : '撤销';
     a.addEventListener('click', () => {
       undo();
       d.remove();

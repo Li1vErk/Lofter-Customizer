@@ -29,6 +29,10 @@ const LC_FONT_PRESETS = [
 
 const LC_DEFAULTS = {
   enabled: true,
+  /* 界面语言（#16 港澳台繁体）：zh-Hans（默认）/ zh-Hant-TW / zh-Hant-HK。
+   * 只作用于插件自己注入的 UI 与插件页面（popup）；LOFTER 站点页面本身
+   * 与导出/分享图的内容保持原文（见 i18n/vocab.json 的 _strategy）。 */
+  lang: "zh-Hans",
   decorationsVisible: true, // 装饰图全局显示/隐藏
   shortcutsEnabled: true,
 
