@@ -510,6 +510,10 @@
     .hint.collapsible { display: none; margin-top: 4px; }
     .hint.collapsible.open { display: block; }
 
+    /* 跟在开关行后的说明：开关行自带分割线（border-bottom），
+       .hint 默认的负 top margin 会把文字压到线上 —— 这里改回正常间距 */
+    .grp-card > .toggle + .hint { margin-top: 10px; }
+
     /* 快捷键行：label 不换行 + 键位胶囊不收缩、不换行（用 .kbd，勿复用 .hint） */
     .sc-row {
       justify-content: space-between;
@@ -1333,7 +1337,7 @@
         <span data-page-node-id="lcFabToggleLabel">显示悬浮按钮</span>
         <input type="checkbox" id="show-fab" data-page-node-id="lcFabToggle" />
       </label>
-      <p class="hint" style="margin-left:90px;" data-page-node-id="lcFabHint">关掉后页面上的悬浮按钮消失，改用浏览器工具栏的插件图标打开本面板；如果你常用，建议把插件固定到工具栏（点地址栏右侧的拼图图标 → 图钉）</p>
+      <p class="hint" style="margin-left:90px;" data-page-node-id="lcFabHint">关掉后页面上的悬浮按钮消失。如果你常用，建议把插件固定到工具栏（点地址栏右侧的拼图图标 → 图钉）</p>
       </div>
 
       <div class="grp-card"><div class="grp-title">快捷键</div>
@@ -1397,8 +1401,12 @@
           <div style="height:6px;border-radius:3px;background:var(--lc-line);overflow:hidden;margin-top:6px;">
             <div id="lc-usage-bar" style="height:100%;width:0%;background:#667eea;transition:width .25s ease;"></div>
           </div>
-          <div id="lc-usage-list" style="margin-top:8px;font-size:12px;color:var(--lc-sub);line-height:1.9;" data-page-node-id="lcUsageList"></div>
-          <p class="hint plain" id="lc-usage-hint" style="margin:6px 0 0 0;" data-page-node-id="lcUsageHint"></p>
+          <!-- 分组明细默认收起（大多数用户只需要看总量条；分账是排查占用时的排查工具） -->
+          <div id="lc-usage-detail" style="display:none;">
+            <div id="lc-usage-list" style="margin-top:8px;font-size:12px;color:var(--lc-sub);line-height:1.9;" data-page-node-id="lcUsageList"></div>
+            <p class="hint plain" id="lc-usage-hint" style="margin:6px 0 0 0;" data-page-node-id="lcUsageHint"></p>
+          </div>
+          <button class="lc-link" id="lc-usage-more" type="button" style="margin-top:6px;" data-page-node-id="lcUsageMore">展开明细</button>
         </div>
       </div>
 
@@ -1426,8 +1434,12 @@
 
   <footer class="foot" data-page-node-id="AVGBO8rOZ4osg1DGBykbl6">
     <button class="btn" id="reset-pane" data-page-node-id="lcResetPane">重置本栏</button>
-    <button class="btn" id="reset" data-page-node-id="fJ8hzZMosOxBOqp3DVoudh">全部重置</button>
-    <span class="saved" id="saved" data-page-node-id="AAVkhPyU95X8vkgOP0XXIX">已保存 ✓</span>
+    <!-- 右组：已保存反馈紧挨保存动效来源；全部重置独自靠右 ——
+         两个「重置」用距离分离危险等级，降低连点/误触（2026-10-08 作者问 layout，定的方案） -->
+    <span style="display:flex;align-items:center;gap:10px;margin-left:auto;">
+      <span class="saved" id="saved" data-page-node-id="AAVkhPyU95X8vkgOP0XXIX">已保存 ✓</span>
+      <button class="btn" id="reset" data-page-node-id="fJ8hzZMosOxBOqp3DVoudh">全部重置</button>
+    </span>
   </footer>
 
   <!-- 词卡编辑弹窗 -->

@@ -3112,6 +3112,15 @@
   }
 
   on("lc-usage-refresh", "click", lcRenderUsage);
+  /* 分组明细默认收起：展开时才把明细区显示出来（数据本身照常统计，
+     这样展开/收起即时切换、不用重查） */
+  on("lc-usage-more", "click", () => {
+    const d = $("lc-usage-detail"), b = $("lc-usage-more");
+    if (!d || !b) return;
+    const open = d.style.display === "none";
+    d.style.display = open ? "" : "none";
+    b.textContent = T(open ? "收起明细" : "展开明细");
+  });
   /* 首屏若就停在「其他」栏（上次记住的栏），补一次统计 */
   if (document.querySelector('.pane[data-pane="misc"].on')) lcRenderUsage();
 
