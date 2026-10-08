@@ -257,6 +257,10 @@ const LC_DEFAULTS = {
   darkMode: {
     mode: "off",
     brightness: 90,
+    /* 按时段自动切换（mode === "schedule"）：默认「晚 7 点到早 7 点」。
+       跨零点由 LC_scheduleActive 处理（from > to 视为跨夜区间）。
+       只存 "HH:MM" 文本，判定与显示同一份数据，避免时区/Date 序列化坑 */
+    schedule: { from: "19:00", to: "07:00" },
     /* 信息流淡透底（实验）：反色区内打 rgba(230,230,232,.85)，
        反相显示为 rgba(约25,25,23,.85) 的深色淡透底，背景极淡透出。
        只动三块反色容器自身的底，内层白面不碰（改了会误杀卡片/按钮底） */
@@ -271,6 +275,10 @@ const LC_DEFAULTS = {
    * 旧版 {x,y} 自由坐标由 content.js 读取时自动按半边迁移。 */
   panel: {
     fabPos: null,
+    /* 悬浮按钮总开关（「其他」栏）。关掉后按钮与面板都不注入，用户改用
+       浏览器工具栏的插件图标打开面板；真机主 IIFE 与 FAB 模块通过
+       storage.onChanged 联动（见 content.js 的 applyFabVisible） */
+    showFab: true,
   },
 };
 
@@ -326,6 +334,63 @@ function LC_normalizeFontFamily(val) {
   return s;
 }
 
+/* ============================================================
+ * 暗色档位判定（纯函数，四处判定点共用）
+ * 位置：defaults.js 是 content_scripts 与 popup.html 里都最先加载的脚本，
+ * 放这里可被 content.js / lc-comment.js / lc-export.js / lc-share-card.js /
+ * popup.js 裸名引用（跨文件顶层作用域共享，见 content.js 头部说明）。
+ * 设计：判定只依赖传入的 darkMode 配置对象与「当前时间」，不读 DOM、不读
+ * storage → 可单测。matchMedia 只用于 auto 档，带 try 兜底。
+ * ============================================================ */
+
+/* "19:30" → 1170（分钟）。非法输入返回 null（调用方按"未配置"处理） */
+function LC_parseHM(s) {
+  if (typeof s !== "string") return null;
+  const m = /^\s*(\d{1,2})\s*:\s*(\d{1,2})\s*$/.exec(s);
+  if (!m) return null;
+  const h = +m[1];
+  const mi = +m[2];
+  if (h > 23 || mi > 59) return null;
+  return h * 60 + mi;
+}
+
+/* 时段判定：from ≤ now < to；from > to 视为跨零点（如 19:00–07:00）。
+   任一端非法 → 视为"未配置"，返回 false（宁可不切，也不要乱切）。
+   now 传入 Date（默认取当前时间，便于测试注入） */
+function LC_scheduleActive(schedule, now) {
+  const sc = schedule || {};
+  const from = LC_parseHM(sc.from);
+  const to = LC_parseHM(sc.to);
+  if (from === null || to === null) return false;
+  if (from === to) return false; /* 起止相同 = 空区间，不切 */
+  /* 用鸭子类型而不是 instanceof Date：Date 是 realm 私有的，iframe / vm 沙箱
+     里传进来的 Date 过不了 instanceof 判定，会被静默当成"没传"而取当前时间
+     （2026-10-08 tools/test-panel-batch.js 实测：区间判定整体错位） */
+  const d = (now && typeof now.getHours === "function") ? now : new Date();
+  const cur = d.getHours() * 60 + d.getMinutes();
+  return from < to ? cur >= from && cur < to : cur >= from || cur < to;
+}
+
+/* 当前是否应处于暗色：off / manual / auto（跟随系统）/ schedule（按时段） */
+function LC_darkActive(darkMode, now) {
+  const dm = darkMode || {};
+  const mode = dm.mode || "off";
+  if (mode === "manual") return true;
+  if (mode === "auto") {
+    try {
+      return !!(
+        typeof window !== "undefined" &&
+        window.matchMedia &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches
+      );
+    } catch (e) {
+      return false;
+    }
+  }
+  if (mode === "schedule") return LC_scheduleActive(dm.schedule, now);
+  return false;
+}
+
 if (typeof window !== "undefined") {
   window.LC_DEFAULTS = LC_DEFAULTS;
   window.LC_STORAGE_KEY = LC_STORAGE_KEY;
@@ -334,4 +399,7 @@ if (typeof window !== "undefined") {
   window.LC_clone = LC_clone;
   window.LC_migrateNav = LC_migrateNav;
   window.LC_normalizeFontFamily = LC_normalizeFontFamily;
+  window.LC_parseHM = LC_parseHM;
+  window.LC_scheduleActive = LC_scheduleActive;
+  window.LC_darkActive = LC_darkActive;
 }

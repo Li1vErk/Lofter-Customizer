@@ -328,9 +328,11 @@
         settings.export && settings.export.enabled === true);
     }
     function isDark() {
-      var mode = settings && settings.darkMode && settings.darkMode.mode || 'off';
-      if (mode === 'auto') return window.matchMedia('(prefers-color-scheme: dark)').matches;
-      return mode === 'manual';
+      var dm = (settings && settings.darkMode) || {};
+      /* 四档统一判定（defaults.js）：off/manual/auto/schedule（按时段） */
+      if (typeof LC_darkActive === 'function') return LC_darkActive(dm);
+      if (dm.mode === 'auto') return window.matchMedia('(prefers-color-scheme: dark)').matches;
+      return dm.mode === 'manual';
     }
     function isDetailPage() {
       return !!(document.querySelector('.postwrapper .block.article') ||

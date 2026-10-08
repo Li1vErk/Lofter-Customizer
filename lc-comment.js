@@ -2131,6 +2131,8 @@ function lcEpDark() {
       (cmtSettings && cmtSettings.darkMode) ||
       null;
     if (!d) return false;
+    /* 四档统一判定（defaults.js）：off/manual/auto/schedule（按时段） */
+    if (typeof LC_darkActive === 'function') return LC_darkActive(d);
     if (d.mode === 'manual') return true;
     if (d.mode === 'auto') {
       return !!(

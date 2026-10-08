@@ -47,9 +47,9 @@ window.decorationsGloballyHidden = false;
     chrome.storage.local.get('lc_settings_v1', (res) => {
       const s = res['lc_settings_v1'] || {};
       const checkAndApply = (settings) => {
-        const mode = settings?.darkMode?.mode || 'off';
-        const isDark = mode === 'manual' ||
-          (mode === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        /* 档位判定统一走 LC_darkActive（defaults.js）：off/manual/auto/
+           schedule（按时段）四档，四档语义全插件一致 */
+        const isDark = LC_darkActive(settings && settings.darkMode);
         let st = document.getElementById('lc-editor-dark');
         if (!st) {
           st = document.createElement('style');
@@ -171,15 +171,35 @@ styleEl.textContent = `
   };
 
   const checkDark = (s) => {
-    const mode = s?.darkMode?.mode || 'off';
-    const isDark = mode === 'manual' ||
-      (mode === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    /* 与主帧同一套档位判定（含按时段）；处理完立即安排下一次边界检查 */
+    const isDark = LC_darkActive(s && s.darkMode);
     if (isDark) {
       if (document.head) setTimeout(applyDark, 300);
       else document.addEventListener('DOMContentLoaded', () => setTimeout(applyDark, 300));
     } else {
       removeDark();
     }
+    armScheduleTick(s);
+  };
+
+  /* 评论/control 子帧的「按时段」补课：整帧反色不依赖主帧管线，
+     换档只能靠这个 20s 轮询（只在 schedule 档下活着） */
+  let schedTick = null, schedLast = null, schedCfg = null;
+  const armScheduleTick = (s) => {
+    schedCfg = (s && s.darkMode) || {};   /* 每次都刷新配置，防闭包吃旧值 */
+    if (schedCfg.mode !== 'schedule') {
+      if (schedTick) { clearInterval(schedTick); schedTick = null; }
+      return;
+    }
+    if (schedTick) return;
+    schedLast = LC_darkActive(schedCfg);
+    schedTick = setInterval(() => {
+      const on = LC_darkActive(schedCfg);
+      if (on === schedLast) return;
+      schedLast = on;
+      if (on) { if (document.head) applyDark(); }
+      else removeDark();
+    }, 20000);
   };
 
   chrome.storage.local.get('lc_settings_v1', (res) => {
@@ -3426,6 +3446,8 @@ body #masonryWrap .likebtn:hover {
 
   /* ---------- 暗色蒙版 ---------- */
   function isDarkMode() {
+    /* 四档统一判定（defaults.js）：off / manual / auto / schedule（按时段） */
+    if (typeof LC_darkActive === "function") return LC_darkActive(settings.darkMode);
     const mode = settings.darkMode.mode || "off";
     if (mode === "auto")
       return window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -7256,6 +7278,33 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     });
   }
 
+  /* ---------- 「按时段」自动切换的守夜人 ----------
+   * darkMode.mode === "schedule" 时，暗色档位只由「当前时刻」决定，不会
+   * 自己变 → 需要一个轮询在跨越起止边界时重建样式。
+   * 设计要点：
+   *   ① 只在 schedule 档下活着（其它档清理掉定时器，零开销）；
+   *   ② 20s 轮询 + 状态比对，只在**真的跨界**那一刻重建（applyAll 较重，
+   *      不能每 20s 跑一次）；
+   *   ③ 边界抖动无所谓：判定本身是纯函数（LC_darkActive），跨过去就稳。
+   * 改设置时（load / storage.onChanged）重新武装，防止闭包吃旧配置。 */
+  let darkTick = null, darkTickLast = null, darkTickCfg = null;
+  function armDarkScheduleTick() {
+    darkTickCfg = (settings && settings.darkMode) || {};
+    if (darkTickCfg.mode !== "schedule") {
+      if (darkTick) { clearInterval(darkTick); darkTick = null; }
+      return;
+    }
+    if (darkTick) return;
+    darkTickLast = LC_darkActive(darkTickCfg);
+    darkTick = setInterval(() => {
+      const on = LC_darkActive(darkTickCfg);
+      if (on === darkTickLast) return;
+      darkTickLast = on;
+      invalidateCSS();
+      applyAll();
+    }, 20000);
+  }
+
   /* ---------- 加载配置 ---------- */
   function load() {
     chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
@@ -7268,6 +7317,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         window.settings.decorationsVisible === false;
       invalidateCSS();
       applyAll();
+      armDarkScheduleTick();
     });
   }
 
@@ -7280,6 +7330,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         window.settings.decorationsVisible === false;
       invalidateCSS();
       applyAll();
+      armDarkScheduleTick();
     }
   });
 
@@ -8206,7 +8257,8 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
 
     if (msg.action === "shortcutToggleDarkMode") {
       // 深色模式切换逻辑
-      // settings.darkMode 是对象：{ mode: 'off'|'manual'|'auto', brightness: 90 }
+      // settings.darkMode 是对象：{ mode: 'off'|'manual'|'auto'|'schedule', brightness: 90 }
+      // 注：auto / schedule 档下按快捷键 = 显式接管为 manual（与原 auto 行为一致）
       const currentMode = settings.darkMode?.mode || "off";
       let newMode;
 
@@ -8868,13 +8920,28 @@ function bindGlobalDecListener() {
 
   /* ---------- 主题读取（与主 IIFE 的 window.settings 解耦兜底） ---------- */
   const isDark = () => {
-    const m = window.settings?.darkMode?.mode || "off";
+    const dm = window.settings?.darkMode;
+    if (typeof LC_darkActive === "function") return LC_darkActive(dm);
+    const m = dm?.mode || "off";
     return (
       m === "manual" ||
       (m === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches)
     );
   };
   const getAccent = () => window.settings?.theme?.accent || "#667eea";
+
+  /* ---------- 悬浮按钮总开关（panel.showFab，「其他」栏） ----------
+   * 关闭 = 宿主整体 display:none：按钮和面板是同一个 Shadow 宿主的子节点，
+   * 一起消失。面板正开着时关闭 → 先收起，免得"看不见还占着焦点"。
+   * 关掉不等于没有入口：浏览器工具栏的插件图标（popup.html 本体）照常可用，
+   * 面板里的 hint 会建议常用户把插件固定到工具栏。 */
+  const fabVisible = () => window.settings?.panel?.showFab !== false;
+  function applyFabVisible() {
+    if (!host) return;
+    const on = fabVisible();
+    if (!on && isOpen) closePanel();
+    host.style.display = on ? "" : "none";
+  }
 
   /* ---------- 注入点 helper：幂等挂载 Shadow DOM 宿主 ----------
    * 挂在 documentElement（body 之外）：React 重渲染/站点脚本不清洗，
@@ -8888,6 +8955,9 @@ function bindGlobalDecListener() {
     host.style.cssText =
       "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483000;";
     (document.documentElement || document.body).appendChild(host);
+    /* 先藏起来，等读到设置再由 applyFabVisible 决定显示 —— 否则「关掉了
+       悬浮按钮」的用户每次刷新都会看到它闪一下再消失 */
+    host.style.display = "none";
 
     const shadow = host.attachShadow({ mode: "closed" });
     const sheet = new CSSStyleSheet();
@@ -9506,7 +9576,10 @@ function bindGlobalDecListener() {
 
     // 主题联动：settings 或系统深浅变化时刷新按钮配色
     chrome.storage.onChanged.addListener((c, area) => {
-      if (area === "local" && c[LC_STORAGE_KEY]) applyFabTheme();
+      if (area !== "local" || !c[LC_STORAGE_KEY]) return;
+      applyFabTheme();
+      /* 悬浮按钮开关同批联动：关掉要立刻消失，不能等刷新页面 */
+      applyFabVisible();
     });
     window
       .matchMedia("(prefers-color-scheme: dark)")
@@ -9530,6 +9603,9 @@ function bindGlobalDecListener() {
       placeFab(false); // 恢复记忆位置同样免过渡
     }
     applyFabTheme();
+    applyFabVisible(); // 开关以存储值为准（宿主创建时是隐藏的，见 ensureHost）
   });
+  /* 兜底：storage 读取异常时别让按钮永远不出现 */
+  setTimeout(applyFabVisible, 1500);
   })();
 })();

@@ -1844,7 +1844,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
    * ③ 都没有 → FAB 兜底。
    * 开关：lc_settings_v1.shareCard.{enabled,entry}；改设置即时生效（storage.onChanged）。 */
 
-  var CFG = { enabled: true, entry: 'auto', dark: 'off', exportMd: false };
+  var CFG = { enabled: true, entry: 'auto', dark: 'off', darkSchedule: null, exportMd: false };
 
   /* 撤销对官方条帧的「让位平移」（入口撤下/开关关闭/卸载/④a 升级时必须还原，否则条停在左移位）。
    * ⚠ 必须全扫：真机一页有两个同 id 帧（空壳在前），getElementById 只认第一个的话，
@@ -2753,6 +2753,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
        * entry:'fab' 一律忽略。 */
       CFG.entry = 'auto';
       CFG.dark = (s.darkMode && s.darkMode.mode) || 'off';     /* 与暗色管线同源（content.js isDarkMode） */
+      CFG.darkSchedule = (s.darkMode && s.darkMode.schedule) || null; /* schedule 档的时段 */
       /* 「导出 .md」并入官方按钮行（作者 2026-10-07 拍板）：跟 lc-export 的总开关
        * export.enabled（默认关，popup 开「导出」才出现第二枚钮）；scope.manage/detail
        * 只闸 lc-export 自己的老入口，这里不重复闸——入口只该有一个判定口径。 */
@@ -2767,6 +2768,11 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
   /* 暗色判定（与官方钮反转同源）：control 帧的暗色管线按 lc_settings_v1.darkMode 干活
    * （manual 直开 / auto 跟系统），父页没被反色 → 我们的挨排钮自己跟皮肤。 */
   function darkOn() {
+    /* 四档统一判定（defaults.js）；schedule = 按时段（2026-10-08 新增）。
+       本文件在父页与跨域帧里都可能跑，读不到 helper 时退回旧两档。 */
+    if (typeof LC_darkActive === 'function') {
+      return LC_darkActive({ mode: CFG.dark, schedule: CFG.darkSchedule });
+    }
     if (CFG.dark === 'manual') return true;
     if (CFG.dark === 'auto') {
       try { return window.matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) { return false; }

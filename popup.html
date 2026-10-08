@@ -1037,11 +1037,18 @@
           <option value="off" data-page-node-id="vLGnKdinS5UhyHERDXllu2">关闭</option>
           <option value="manual" data-page-node-id="8ybG8i37yXeMKmxHUHORqg">手动开启</option>
           <option value="auto" data-page-node-id="JiFlCIW63mPDkYBN50PcaM">跟随系统</option>
+          <option value="schedule" data-page-node-id="lcDarkScheduleOpt">按时段</option>
         </select>
       </div>
-      <p class="hint" data-page-node-id="zHintDarkMode">「跟随系统」依据系统深浅色自动切换</p>
-      <div class="row slider-row" id="dark-brightness-row" data-page-node-id="BQa2M6GGnzAfAT1sGZlHvL"><label data-page-node-id="EnfNWXqaVbqlkAQf2BN2BU">卡片亮度</label><input type="range" id="dark-brightness" min="60" max="100" data-page-node-id="rgkQy6Ikpwj2Sm5j91tDfy" /><span class="value"
+      <p class="hint" data-page-node-id="zHintDarkMode">「跟随系统」依据系统深浅色自动切换；「按时段」在你设定的时间段内自动开启（可跨零点，如 19:00–07:00）</p>
+      <div class="row" id="dark-schedule-row" hidden data-page-node-id="lcDarkScheduleRow"><label data-page-node-id="lcDarkScheduleLabel">时间段</label>
+        <input type="time" id="dark-schedule-from" step="60" data-page-node-id="lcDarkFrom" />
+        <span class="hint" style="margin:0 6px;" data-page-node-id="lcDarkScheduleTo">至</span>
+        <input type="time" id="dark-schedule-to" step="60" data-page-node-id="lcDarkTo" />
+      </div>
+      <div class="row slider-row" id="dark-brightness-row" data-page-node-id="BQa2M6GGnzAfAT1sGZlHvL"><label data-page-node-id="EnfNWXqaVbqlkAQf2BN2BU">内容亮度</label><input type="range" id="dark-brightness" min="60" max="100" data-page-node-id="rgkQy6Ikpwj2Sm5j91tDfy" /><span class="value"
             id="dark-brightness-v" data-page-node-id="5zlnM1gBEWlrnRPEUVJftM"></span></div>
+      <p class="hint" style="margin-left:90px;" data-page-node-id="lcHintDarkBrightness">调低会让暗色下的卡片、页头与顶部导航一起变暗；调高则更接近纯黑背景上的白字</p>
       </div>
       <div class="grp-card"><div class="grp-title">背景</div>
       <div class="row" data-page-node-id="bMIh5j7M7Bp1MCTzsfpMiT"><label data-page-node-id="PZMG4soB2k7jNeU8d04B9n">背景类型</label>
@@ -1318,12 +1325,17 @@
         </label>
         <p class="hint collapsible plain" id="msg-search-help" style="margin:4px 0 0 0;">私信列表卡片右上角会出现搜索框，按对方昵称和最后一条消息摘要过滤。只搜当前页已加载的会话（官方分页，约 19 条/页），翻页后需重新搜。</p>
       </div>
-      <div class="grp-card"><div class="grp-title">路线图</div>
-        <p class="hint plain" data-page-node-id="lcFuncRoadmap">文章导出等功能会陆续加入本栏，每项都是独立开关。</p>
-      </div>
     </section>
 
     <section class="pane" data-pane="misc" data-page-node-id="ZHR6vKyIVNU71GiLvGGY2D">
+      <div class="grp-card"><div class="grp-title">面板</div>
+      <label class="toggle" data-page-node-id="lcFabToggleRow">
+        <span data-page-node-id="lcFabToggleLabel">显示悬浮按钮</span>
+        <input type="checkbox" id="show-fab" data-page-node-id="lcFabToggle" />
+      </label>
+      <p class="hint" style="margin-left:90px;" data-page-node-id="lcFabHint">关掉后页面上的悬浮按钮消失，改用浏览器工具栏的插件图标打开本面板；如果你常用，建议把插件固定到工具栏（点地址栏右侧的拼图图标 → 图钉）</p>
+      </div>
+
       <div class="grp-card"><div class="grp-title">快捷键</div>
       <label class="toggle" style="margin-bottom:14px;" data-page-node-id="ATESbGG0VvLW5bMXcBXCtv">
         <span data-page-node-id="bpGqU1HU1LAOCFIuG4ueIL">启用快捷键</span>
@@ -1375,6 +1387,19 @@
           <button type="button" class="help-dot" data-hint="cfg-import-help" title="导入说明" data-page-node-id="lcImpHelp">?</button>
         </div>
         <p class="hint collapsible plain" id="cfg-import-help" data-page-node-id="lcImpHint2">导入会覆盖对应模块的现有设置，覆盖前会先弹确认框；装饰图可选择覆盖或追加。文件只保存在你电脑上、不会上传；图片、词卡和自定义音效都内嵌在导出的配置文件里，对方无需原文件。</p>
+
+        <div id="lc-usage" style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--lc-line);">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:12px;color:var(--lc-sub);" data-page-node-id="lcUsageLabel">存储占用</span>
+            <span id="lc-usage-total" class="hint" style="margin:0;" data-page-node-id="lcUsageTotal">统计中…</span>
+            <button class="lc-link" id="lc-usage-refresh" type="button" style="margin-left:auto;" data-page-node-id="lcUsageRefresh">刷新</button>
+          </div>
+          <div style="height:6px;border-radius:3px;background:var(--lc-line);overflow:hidden;margin-top:6px;">
+            <div id="lc-usage-bar" style="height:100%;width:0%;background:#667eea;transition:width .25s ease;"></div>
+          </div>
+          <div id="lc-usage-list" style="margin-top:8px;font-size:12px;color:var(--lc-sub);line-height:1.9;" data-page-node-id="lcUsageList"></div>
+          <p class="hint plain" id="lc-usage-hint" style="margin:6px 0 0 0;" data-page-node-id="lcUsageHint"></p>
+        </div>
       </div>
 
       <div class="grp-card"><div class="grp-title">界面语言</div>
@@ -1391,12 +1416,16 @@
       <div class="grp-card"><div class="grp-title">关于</div>
         <div class="row"><label>版本</label><span id="about-version" style="font-size:13px;color:var(--lc-sub);"></span></div>
         <div class="row"><label>项目主页</label><a href="https://github.com/Li1vErk/Lofter-Customizer" target="_blank" rel="noopener" style="font-size:13px;color:#667eea;text-decoration:none;">GitHub 仓库</a></div>
-        <p class="hint" style="margin-left:90px;">问题反馈与版本更新见仓库 Releases 页</p>
+        <div class="row"><label>反馈与建议</label><a href="https://github.com/Li1vErk/Lofter-Customizer/issues" target="_blank" rel="noopener" style="font-size:13px;color:#667eea;text-decoration:none;">提交 Issue</a></div>
+        <div class="row"><label>支持作者</label><a href="https://afdian.com/a/16734tl" target="_blank" rel="noopener" style="font-size:13px;color:#667eea;text-decoration:none;">爱发电</a></div>
+        <!-- 上架后补：商店评价入口（拿到扩展商店详情页链接再加一行，见 todo #19） -->
+        <p class="hint" style="margin-left:90px;">遇到问题先看仓库 Releases 页的更新说明；反馈请附上页面地址与截图</p>
       </div>
     </section>
   </main>
 
   <footer class="foot" data-page-node-id="AVGBO8rOZ4osg1DGBykbl6">
+    <button class="btn" id="reset-pane" data-page-node-id="lcResetPane">重置本栏</button>
     <button class="btn" id="reset" data-page-node-id="fJ8hzZMosOxBOqp3DVoudh">全部重置</button>
     <span class="saved" id="saved" data-page-node-id="AAVkhPyU95X8vkgOP0XXIX">已保存 ✓</span>
   </footer>

@@ -50,6 +50,16 @@
       /* ---------- 安检结束 ---------- */
 
       chrome.storage.local.set({ [LC_STORAGE_KEY]: state }, () => {
+        /* 写盘失败（最常见 = 10MB 配额满）此前被静默吞掉：界面照样弹
+           「已保存 ✓」，但设置其实没落盘，刷新就回去了。这里明确报错，
+           并把用户导到「其他 → 数据」的占用面板。lastError 必须在本回调
+           里同步读——出了回调就被清掉。 */
+        const err = chrome.runtime.lastError;
+        if (err) {
+          $("saved").classList.remove("show");
+          lcSaveFailed(err.message || String(err));
+          return;
+        }
         const s = $("saved"); s.classList.add("show"); setTimeout(() => s.classList.remove("show"), 900);
       });
     }, 120);
@@ -72,15 +82,33 @@
 
   /* 标签切换（--i 驱动 .tabs::before 滑动色块平移） */
   const tabsBar = $("tabs");
-  tabsBar.addEventListener("click", (e) => {
-    const b = e.target.closest("button[data-tab]"); if (!b) return;
+  /* 记住最后停留的栏：切语言等场景 popup 会整页重载，不记就每次弹回第一栏。
+     用 localStorage（扩展页同源、FAB iframe 与工具栏弹窗共用），存的是栏 id */
+  const PANE_LS = "lc_last_pane";
+  function activateTab(id) {
+    const b = tabsBar.querySelector(`button[data-tab="${id}"]`);
+    if (!b) return false;
     document.querySelectorAll(".tabs button").forEach((x) => x.classList.remove("on"));
     document.querySelectorAll(".pane").forEach((x) => x.classList.remove("on"));
     b.classList.add("on");
-    document.querySelector(`.pane[data-pane="${b.dataset.tab}"]`).classList.add("on");
+    const pane = document.querySelector(`.pane[data-pane="${id}"]`);
+    if (pane) pane.classList.add("on");
     const btns = [...tabsBar.querySelectorAll("button[data-tab]")];
     tabsBar.style.setProperty("--i", btns.indexOf(b));
+    return true;
+  }
+  tabsBar.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-tab]"); if (!b) return;
+    activateTab(b.dataset.tab);
+    try { localStorage.setItem(PANE_LS, b.dataset.tab); } catch (err) {}
+    /* 进「其他」栏时刷新一次存储占用（统计有成本，不常驻轮询） */
+    if (b.dataset.tab === "misc") lcRenderUsage();
   });
+  /* 载入时恢复上次停留的栏（失败/首次打开则维持 HTML 里的「显示」） */
+  try {
+    const last = localStorage.getItem(PANE_LS);
+    if (last && last !== "bg") activateTab(last);
+  } catch (err) {}
 
   /* 二级子标签切换（栏内 pill，如背景栏的"背景与显示 / 页面装饰"） */
   document.querySelectorAll(".subtabs").forEach((bar) => {
@@ -103,10 +131,12 @@
     const mode = state.background.mode;
     document.querySelectorAll("[data-when]").forEach((g) => (g.hidden = g.dataset.when !== mode));
   }
-  /* 亮度 */
+  /* 亮度 + 按时段：亮度只在暗色档位下有意义；时段输入只在「按时段」档显示 */
   function syncDarkBrightness() {
     const mode = state.darkMode.mode;
     $("dark-brightness-row").hidden = !mode || mode === 'off';
+    const schRow = $("dark-schedule-row");
+    if (schRow) schRow.hidden = mode !== 'schedule';
   }
   /* 淡透底卡面透明度：仅开关开启时显示 */
   function syncFeedTrans() {
@@ -798,6 +828,9 @@
     const s = state;
     $("enabled").checked = s.enabled;
     $("lang-select").value = s.lang || "zh-Hans";
+    /* 悬浮按钮开关（「其他 → 面板」）：默认开 */
+    const fabCb = $("show-fab");
+    if (fabCb) fabCb.checked = !(s.panel && s.panel.showFab === false);
 
     // 背景
     $("bg-mode").value = s.background.mode;
@@ -864,6 +897,10 @@
     $("dark-feed-translucent").checked = !!s.darkMode.feedTranslucent;
     $("dark-feed-trans-alpha").value = Math.round((s.darkMode.feedTransAlpha || 0.65) * 100);
     $("dark-feed-trans-v").textContent = Math.round((s.darkMode.feedTransAlpha || 0.65) * 100) + "%";
+    /* 按时段：两个时间输入回填（缺失时用默认 19:00–07:00 显示，不改存储） */
+    const sch = (s.darkMode && s.darkMode.schedule) || LC_DEFAULTS.darkMode.schedule;
+    if ($("dark-schedule-from")) $("dark-schedule-from").value = sch.from || "19:00";
+    if ($("dark-schedule-to")) $("dark-schedule-to").value = sch.to || "07:00";
     syncFeedTrans();
 
     // 导航（本批两档化：毛玻璃低透 / 液态玻璃高透，互斥）
@@ -1096,12 +1133,12 @@
       }
     });
 
-    // 初始化状态
-    if (state.shortcutsEnabled) {
-      shortcutsEnabled.checked = true;
-      shortcutsList.style.opacity = '1';
-      shortcutsList.style.pointerEvents = 'auto';
-    }
+    // 初始化状态（两向都要写：关掉后重开面板，开关与列表禁用态都得对。
+    // 旧代码只在 true 方向回填，关掉后重开面板会显示成"开着但列表禁用"的矛盾态）
+    const scOn = !!state.shortcutsEnabled;
+    shortcutsEnabled.checked = scOn;
+    shortcutsList.style.opacity = scOn ? '1' : '0.5';
+    shortcutsList.style.pointerEvents = scOn ? 'auto' : 'none';
 
     // 打开浏览器快捷键设置
     $('shortcuts-settings-btn').addEventListener('click', () => {
@@ -1374,6 +1411,17 @@
   });
 
   on("dark-mode", "change", (e) => { state.darkMode.mode = e.target.value; syncDarkBrightness(); save(); });
+  /* 按时段：起止时间改变即存（跨零点由 LC_scheduleActive 判定，无额外约束） */
+  on("dark-schedule-from", "change", (e) => {
+    if (!state.darkMode) state.darkMode = LC_clone(LC_DEFAULTS.darkMode);
+    state.darkMode.schedule = Object.assign({}, state.darkMode.schedule, { from: e.target.value });
+    save();
+  });
+  on("dark-schedule-to", "change", (e) => {
+    if (!state.darkMode) state.darkMode = LC_clone(LC_DEFAULTS.darkMode);
+    state.darkMode.schedule = Object.assign({}, state.darkMode.schedule, { to: e.target.value });
+    save();
+  });
   on("dark-brightness", "input", (e) => { state.darkMode.brightness = +e.target.value; $("dark-brightness-v").textContent = e.target.value + "%"; save(); });
   on("dark-feed-translucent", "change", (e) => {
     if (!state.darkMode) state.darkMode = LC_clone(LC_DEFAULTS.darkMode);
@@ -1435,6 +1483,56 @@
   on("search-placeholder", "input", (e) => { state.searchPlaceholder = e.target.value.trim() || "搜索用户、标签"; save(); }); 
 
   on("reset", "click", () => { if (!confirm(T("确定要全部重置吗？"))) return; state = LC_clone(LC_DEFAULTS); render(); save(); });
+
+  /* ---------- 重置本栏（页脚双键之一）----------
+   * 只回退「当前所在栏」对应的设置模块，其余栏一个字不动。
+   * 为什么要它：最常见的出错场景是"只把某一栏改坏了"（尤其深色/背景/卡片
+   * 材质），全量重置太粗暴——装饰图、表情、背景图这些用户攒出来的资产
+   * 会一起被抹掉。粒度取「栏」而不是「每个分组」：20 个分组各挂一个 ↺
+   * 会让标题行变挤，而栏级已经覆盖绝大多数"回退"诉求。 */
+  const PANE_MODULES = {
+    bg: ["display"], deco: ["deco"], card: ["card"],
+    nav: ["nav"], func: ["func", "export"], misc: ["misc"],
+  };
+  /* 不参与「重置本栏」的键：界面语言属于"用户身份"而非观感设置，
+     重置任何一栏都不该悄悄把繁体切回简体（切语言本身会整页重载） */
+  const RESET_SKIP_KEYS = ["lang"];
+
+  function resetPane(pane) {
+    const keys = (PANE_MODULES[pane] || [])
+      .flatMap((mid) => (LC_MODULES.find((m) => m.id === mid) || {}).keys || [])
+      .filter((k) => RESET_SKIP_KEYS.indexOf(k) < 0);
+    if (!keys.length) return false;
+    keys.forEach((k) => {
+      if (Object.prototype.hasOwnProperty.call(LC_DEFAULTS, k)) {
+        state[k] = LC_clone(LC_DEFAULTS[k]);
+      } else {
+        delete state[k];   /* 默认里没有的键（如 searchPlaceholder）：删掉即回默认 */
+      }
+    });
+    render();
+    save();
+    return true;
+  }
+
+  on("reset-pane", "click", () => {
+    const paneEl = document.querySelector(".pane.on");
+    const tabBtn = tabsBar.querySelector("button[data-tab].on");
+    const pane = paneEl ? paneEl.dataset.pane : "bg";
+    const label = tabBtn ? tabBtn.textContent.trim() : "";
+    if (!PANE_MODULES[pane]) return;
+    if (!confirm(T(`确定要重置「${label}」栏的设置吗？其他栏不受影响。`))) return;
+    resetPane(pane);
+  });
+
+  /* ---------- 悬浮按钮总开关（「其他 → 面板」）----------
+   * 写进 lc_settings_v1.panel.showFab；content.js 侧的 FAB 模块监听
+   * storage 变更即时隐藏/恢复（不必刷新页面）。 */
+  on("show-fab", "change", (e) => {
+    if (!state.panel) state.panel = LC_clone(LC_DEFAULTS.panel);
+    state.panel.showFab = e.target.checked;
+    save();
+  });
 
   /* 语言切换（#16）：整页重载最稳 —— 文案散在初始渲染与多处动态状态里，
    * 逐处回滚易漏（译后的文本已不是字典键，就地反查不回来）。
@@ -2909,11 +3007,12 @@
    * manual（手动开启）或 auto 且系统深色 → 面板切 body.dark（CSS 变量整体换暗） */
   const darkMq = window.matchMedia("(prefers-color-scheme: dark)");
   function applyDarkFollow(s) {
-    const mode = (s.darkMode && s.darkMode.mode) || "off";
-    document.body.classList.toggle(
-      "dark",
-      mode === "manual" || (mode === "auto" && darkMq.matches),
-    );
+    /* 判据与 content.js isDarkMode() 完全同源（含按时段档） */
+    const on = typeof LC_darkActive === "function"
+      ? LC_darkActive(s && s.darkMode)
+      : ((s.darkMode && s.darkMode.mode) === "manual" ||
+         ((s.darkMode && s.darkMode.mode) === "auto" && darkMq.matches));
+    document.body.classList.toggle("dark", !!on);
     if (lcStateLoaded) document.documentElement.classList.remove("lc-pre-dark");
   }
   darkMq.addEventListener("change", () => applyDarkFollow(state));
@@ -2924,6 +3023,98 @@
    * manual 写回存储 → 页面突然变暗。修复：字段级和解——与 state 不同的
    * 字段 adopt 进来并重渲染；自己刚写的字段 incoming===state 自然跳过，
    * 不会打断正在输入的控件（Chrome 对相同 value 赋值不动光标）。 */
+  /* ============================================================
+   * 存储占用（「其他 → 数据」）
+   * ------------------------------------------------------------
+   * 关键事实：chrome.storage.local 的配额是**整个扩展共用的一个池子**——
+   *   · 10MB（Chrome/Edge 114 起；manifest 未申请 unlimitedStorage）
+   *   · 不是「每个键各 10MB」，也不是「每张图各 10MB」：所有键相加不能超
+   *   · 值按 JSON 序列化后计入体积，图片/音频以 base64 dataURL 存
+   *     → 实际占用 ≈ 原文件 × 1.33（这就是「6MB 图撞墙」的成因）
+   * 所以这里拆出「谁在吃空间」，用户才能对症清理。
+   * 只做只读统计 + 引导到对应栏目删除，不在这里提供一键删除：
+   * 删快照 = 删用户唯一副本，风险等级不同，不该混在同一个按钮里。
+   * ============================================================ */
+  const LC_QUOTA_FALLBACK = 10 * 1024 * 1024;
+  const LC_USAGE_GROUPS = [
+    { label: "设置与素材", keys: ["lc_settings_v1"],
+      note: "背景图 / 装饰图 / 回顶按钮图 / 嵌入字体 / 自定义音效" },
+    { label: "草稿快照", keys: ["lc_draft_snap_v1"],
+      note: "编辑防丢的正文快照（按上限自动修剪）" },
+    { label: "表情包", keys: ["lc_emoji_v1"],
+      note: "内置表情 + 你导入的自定义表情" },
+    { label: "官方黑名单", keys: ["lc_official_bl_v1"],
+      note: "跟随 LOFTER 账号的黑名单镜像" },
+    { label: "其它缓存", keys: ["lc_self_v1", "lc_draft_tmpkey_v1", "lc_cmt_diag_v1",
+      "lc_cmt_diag_req_v1", "lc_ep_diag_v1"],
+      note: "身份缓存与诊断标记" },
+  ];
+
+  /* 写盘失败提示：只在首次弹一次（输入过程中反复弹会打断操作） */
+  let lcSaveWarned = false;
+  function lcSaveFailed(msg) {
+    if (lcSaveWarned) return;
+    lcSaveWarned = true;
+    alert(T("保存失败：扩展的存储空间已满（全部数据共 10MB）。") +
+      T("请到「其他 → 数据」查看占用，删掉不用的装饰图、背景图或自定义音效后重试。") +
+      "\n\n" + msg);
+  }
+
+  function lcFmtBytes(n) {
+    const v = Number(n) || 0;
+    if (v < 1024) return v + " B";
+    if (v < 1024 * 1024) return (v / 1024).toFixed(1) + " KB";
+    return (v / 1024 / 1024).toFixed(2) + " MB";
+  }
+
+  function lcRenderUsage() {
+    const totalEl = $("lc-usage-total"), listEl = $("lc-usage-list"),
+      barEl = $("lc-usage-bar"), hintEl = $("lc-usage-hint");
+    if (!totalEl || !chrome.storage.local.getBytesInUse) return;
+    totalEl.textContent = T("统计中…");
+    const quota = chrome.storage.local.QUOTA_BYTES || LC_QUOTA_FALLBACK;
+    chrome.storage.local.getBytesInUse(null, (total) => {
+      const used = Number(total) || 0;
+      const pct = Math.min(100, (used / quota) * 100);
+      totalEl.textContent =
+        lcFmtBytes(used) + " / " + lcFmtBytes(quota) + " · " + pct.toFixed(0) + "%";
+      if (barEl) {
+        barEl.style.width = pct + "%";
+        barEl.style.background =
+          pct >= 85 ? "#e5533d" : pct >= 60 ? "#e6a23c" : "#667eea";
+      }
+      /* 分组统计：逐组异步查，结果按索引落位后再拼（不能依赖回调顺序） */
+      const out = new Array(LC_USAGE_GROUPS.length);
+      let done = 0;
+      LC_USAGE_GROUPS.forEach((g, i) => {
+        chrome.storage.local.getBytesInUse(g.keys, (n) => {
+          out[i] = { g: g, n: Number(n) || 0 };
+          if (++done !== LC_USAGE_GROUPS.length) return;
+          listEl.innerHTML = out
+            /* 空组不占行，但主设置键恒显（0 也要让用户看到"这栏没吃空间"） */
+            .filter((r) => r && (r.n > 0 || r.g.keys[0] === "lc_settings_v1"))
+            .map((r) =>
+              '<div style="display:flex;gap:8px;"><span style="flex:0 0 auto;min-width:74px;">' +
+              T(r.g.label) +
+              '</span><span style="flex:0 0 auto;color:var(--lc-text);min-width:62px;">' +
+              lcFmtBytes(r.n) +
+              '</span><span style="opacity:.75;">' + T(r.g.note) + '</span></div>'
+            )
+            .join("");
+          if (hintEl) {
+            hintEl.textContent = pct >= 85
+              ? T("已接近上限：再加图片或音效可能保存失败（会弹提示）。建议先删掉不用的装饰图、背景图或自定义音效。")
+              : T("上限是全部数据共用的 10MB（不是每项各 10MB）；图片与音频以 base64 存，占用约为原文件的 1.33 倍。清理入口在各栏目：背景图 / 装饰图 / 自定义音效在「显示」「装饰」栏，草稿快照在「编辑防丢」。");
+          }
+        });
+      });
+    });
+  }
+
+  on("lc-usage-refresh", "click", lcRenderUsage);
+  /* 首屏若就停在「其他」栏（上次记住的栏），补一次统计 */
+  if (document.querySelector('.pane[data-pane="misc"].on')) lcRenderUsage();
+
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== "local" || !ch[LC_STORAGE_KEY]) return;
     const incoming = LC_merge(LC_DEFAULTS, ch[LC_STORAGE_KEY].newValue || {});
