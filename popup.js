@@ -130,6 +130,10 @@
   function syncBgGroups() {
     const mode = state.background.mode;
     document.querySelectorAll("[data-when]").forEach((g) => (g.hidden = g.dataset.when !== mode));
+    /* 背景明暗（叠在背景上的黑色遮罩）只对「有背景」的档位有意义：
+       关闭档下没有背景可调，整块藏起来（与深色「关闭」档的亮度行同规矩） */
+    const alphaWrap = $("bg-alpha-wrap");
+    if (alphaWrap) alphaWrap.hidden = !mode || mode === "off";
   }
   /* 亮度 + 按时段：亮度只在暗色档位下有意义；时段输入只在「按时段」档显示 */
   function syncDarkBrightness() {

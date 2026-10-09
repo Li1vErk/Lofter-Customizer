@@ -1095,11 +1095,13 @@
         <div class="row slider-row" data-page-node-id="R7DNJQeEaUFFbUe4EXR3Az"><label data-page-node-id="jWiihg8AxrKLWLQcxicil0">模糊</label><input type="range" id="bg-blur"
             min="0" max="20" data-page-node-id="1RXCQigugzgHxOLTfm38gr" /><span class="value" id="bg-blur-v" data-page-node-id="7m1GgV5qfeLeHXeFqk1afn"></span></div>
       </div>
-      </div>
-      <div class="grp-card"><div class="grp-title">内容</div>
+      <!-- 背景明暗：对所有背景类型通用（在背景上叠黑色遮罩），故并入「背景」卡末尾
+           （2026-10-09 作者：明暗统一针对背景调整）。包 #bg-alpha-wrap 便于「关闭」档一并隐藏。 -->
+      <div id="bg-alpha-wrap">
       <div class="row slider-row" data-page-node-id="6wlEvysG0OReeUkk5dFB1F"><label data-page-node-id="0A6uZIHYe7nxxDSXBhXYhc">背景明暗</label><input type="range" id="bg-alpha"
           min="20" max="100" data-page-node-id="pzWE10zG7clsjIL0MxLvgP" /><span class="value" id="bg-alpha-v" data-page-node-id="xIvBMauuMzLDJWcOoW6SSb"></span></div>
       <p class="hint" data-page-node-id="GOqzBgBrDXF63Cg9EfSkvm">越低背景图越暗（在背景上叠黑色遮罩）；浅色模式同样生效，内容卡片不受影响</p>
+      </div>
       </div>
 
       <div class="grp-card"><div class="grp-title">字体</div>
