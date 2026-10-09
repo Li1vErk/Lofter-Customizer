@@ -1044,15 +1044,17 @@
           <option value="schedule" data-page-node-id="lcDarkScheduleOpt">按时段</option>
         </select>
       </div>
-      <p class="hint" data-page-node-id="zHintDarkMode">「跟随系统」依据系统深浅色自动切换；「按时段」在你设定的时间段内自动开启（可跨零点，如 19:00–07:00）</p>
       <div class="row" id="dark-schedule-row" hidden data-page-node-id="lcDarkScheduleRow"><label data-page-node-id="lcDarkScheduleLabel">时间段</label>
         <input type="time" id="dark-schedule-from" step="60" data-page-node-id="lcDarkFrom" />
         <span class="hint" style="margin:0 6px;" data-page-node-id="lcDarkScheduleTo">至</span>
         <input type="time" id="dark-schedule-to" step="60" data-page-node-id="lcDarkTo" />
       </div>
-      <div class="row slider-row" id="dark-brightness-row" data-page-node-id="BQa2M6GGnzAfAT1sGZlHvL"><label data-page-node-id="EnfNWXqaVbqlkAQf2BN2BU">内容亮度</label><input type="range" id="dark-brightness" min="60" max="100" data-page-node-id="rgkQy6Ikpwj2Sm5j91tDfy" /><span class="value"
-            id="dark-brightness-v" data-page-node-id="5zlnM1gBEWlrnRPEUVJftM"></span></div>
-      <p class="hint" style="margin-left:90px;" data-page-node-id="lcHintDarkBrightness">调低会让暗色下的卡片、页头与顶部导航一起变暗；调高则更接近纯黑背景上的白字</p>
+      <!-- 行 + 说明包在一起显隐：此前只藏行，说明残留在「关闭」档（2026-10-09 作者走查） -->
+      <div id="dark-brightness-wrap" hidden>
+        <div class="row slider-row" id="dark-brightness-row" data-page-node-id="BQa2M6GGnzAfAT1sGZlHvL"><label data-page-node-id="EnfNWXqaVbqlkAQf2BN2BU">内容亮度</label><input type="range" id="dark-brightness" min="60" max="100" data-page-node-id="rgkQy6Ikpwj2Sm5j91tDfy" /><span class="value"
+              id="dark-brightness-v" data-page-node-id="5zlnM1gBEWlrnRPEUVJftM"></span></div>
+        <p class="hint" style="margin-left:90px;" data-page-node-id="lcHintDarkBrightness">调低会让暗色下的卡片等主体内容变暗；调高则更接近纯黑背景上的白字</p>
+      </div>
       </div>
       <div class="grp-card"><div class="grp-title">背景</div>
       <div class="row" data-page-node-id="bMIh5j7M7Bp1MCTzsfpMiT"><label data-page-node-id="PZMG4soB2k7jNeU8d04B9n">背景类型</label>
@@ -1095,9 +1097,9 @@
       </div>
       </div>
       <div class="grp-card"><div class="grp-title">内容</div>
-      <div class="row slider-row" data-page-node-id="6wlEvysG0OReeUkk5dFB1F"><label data-page-node-id="0A6uZIHYe7nxxDSXBhXYhc">内容透明度</label><input type="range" id="bg-alpha"
+      <div class="row slider-row" data-page-node-id="6wlEvysG0OReeUkk5dFB1F"><label data-page-node-id="0A6uZIHYe7nxxDSXBhXYhc">背景明暗</label><input type="range" id="bg-alpha"
           min="20" max="100" data-page-node-id="pzWE10zG7clsjIL0MxLvgP" /><span class="value" id="bg-alpha-v" data-page-node-id="xIvBMauuMzLDJWcOoW6SSb"></span></div>
-      <p class="hint" data-page-node-id="GOqzBgBrDXF63Cg9EfSkvm">越低越暗，用于暗色模式下保护眼睛</p>
+      <p class="hint" data-page-node-id="GOqzBgBrDXF63Cg9EfSkvm">越低背景图越暗（在背景上叠黑色遮罩）；浅色模式同样生效，内容卡片不受影响</p>
       </div>
 
       <div class="grp-card"><div class="grp-title">字体</div>

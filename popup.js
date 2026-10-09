@@ -134,7 +134,8 @@
   /* 亮度 + 按时段：亮度只在暗色档位下有意义；时段输入只在「按时段」档显示 */
   function syncDarkBrightness() {
     const mode = state.darkMode.mode;
-    $("dark-brightness-row").hidden = !mode || mode === 'off';
+    /* 行 + 说明包在 #dark-brightness-wrap 里一起显隐（只藏行会残留说明） */
+    $("dark-brightness-wrap").hidden = !mode || mode === 'off';
     const schRow = $("dark-schedule-row");
     if (schRow) schRow.hidden = mode !== 'schedule';
   }
