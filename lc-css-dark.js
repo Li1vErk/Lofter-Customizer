@@ -8,7 +8,7 @@
 window.LC_CSS = window.LC_CSS || {};
 LC_CSS.dark = LC_CSS.dark || {};
 
-/* ── 反色宿主全集（「无宿主判据」用，2026-10-08）──────────────────────────
+/* ── 反色宿主全集（2026-10-08；2026-10-10 #18 落地第一批补至 11 项）────────
  * 暗色管线的 invert **不止挂在三个常规宿主**上。实测/源码核对：
  *   #main / .postwrapper / .box.wid700  旧版 www 页三大宿主（invert 挂本体）
  *   #masonryWrap                         发现-趋势页瀑布流（invert 挂本体）
@@ -16,14 +16,18 @@ LC_CSS.dark = LC_CSS.dark || {};
  *   #blognotice                          通知页（invert 挂 .g-mn:has(#blognotice) > *）
  *   #rside                               首页/合集页侧栏（invert 挂 #rside > *）
  *   .m-vw-nav                            查看更多页（invert 挂 .g-bdc/.g-hd/.g-hdview）
- * 两个「无宿主修复」（.m-post 直写本体暗色 / .lc-emoji-wrap 清零）用
- * html:not(:has(本常量)) 反向判定 —— 只要页面存在**任一**反色区就不该命中。
- * 2026-10-08 趋势页实证：谓词只写三个常规宿主 ⇒ 这页有 #masonryWrap 却被误判成
- * 「无宿主页」，两条修复同时打歪 —— 卡片被直写 #1f1f19 后又被 #masonryWrap 翻成
- * 米色（原预反色写法本可翻成暗卡）、emoji 补偿被清掉后又被真反色一次。
+ *   body.p-body10 .g-bdc .m-fbar / .g-bdc > .ztag / .g-sd  归档页 /view 三宿主
+ *     （2026-10-10 第三轮探针实证：三者真反色却不在旧 8 项里）
+ * 现只余**一处**「无宿主修复」（.m-post 直写本体暗色）用 html:not(:has(本常量))
+ * 反向判定 —— 只要页面存在**任一**反色区就不该命中。
+ * （原第二处「.lc-emoji-wrap 无宿主清零」已于 2026-10-10 #18 落地第一批删除：
+ *   emoji 补偿改正向作用域后，「无宿主 ⇒ 无补偿」本就是默认行为，无需反向清零。）
+ * 2026-10-08 趋势页实证：谓词只写三个常规宿主 ⇒ 该页有 #masonryWrap 却被误判成
+ * 「无宿主页」→ 卡片被直写 #1f1f19 后又被 #masonryWrap 翻成米色。
  * ⚠️ 新增任何容器级 invert 都必须回来补这里；tools/test-no-host-dark-css.js
- *    [D] 组断言两处规则都引用本常量、且源码里不存在硬编码的宿主三元组。 */
-LC_CSS.DARK_HOSTS = "#main, .postwrapper, .box.wid700, #masonryWrap, #msgcontainer, #blognotice, #rside, .m-vw-nav";
+ *    [D] 组断言 .m-post 规则引用本常量、且源码里不存在硬编码的宿主三元组；
+ *    [E] 组断言「正向补偿表」覆盖本常量全部 11 项。 */
+LC_CSS.DARK_HOSTS = "#main, .postwrapper, .box.wid700, #masonryWrap, #msgcontainer, #blognotice, #rside, .m-vw-nav, body.p-body10 .g-bdc .m-fbar, body.p-body10 .g-bdc > .ztag, body.p-body10 .g-sd";
 
 /* 原 content.js L5725-6475（751 行）｜文章发布弹窗：编辑区 iframe 内边距归零 + 暗色背景（作用于主页面的 i */
 LC_CSS.dark.s5725 = function ({ s, computeDarkAccent }) {
@@ -1641,11 +1645,9 @@ main.lc-gift-dark > div > button:hover {
         background-color: ${s.theme.accent || "#667eea"} !important;
         border-color: ${s.theme.accent || "#667eea"} !important;
       }
-      /* emoji：弹窗不在 #main 反色区内，全局的“抵消反色”filter 在这里
-         反而会把 emoji 真正反色（浅变深、深变浅）→ 弹窗内还原不滤镜 */
-      .lc-dialog-dark .lc-emoji-wrap {
-        filter: none !important;
-      }
+      /* emoji：原「.lc-dialog-dark .lc-emoji-wrap { filter: none }」清零豁免已随
+         #18 正向落地删除（2026-10-10）：补偿改正向作用域后，暗色弹窗不在任何
+         反色宿主内 ⇒ 天然无补偿，无需清零。探针豁免体检实证：弹窗页 1/1 none ✅ */
       /* 月份标题 / 文章数亮度（“3篇文章”原色偏深看不清） */
       .lc-dialog-dark .rc-dialog-body h2,
       .lc-dialog-dark .rc-dialog-body h2 em {
@@ -2219,39 +2221,36 @@ ${
         color: #fff !important;
       }
 
-      /* ---------- Emoji 抵消反色 ---------- */
-/* 旧版页面：抵消 filter 反色 */
+      /* ---------- Emoji 抵消反色（#18 正向作用域 · 落地第一批 2026-10-10）----------
+   语义：**正向命中 ⇔ 补偿**。只有「真实反色挂载层」内的 emoji 才补偿，其余
+   一律不写 filter（默认无补偿）。取代旧版「全局补偿 + 4 条清零豁免」（全局
+   .lc-emoji-wrap{invert} + #application 清零 + html:not(:has(宿主)) 清零 +
+   搜索下拉清零 + 写文章弹窗清零），消除「漏一个宿主就把那一页反着修」的连坐
+   风险 —— 趋势页 #masonryWrap、无宿主自定义主题子域页两次事故均源于此。
+   ⚠️ 逐行对齐「真实 invert 挂载层」，**不是直接拼 DARK_HOSTS**：#blognotice /
+      .m-vw-nav 只是判页标记（真实挂载层在下沉层），#msgcontainer / #rside 下沉
+      到 > *。改这里之前：读 docs/handoff.md §三·A + 真机跑
+      tools/probe-emoji-forward.js 逐页比对（四类判据 ok/over/under/none
+      全部 0 差异才可动），探针的 FORWARD 数组是本表的真值来源。
+   ⚠️ 新增任何容器级 invert 必须回来补一行 + 同步 LC_CSS.DARK_HOSTS；
+      tools/test-no-host-dark-css.js [E] 组守「10 行覆盖 11 项宿主」。
+   ⚠️ display:inline-block 与反色无关（包裹层布局需要），保持全局单列，
+      别顺手并进正向表 —— 否则反色区外的 wrap 会退化成 inline。 */
 .lc-emoji-wrap {
   display: inline-block !important;
+}
+/* 正向表（10 行）。第 8 行 #rside 是既有专条（带 brightness 抵消父层调暗），
+   在下方 #rside 段落里，不在此重复列。 */
+#main .lc-emoji-wrap,
+.postwrapper .lc-emoji-wrap,
+.box.wid700 .lc-emoji-wrap,
+#masonryWrap .lc-emoji-wrap,
+#msgcontainer > * .lc-emoji-wrap,
+.g-mn:has(#blognotice) > * .lc-emoji-wrap,
+.g-bdc:has(#blognotice) #pager .lc-emoji-wrap,
+body:has(.m-vw-nav) :is(.g-bdc, .g-hd, .g-hdview) .lc-emoji-wrap,
+body.p-body10 :is(.g-bdc .m-fbar, .g-bdc > .ztag, .g-sd) .lc-emoji-wrap {
   filter: invert(100%) hue-rotate(180deg) !important;
-}
-
-/* 新版页面：没有 filter 反色，不需要抵消，保持原样 */
-#application.lofter-root-container .lc-emoji-wrap {
-  filter: none !important;
-}
-
-/* 无反色宿主的页面（自定义主题博客子域页等）：反色区全不存在
-   （2026-10-08 lofguancha.lofter.com 主页 + 详情页 diag 实锤：hosts 全 0），
-   正文 emoji 本就不在反色区内，这条抵消规则反而把正常 emoji 真正反色
-   （亮变暗、暗变亮）——与账号设置页 .m-blackset、弹窗 .lc-dialog-dark 同类坑
-   （emoji 是字体 glyph，被包进 .lc-emoji-wrap 后自身带 invert，祖先链上
-   看不出来，故只能按宿主判）。
-   html:has 反向判宿主（全集见文件顶部 LC_CSS.DARK_HOSTS —— 2026-10-08
-   趋势页实证：全集漏了 #masonryWrap 曾把该页误判为无宿主页、emoji 补偿被
-   清掉后又被 #masonryWrap 真反色一次）；有宿主不命中、维持抵消；无宿主清零 */
-html:not(:has(${LC_CSS.DARK_HOSTS})) .lc-emoji-wrap {
-  filter: none !important;
-}
-
-/* 搜索下拉栏：强制清除 emoji 反向 filter */
-[class*="box-web"] [class*="sql-"] .lc-emoji-wrap {
-  filter: none !important;
-}
-
-/* 写文章弹窗下拉栏：强制清除 emoji 反向 filter */
-[data-selector-options-box="true"] .lc-emoji-wrap {
-  filter: none !important;
 }
 
 /* 首页右侧栏(#rside 反色区)：关注/粉丝数、HOT、emoji 颜色补偿。
@@ -2655,10 +2654,56 @@ body:has(.m-vw-nav) .vicon {
 
       /* ── 发现页深色（趋势/话题/标签/达人/专题/风格模板）── */
 /* 发现页主体反色：通过 .m-vw-nav 识别 */
+/* ⚠️ 必须同步清掉玻璃（backdrop-filter）：浅色圆角卡规则（lc-css-light s8189
+   「发现页各子页面大容器毛玻璃」，仅由 card.enabled 门控、无暗色门控）会给
+   .g-bdc 挂 backdrop-filter:blur + rgba(255,255,255,0.65) 半透明白底。filter 与
+   backdrop-filter 同体时 Chromium 把玻璃采样层合成到 filter 作用域之外 → 容器
+   自身背景逃过反色，半透明白底在暗色页裸露成亮色玻璃板（2026-10-10 发现页
+   interest 页截图+probe-glass-panel 实锤：唯一「玻璃+反色」同体元素就是 .g-bdc；
+   无头 A/B 复现 tools/tmp-glass-repro-ab.png：带玻璃容器底亮灰、去玻璃整容器
+   正确变暗）。容器内容稀疏的底部最显眼，即用户报的「毛玻璃大容器底部反色异常」 */
 body:has(.m-vw-nav) .g-bdc,
 body:has(.m-vw-nav) .g-hdview,
 body:has(.m-vw-nav) .g-hd {
   filter: invert(100%) hue-rotate(180deg) brightness(${(settings.darkMode.brightness || 90) / 100}) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+/* 🔧 暗色毛玻璃补齐（2026-10-10 二轮；用户反馈「玻璃被切成半透明板」）：
+   反色根不能兼玻璃根（filter 与 backdrop-filter 同体会让容器自身背景逃过反色
+   → 亮板，见上条注释），所以把玻璃「上移一层」挂到 .g-bdc 的无 filter 直接父级
+   .g-bd5（probe 实证：盒子与 .g-bdc 贴合 0×2、filter/backdrop-filter 均 none）。
+   父层 backdrop 采样壁纸不受 filter 截断，.g-bdc 的反色半透明底叠在模糊层上
+   = 暗色毛玻璃（blur/saturate/圆角与浅色 s8189 完全一致，只换了挂载点）。
+   选择器镜像浅色 7 个 :has() 变体 ⇒ 只给「真有浅色玻璃的容器」的父层上玻璃，
+   避免误伤页头 .g-bdc（其内含 .m-vw-nav 但不含下列卡片容器类）等非玻璃节点。
+   ⚠️ 不能用「.g-bd5:has(> .g-bdc:has(变体))」的嵌套写法：CSS 规范禁止 :has()
+   嵌套，整条选择器会被浏览器判定非法直接丢弃（无头实测 BF=none）；变体类是
+   .g-bdc 的后代、同时也是 .g-bd5 的后代，故「.g-bd5:has(变体)」等价且合法。
+   （本注释须写在模板串内 ⇒ 严禁出现反引号，否则终止模板串 = 全文语法错） */
+body:has(.m-vw-nav) .g-bd5:has(.m-goodblog1),
+body:has(.m-vw-nav) .g-bd5:has(#inviteearea),
+body:has(.m-vw-nav) .g-bd5:has(.m-glist),
+body:has(.m-vw-nav) .g-bd5:has(.m-vw-actlist2),
+body:has(.m-vw-nav) .g-bd5:has(#g-selectionlist-box),
+body:has(.m-vw-nav) .g-bd5:has(.m-templist),
+body:has(.m-vw-nav) .g-bd5:has(.m-goodcnt) {
+  border-radius: ${fr} !important;
+  -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+  backdrop-filter: blur(16px) saturate(180%) !important;
+}
+/* 通透度微调（2026-10-10 用户反馈「再透明一点」）：.g-bdc 的预反色底 alpha
+   0.65 → 0.45（invert 后即 rgba(0,0,0,0.45)），壁纸透出更多、玻璃感更强。
+   浅色端 0.65 不动；只覆盖「真玻璃容器」的 .g-bdc（同一批 :has 变体，特异性
+   (0,5,1) 稳赢浅色 (0,2,0)/(1,1,0)），页头 .g-bdc 无玻璃不受影响。 */
+body:has(.m-vw-nav) .g-bd5:has(.m-goodblog1) > .g-bdc,
+body:has(.m-vw-nav) .g-bd5:has(#inviteearea) > .g-bdc,
+body:has(.m-vw-nav) .g-bd5:has(.m-glist) > .g-bdc,
+body:has(.m-vw-nav) .g-bd5:has(.m-vw-actlist2) > .g-bdc,
+body:has(.m-vw-nav) .g-bd5:has(#g-selectionlist-box) > .g-bdc,
+body:has(.m-vw-nav) .g-bd5:has(.m-templist) > .g-bdc,
+body:has(.m-vw-nav) .g-bd5:has(.m-goodcnt) > .g-bdc {
+  background: rgba(255, 255, 255, 0.45) !important;
 }
 
 /* 发现页图片/视频反回正常 */
