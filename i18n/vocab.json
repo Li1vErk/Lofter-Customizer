@@ -3,7 +3,7 @@
   "_policy": {
     "include_guess": ["ui"],
     "exclude_guess": ["data", "log", "content", "match"],
-    "note": "guess=ui 的串默认进字典；data（表情包名/选择器/存储键）、log（console 参数）、content（导出 md 脚手架 / 分享图卡片绘制文案）、match（比对页面文本的锚点，翻掉会破坏功能）默认不进。要单独放行/排除某串，用 forceInclude / forceExclude。"
+    "note": "guess=ui 的串默认进字典；data（表情包名/选择器/存储键）、log（console 参数）、content（导出 md 脚手架 / 分享图卡片绘制文案）、match（比对页面文本的锚点，翻掉会破坏功能）默认不进。要单独放行/排除某串，用 forceInclude / forceExclude。**data 的判定在 tools/i18n-collect.js 里分两层：EXACT_DATA 逐串白名单 + DATA_CONSTS 整块豁免（EP_BUILTIN / EP_CORE_TABS / EP_PROP_NAME 等「数据常量」声明块）。整块豁免是 2026-10-10 补的——此前只靠逐串罗列，EP_BUILTIN 有 25 个内置表情名漏进字典，繁体下面板 chip 显示与点下去实际插入的对不上（插入值本身是好的）。新增此类数据常量，把变量名加进 DATA_CONSTS 即可。**"
   },
 
   "_strategy": [

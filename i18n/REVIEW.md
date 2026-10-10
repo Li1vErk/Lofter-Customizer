@@ -14,10 +14,10 @@
 | 项 | 数 |
 |---|---|
 | 候选串总数 | 910 |
-| 收录进字典 | 638 |
+| 收录进字典 | 613 |
 | —— 其中 overrides 精确覆盖 | 1 |
-| 跳过（data/log/content/match） | 99 |
-| 原文即目标（无需替换） | 173 |
+| 跳过（data/log/content/match） | 146 |
+| 原文即目标（无需替换） | 151 |
 | 命中词汇表改写 | 179 |
 | **TW ≠ HK** | 66 |
 | 骨架串（含插值占位） | 86 |
@@ -817,7 +817,6 @@
 | 个新表情 | 個新表情 | 個新表情 | 1 | lc-comment.js |
 | 互动效果 | 互動效果 | 互動效果 | 1 | popup.js |
 | 从旧到新 | 從舊到新 | 從舊到新 | 1 | lc-comment.js |
-| 你来燕了 | 你來燕了 | 你來燕了 | 1 | lc-comment.js |
 | 侧面滑入 | 側面滑入 | 側面滑入 | 1 | popup.html |
 | 全部保存 | 全部儲存 | 全部儲存 | 2 | lc-comment.js |
 | 其它缓存 | 其它快取 | 其它快取 | 1 | popup.js |
@@ -840,8 +839,6 @@
 | 圆角大小 | 圓角大小 | 圓角大小 | 1 | popup.html |
 | 复制全文 | 複製全文 | 複製全文 | 1 | lc-draft.js |
 | 复制失败 | 複製失敗 | 複製失敗 | 2 | lc-draft.js |
-| 多谢款待 | 多謝款待 | 多謝款待 | 1 | lc-comment.js |
-| 好好吃饭 | 好好吃飯 | 好好吃飯 | 1 | lc-comment.js |
 | 字 → 图片帖） | 字 → 圖片帖） | 字 → 圖片帖） | 1 | lc-share-card.js |
 | 字体状态 | 字型狀態 | 字型狀態 | 1 | popup.html |
 | 字体预置 | 字型預置 | 字型預置 | 1 | popup.html |
@@ -868,16 +865,12 @@
 | 手动开启 | 手動開啟 | 手動開啓 | 1 | popup.html |
 | 拉黑失败： | 拉黑失敗： | 拉黑失敗： | 1 | popup.js |
 | 拉黑用户 | 拉黑使用者 | 拉黑用戶 | 1 | popup.html |
-| 拜托拜托 | 拜託拜託 | 拜託拜託 | 1 | lc-comment.js |
 | 挤压强度 | 擠壓強度 | 擠壓強度 | 1 | popup.js |
 | 搜索提示 | 搜尋提示 | 搜尋提示 | 1 | popup.html |
 | 搜索草稿… | 搜尋草稿… | 搜尋草稿… | 1 | content.js |
-| 摄星拿月 | 攝星拿月 | 攝星拿月 | 1 | lc-comment.js |
 | 支持作者 | 支援作者 | 支援作者 | 1 | popup.html |
 | 收起明细 | 收起明細 | 收起明細 | 1 | popup.js |
 | 文章导出 | 文章匯出 | 文章匯出 | 1 | popup.html |
-| 无需修改 | 無需修改 | 無需修改 | 1 | lc-comment.js |
-| 有个朋友 | 有個朋友 | 有個朋友 | 1 | lc-comment.js |
 | 期望数字 | 期望數字 | 期望數字 | 1 | lc-dwr.js |
 | 未知变量 | 未知變量 | 未知變量 | 1 | lc-dwr.js |
 | 标题为空 | 標題為空 | 標題為空 | 1 | lc-share-card.js |
@@ -885,21 +878,17 @@
 | 清空历史 | 清空歷史 | 清空歷史 | 2 | lc-draft.js |
 | 清除图片 | 清除圖片 | 清除圖片 | 1 | popup.html |
 | 測試测试Abc123, | 測試測試Abc123, | 測試測試Abc123, | 1 | popup.js |
-| 满头问号 | 滿頭問號 | 滿頭問號 | 1 | lc-comment.js |
 | 点击热区 | 點擊熱區 | 點擊熱區 | 1 | popup.js |
 | 版式(自动) | 版式(自動) | 版式(自動) | 1 | lc-share-card.js |
 | 玻璃材质 | 玻璃材質 | 玻璃材質 | 2 | popup.html |
 | 生效范围 | 生效範圍 | 生效範圍 | 2 | popup.html |
-| 生日快乐 | 生日快樂 | 生日快樂 | 1 | lc-comment.js |
 | 界面语言 | 介面語言 | 介面語言 | 1 | popup.html |
 | 确认导入 | 確認匯入 | 確認匯入 | 1 | popup.js |
 | 确认拉黑？ | 確認拉黑？ | 確認拉黑？ | 2 | content.js,popup.js |
 | 确认清空？ | 確認清空？ | 確認清空？ | 1 | lc-draft.js |
 | 确认移除？ | 確認移除？ | 確認移除？ | 1 | popup.js |
-| 禁止涩涩 | 禁止澀澀 | 禁止澀澀 | 1 | lc-comment.js |
 | 私信增强 | 私信增強 | 私信增強 | 1 | popup.html |
 | 移除失败： | 移除失敗： | 移除失敗： | 1 | popup.js |
-| 给你喜欢 | 給你喜歡 | 給你喜歡 | 1 | lc-comment.js |
 | 编辑位置 | 編輯位置 | 編輯位置 | 2 | popup.html |
 | 编辑词卡 (${…}) | 編輯詞卡 (${…}) | 編輯詞卡 (${…}) | 1 | popup.js |
 | 编辑词卡 (${…}) | 編輯詞卡 (${…}) | 編輯詞卡 (${…}) | 1 | popup.js |
@@ -907,16 +896,10 @@
 | 缩放进入 | 縮放進入 | 縮放進入 | 1 | popup.html |
 | 背景类型 | 背景類型 | 背景類型 | 1 | popup.html |
 | 自动判定 | 自動判定 | 自動判定 | 1 | lc-share-card.js |
-| 裤子飞飞 | 褲子飛飛 | 褲子飛飛 | 1 | lc-comment.js |
 | 覆盖卡片 | 覆蓋卡片 | 覆蓋卡片 | 1 | popup.js |
 | 视频封面 video[poster] | 影片封面 video[poster] | 影片封面 video[poster] | 1 | lc-share-card.js |
 | 词卡弹窗 | 詞卡彈窗 | 詞卡彈窗 | 1 | popup.js |
 | 词卡编辑 | 詞卡編輯 | 詞卡編輯 | 1 | popup.html |
-| 请发设定 | 請發設定 | 請發設定 | 1 | lc-comment.js |
-| 请用成稿 | 請用成稿 | 請用成稿 | 1 | lc-comment.js |
-| 请用线稿 | 請用線稿 | 請用線稿 | 1 | lc-comment.js |
-| 请用色稿 | 請用色稿 | 請用色稿 | 1 | lc-comment.js |
-| 请用草稿 | 請用草稿 | 請用草稿 | 1 | lc-comment.js |
 | 读取失败 | 讀取失敗 | 讀取失敗 | 1 | popup.js |
 | 跟随系统 | 跟隨系統 | 跟隨系統 | 1 | popup.html |
 | 进阶调节 | 進階調節 | 進階調節 | 1 | popup.html |
@@ -931,7 +914,6 @@
 | 音效设置 | 音效設定 | 音效設定 | 1 | popup.html |
 | 页面精简 | 頁面精簡 | 頁面精簡 | 1 | popup.html |
 | 项目主页 | 專案主頁 | 項目主頁 | 1 | popup.html |
-| 高考必胜 | 高考必勝 | 高考必勝 | 1 | lc-comment.js |
 | 鸿蒙 Sans · 现代 | 鴻蒙 Sans · 現代 | 鴻蒙 Sans · 現代 | 1 | defaults.js |
 | 默认（系统） | 預設（系統） | 預設（系統） | 1 | defaults.js |
 | （点击插入） | （點擊插入） | （點擊插入） | 1 | lc-comment.js |
@@ -975,10 +957,7 @@
 | 强调色 | 強調色 | 強調色 | 1 | lc-share-card.js |
 | 快捷键 | 快速鍵 | 快速鍵 | 1 | popup.html |
 | 悬浮球 | 懸浮球 | 懸浮球 | 1 | lc-share-card.js |
-| 我来了 | 我來了 | 我來了 | 1 | lc-comment.js |
 | 按时段 | 按時段 | 按時段 | 1 | popup.html |
-| 排单中 | 排單中 | 排單中 | 1 | lc-comment.js |
-| 揍审核 | 揍審核 | 揍審核 | 1 | lc-comment.js |
 | 搜索框 | 搜尋框 | 搜尋框 | 1 | popup.html |
 | 时间段 | 時間段 | 時間段 | 1 | popup.html |
 | 未开启 | 未開啟 | 未開啓 | 2 | popup.js |
@@ -988,7 +967,6 @@
 | 次请求） | 次請求） | 次請求） | 1 | lc-share-card.js |
 | 次请求）← slug | 次請求）← slug | 次請求）← slug | 1 | lc-share-card.js |
 | 比当前 | 比當前 | 比當前 | 1 | lc-draft.js |
-| 求投喂 | 求投餵 | 求投餵 | 1 | lc-comment.js |
 | 爱发电 | 愛發電 | 愛發電 | 1 | popup.html |
 | 结束色 | 結束色 | 結束色 | 1 | popup.html |
 | 统计中… | 統計中… | 統計中… | 1 | popup.html |
@@ -1031,11 +1009,9 @@
 | 图案 | 圖案 | 圖案 | 2 | popup.html |
 | 图片 | 圖片 | 圖片 | 2 | popup.html |
 | 圆点 | 圓點 | 圓點 | 1 | popup.html |
-| 在吗 | 在嗎 | 在嗎 | 1 | lc-comment.js |
 | 块（段 | 塊（段 | 塊（段 | 1 | lc-share-card.js |
 | 堆叠 | 堆疊 | 堆疊 | 1 | popup.html |
 | 复制 | 複製 | 複製 | 2 | lc-draft.js |
-| 多谢 | 多謝 | 多謝 | 1 | lc-comment.js |
 | 头像 | 頭像 | 頭像 | 1 | lc-share-card.js |
 | 字体 | 字型 | 字型 | 1 | popup.html |
 | 字数 | 字數 | 字數 | 1 | content.js |
@@ -1071,7 +1047,6 @@
 | 浮动 | 浮動 | 浮動 | 1 | popup.js |
 | 添加 | 新增 | 新增 | 1 | popup.html |
 | 渐变 | 漸變 | 漸變 | 1 | popup.html |
-| 狗头 | 狗頭 | 狗頭 | 1 | lc-comment.js |
 | 现名： | 現名： | 現名： | 1 | lc-comment.js |
 | 确定 | 確定 | 確定 | 1 | popup.html |
 | 类型 | 類型 | 類型 | 1 | lc-share-card.js |
