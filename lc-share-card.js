@@ -67,7 +67,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 (function () {
   'use strict';
   var TAG = '[lc-share]';
-  var VER = '1.9.0';
+  var VER = '1.10.0';
   /* 兜底宽限期（2026-10-07 真机：长文页开场闪一下 FAB + lc-export 老入口）：
    * 官方 control 帧/条是后置渲染的，就绪前锚定形态都认不出来——若无脑落 FAB，
    * 等帧就绪再拆，右下角就闪一下。auto 模式下先等 FAB_GRACE 再落兜底。 */
