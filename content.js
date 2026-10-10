@@ -84,6 +84,8 @@ window.decorationsGloballyHidden = false;
   // 评论区 iframe (原有逻辑)
   let styleEl = null;
   let emojiObserver = null;
+  let lastSettings = null; /* 重挂看门狗用：记住最近一次配置 */
+  let outerDark = false; /* 顶层握手结果：本帧已被外层暗色宿主反相罩住时为 true */
 
   const clearEmojiFix = () => {
     // 清除内联 filter
@@ -101,19 +103,53 @@ window.decorationsGloballyHidden = false;
     }
   };
 
+  /* lpost 表情反相补偿（定义在分支作用域：applyDark 改为可重入后，
+     document.write 重建文档时观察器要随新 body 重新挂） */
+  const fixEmoji = () => {
+    document.querySelectorAll('.bcmtlstf.s-fc4.itag').forEach(el => {
+      if (el.dataset.emojiFixed) return;
+      el.dataset.emojiFixed = '1';
+      const text = el.textContent.replace(/[\s\u00a0]/g, '');
+      const nonEmoji = text.replace(/\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu, '');
+      if (nonEmoji.length === 0 && text.length > 0) {
+        el.style.setProperty('filter', 'invert(100%) hue-rotate(180deg)', 'important');
+      } else {
+        const html = el.innerHTML;
+        const newHtml = html.replace(
+          /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/gu,
+          '<span style="filter: invert(100%) hue-rotate(180deg); display: inline-block;">$1</span>'
+        );
+        if (newHtml !== html) el.innerHTML = newHtml;
+      }
+    });
+  };
+
   const applyDark = () => {
-    if (styleEl) return;
-    const isLpost = document.referrer.includes('lofter.com/lpost/');
-    styleEl = document.createElement('style');
-styleEl.textContent = `
+    /* 重建守卫：comment.do 帧可能被站点 document.write() 整文档重建
+     * （lc-comment.js L38 记载的同源问题），旧 styleEl 引用还在但已
+     * 脱离 DOM。守卫必须查 isConnected，否则重建后重注入永不发生。 */
+    if (styleEl && styleEl.isConnected) return;
+    /* 外层反相握手（2026-10-09「chips 黑字」根因）：顶层暗色宿主
+     * （.postwrapper/.box.wid700 等）的 filter 会作用到 iframe 元素上 =
+     * 对帧的渲染输出再反一次；再叠本帧 body 自反相 = 双重反相 →
+     * color:inherit 纯黑的最近表情行 chips 黑字（官方 #737373 灰字
+     * 双重反相后≈原灰，一直"看着正常"掩盖了问题；载入中白字 = 仅
+     * 外层单次反相，自反相落地后变黑 = 双重）。顶层实测本帧是否被
+     * 外层罩住（applyOuterDark → postMessage 握手），罩住则不注入
+     * body 自反相；img/.bcmtipt/.editdiv 等补偿规则补偿的是「净反相
+     * 一次」，反相由哪层提供不变，两种模式下都保留。 */
+    const bodyRule = outerDark ? '' : `
   body {
     filter: invert(100%) hue-rotate(180deg) !important;
   }
-  /* img 还原不能只做 lpost：body{filter:invert} 会连帧内图片一起反色，
-   * 而 control 帧（博客页顶栏：V 标/关注钮/返回首页）与普通博客页评论帧
-   * 同样落进本分支——2026-10-08 lofguancha 真机实锤 V 标金底白 V 反成
-   * 暗底黑 V（评论区表情图同理）。lpost 页早已全量还原且久经验证，
-   * 各帧内容同类，统一还原。 */
+`;
+    styleEl = document.createElement('style');
+    styleEl.textContent = bodyRule + `
+  /* img 还原不能只做 lpost：整帧反相（自注入 body 或外层宿主）会连帧内
+   * 图片一起反色，而 control 帧（博客页顶栏：V 标/关注钮/返回首页）与
+   * 普通博客页评论帧同样落进本分支——2026-10-08 lofguancha 真机实锤
+   * V 标金底白 V 反成暗底黑 V（评论区表情图同理）。lpost 页早已全量
+   * 还原且久经验证，各帧内容同类，统一还原。 */
   img {
     filter: invert(100%) hue-rotate(180deg) !important;
   }
@@ -127,11 +163,17 @@ styleEl.textContent = `
   }
 .bcmtipt {
   border-color: rgba(255, 255, 255, 0.15) !important;
+  /* 抵消整帧反相（自注入 body 或外层宿主，两种模式各反一次均被本条
+   * 净零），让下方直写值按 CSS 原样上屏。 */
   filter: invert(100%) hue-rotate(180deg) !important;
-  background: ${isLpost ? 'rgb(35, 35, 35)' : 'rgb(220, 220, 220)'} !important;
+  /* 暗色统一暗底输入框（2026-10-09 用户真机：白底刺眼；lpost 早有
+   * rgb(35,35,35) 先例，非 lpost 评论帧一并统一）。 */
+  background: rgb(35, 35, 35) !important;
 }
 .editdiv {
-  filter: ${isLpost ? 'none' : 'invert(100%) hue-rotate(180deg)'} !important;
+  /* 不再自带 invert：带上会在 bcmtipt 净零之上再反一次（链上净奇数
+   * 次），color:white 被反成黑字。撤掉后 white 经 bcmtipt+整帧两次
+   * 反相（净零）直接上屏 = 暗底白字，与 lpost 方案一致。 */
   color: white !important;
 }
   .s-bd2 {
@@ -140,29 +182,19 @@ styleEl.textContent = `
 `;
     (document.head || document.documentElement).appendChild(styleEl);
 
-    if (isLpost) {
-      const fixEmoji = () => {
-        document.querySelectorAll('.bcmtlstf.s-fc4.itag').forEach(el => {
-          if (el.dataset.emojiFixed) return;
-          el.dataset.emojiFixed = '1';
-          const text = el.textContent.replace(/[\s\u00a0]/g, '');
-          const nonEmoji = text.replace(/\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu, '');
-          if (nonEmoji.length === 0 && text.length > 0) {
-            el.style.setProperty('filter', 'invert(100%) hue-rotate(180deg)', 'important');
-          } else {
-            const html = el.innerHTML;
-            const newHtml = html.replace(
-              /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/gu,
-              '<span style="filter: invert(100%) hue-rotate(180deg); display: inline-block;">$1</span>'
-            );
-            if (newHtml !== html) el.innerHTML = newHtml;
-          }
-        });
-      };
-      fixEmoji();
-      emojiObserver = new MutationObserver(fixEmoji);
-      emojiObserver.observe(document.body, { childList: true, subtree: true });
-    }
+    /* emoji 补偿与 img / V 标同款「各帧统一」：帧内容净反相一次（自注入
+     * body 或外层宿主提供，反相由哪层提供不变），评论内容里的 emoji 同样
+     * 需要还原——否则裸 emoji 被反成负片。旧写法只在 referrer 含 lpost 时
+     * 挂，漏了普通文章页评论帧（2026-10-10 comment.do 帧实证：帧内无 body
+     * 自反相 = 被外层罩住、img/bcmtipt 有补偿、emoji 无补偿 → 负片）。 */
+    /* 旧观察器挂在重建前的 body 上（已失效），先摘再挂新的 */
+    if (emojiObserver) emojiObserver.disconnect();
+    fixEmoji();
+    emojiObserver = new MutationObserver(fixEmoji);
+    emojiObserver.observe(document.body || document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
   };
 
   const removeDark = () => {
@@ -171,6 +203,7 @@ styleEl.textContent = `
   };
 
   const checkDark = (s) => {
+    lastSettings = s || null;
     /* 与主帧同一套档位判定（含按时段）；处理完立即安排下一次边界检查 */
     const isDark = LC_darkActive(s && s.darkMode);
     if (isDark) {
@@ -212,6 +245,32 @@ styleEl.textContent = `
     }
   });
 
+  /* 重挂看门狗：document.write() 重建文档随时可能发生（发评论/翻页/
+     面板开合都可能触发），storage.onChanged 与 schedule tick 都不是
+     可靠的重注时机。低频核对 styleEl 是否仍在文档里，丢了立即按
+     最近一次配置重跑 checkDark——暗色在则重注入，不在则无操作。 */
+  setInterval(() => {
+    if (styleEl && !styleEl.isConnected) checkDark(lastSettings || {});
+  }, 2000);
+
+  /* ===== 外层反相握手（帧侧，2026-10-09「chips 黑字」根因修复）=====
+   * 本帧测不到外层（父文档跨域），由顶层实测本帧祖先链有无 invert 后
+   * postMessage 告知。true = 本帧渲染输出已被外层反相一次 → 撤 body
+   * 自反相（否则双重反相 → 纯黑 inherit 的 chips 黑字）；false = 维持
+   * 自反相（未被外层覆盖的模板 / 独立打开）。帧文档重建（导航替换）
+   * 后新脚本会重新发问，顶层每次应答都强推，不依赖旧状态。 */
+  const applyOuterDark = (v) => {
+    if (outerDark === v) return;
+    outerDark = v;
+    if (styleEl) { removeDark(); checkDark(lastSettings || {}); }
+  };
+  window.addEventListener('message', (e) => {
+    if (e.source !== window.parent) return;
+    if (!e.data || typeof e.data.__lcOuterDark !== 'boolean') return;
+    applyOuterDark(e.data.__lcOuterDark);
+  });
+  try { if (window.parent && window.parent !== window) window.parent.postMessage({ __lcOuterQuery: true }, '*'); } catch (e) {}
+
   /* 评论区 iframe 分支到此为止，不执行主帧主逻辑 */
   return;
   }
@@ -220,6 +279,42 @@ styleEl.textContent = `
    * ============================================================ */
   (() => {
   "use strict";
+
+  /* ---------- 子帧外层反相握手（顶层侧，2026-10-09「chips 黑字」根因修复）----------
+   * 子帧分支给所有子帧注入 body{filter:invert}，而顶层暗色宿主
+   * （.postwrapper/.box.wid700 等）的 filter 会作用到 iframe 元素上——
+   * 帧渲染输出被反相两次 = 双重反相 → 纯黑 inherit 的评论表情行黑字。
+   * 顶层在这里实测每个 iframe 祖先链有无 invert（帧内测不到外层），
+   * 把结果推给子帧；子帧据此决定是否注入自身 body 反相。
+   * 时机三重保障：2s 低频轮询（覆盖暗色开关与宿主出现）+ 子帧启动
+   * 发问即答（覆盖帧导航重建）+ 仅在结果变化时重发（防刷屏）。 */
+  const lcPushFrameOuterDark = (f, force) => {
+    let n = f, hit = false;
+    while (n && n.nodeType === 1) {
+      let fl = 'none';
+      try { fl = getComputedStyle(n).filter; } catch (e) {}
+      if (fl && fl !== 'none' && fl.indexOf('invert') !== -1) { hit = true; break; }
+      n = n.parentElement;
+    }
+    if (!force && lcPushFrameOuterDark.last && lcPushFrameOuterDark.last.get(f) === hit) return;
+    if (!lcPushFrameOuterDark.last) lcPushFrameOuterDark.last = new WeakMap();
+    lcPushFrameOuterDark.last.set(f, hit);
+    try { f.contentWindow.postMessage({ __lcOuterDark: hit }, '*'); } catch (e) {}
+  };
+  const lcSyncFrameOuterDark = () => {
+    document.querySelectorAll('iframe').forEach((f) => {
+      const src = f.src || '';
+      if (src.indexOf('lofter.com') === -1 && src) return; /* 只推自家帧，广告/统计帧不打扰 */
+      lcPushFrameOuterDark(f, false);
+    });
+  };
+  window.addEventListener('message', (e) => {
+    if (!e.data || !e.data.__lcOuterQuery) return;
+    document.querySelectorAll('iframe').forEach((f) => {
+      if (f.contentWindow === e.source) lcPushFrameOuterDark(f, true);
+    });
+  });
+  setInterval(lcSyncFrameOuterDark, 2000);
 
   /* ---------- FOUC 防止：页面加载前隐藏 ---------- */
   const hideStyle = document.createElement("style");
@@ -258,8 +353,17 @@ styleEl.textContent = `
   window.settings = LC_clone(LC_DEFAULTS);
 
   /* ---------- Emoji 保护（深色模式下抵消反色）---------- */
+  /* 序列级匹配：一个 emoji（含 FE0F/FE0E 表现选择符、肤色修饰符、ZWJ 合成
+     链、国旗 RI 对、键盘序列）整体吃进一个 match → 一个 wrap。
+     旧版按单码点匹配，把 🏋️‍♀️ 这类 5 码点序列拆进 5 个相邻 span——
+     浏览器不跨元素边界合成 ZWJ 字形 → 暗色面板满屏「彩色基础符 + 豆腐块
+     (ZWJ) + 孤立♀」（2026-10-09 用户真机截图实锤，与旧待办「▫️ 拆两个
+     wrap」同根）。
+     \p{Extended_Pictographic} 已实证覆盖旧 ranges 全部字符面（node 探针
+     2026-10-09），并顺带补掉旧缺口 ⬆⬇⬅⬛⬜⌨⏏；RI 对 / 肤色修饰符 /
+     ZWJ / 表现选择符 / tag 码点不在该属性内，需显式旁支。 */
   const EMOJI_REGEX =
-    /(?:[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F900}-\u{1F9FF}]|[\u{00A9}\u{00AE}\u{2122}\u{3030}\u{303D}\u{3297}\u{3299}]|[\u{FE0F}]|[\u{200D}]|[\u{E0020}-\u{E007F}]|[\u{1F7E0}-\u{1F7EB}]|[\u{1FA70}-\u{1FAFF}]|[\u{2B50}\u{2B55}]|[\u{231A}-\u{231B}]|[\u{23F0}-\u{23F3}]|[\u{2728}]|[\u{274C}\u{274E}]|[\u{2753}-\u{2757}]|[\u{2763}\u{2764}]|[\u{2795}-\u{2797}]|[\u{27B0}\u{27BF}]|[\u{25AA}-\u{25AB}]|[\u{25B6}\u{25C0}]|[\u{25FB}-\u{25FE}]|[\u{2194}-\u{2199}]|[\u{21A9}-\u{21AA}])/gu;
+    /(?:[\u{1F1E6}-\u{1F1FF}]{1,2}|[#*0-9]\uFE0F?\u20E3|[\u{E0020}-\u{E007F}]|\p{Extended_Pictographic}(?:[\u{1F3FB}-\u{1F3FF}]\uFE0F?|[\uFE0E\uFE0F])?(?:\u200D\p{Extended_Pictographic}(?:[\u{1F3FB}-\u{1F3FF}]\uFE0F?|[\uFE0E\uFE0F])?)*|\u200D)/gu;
 
   function protectEmojis(force) {
     if (!settings.enabled || !isDarkMode()) return;
@@ -294,6 +398,12 @@ styleEl.textContent = `
         NodeFilter.SHOW_TEXT,
         {
           acceptNode(node) {
+            /* /g 正则的 test() 会推进 lastIndex 且不自动归零：前一个文本
+               节点以 emoji 结尾时 lastIndex 停在段尾，下一个节点哪怕开头
+               就是 emoji 也会被 test 出 false → 整段 FILTER_REJECT →
+               随机漏包（2026-10-09 T1 全 emoji 测试帖实锤 5 段裸 emoji，
+               node 复现脚本双段序列 100% 触发）。test 前必须重置。 */
+            EMOJI_REGEX.lastIndex = 0;
             if (!node.textContent || !EMOJI_REGEX.test(node.textContent)) {
               return NodeFilter.FILTER_REJECT;
             }
