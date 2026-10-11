@@ -18,8 +18,9 @@
  *     14 天过期自动清）——纯本地写入，断网照常工作；
  *   · 快照历史入口：空白带左下常驻 pill「快照历史 · N ▾」→ 向上弹出
  *     面板（相对时间 · 字数 · 与当前差值，与当前正文一致的那版标
- *     「当前」），每行可富文本复制；面板头部可「钉住当前版」（手动钉版：
- *     不参与时间窗折叠、不被自动清理）与「清空历史」。挂载方式经真机
+ *     「当前」），每行可富文本复制、钉住的行可删除；面板头部可「钉住当前版」
+ *     （手动钉版：不参与时间窗折叠、清空历史时保留，但**仍会 14 天过期**）
+ *     与「清空历史」。挂载方式经真机
  *     demo A/B 定稿为 **M1（editorHost 内绝对定位）**——随弹窗滚动自然
  *     跟随；M2（挂 body + 视口坐标）滚动后需持续重算、只差不好，弃用。
  *     入口与恢复浮条互斥（同占空白带左下角）；显示门槛 ≥2 版（1 版无
@@ -757,10 +758,12 @@
         clearBtn.textContent = '已清空 ✓';
       });
       /* 「钉住当前版本」：正文在编辑器帧，父帧读不到 → 发一条消息让它自己钉。
-       * 钉住的版本不参与时间窗折叠、不被自动清理（单列 MANUAL_CAP）。
+       * 钉住的版本不参与时间窗折叠、不被「清空历史」删掉（单列 MANUAL_CAP）；
+       * 但 prune() 只按 ts 判过期，**钉住的一样 14 天过期** —— hint 如实写明，
+       * 免得用户以为「钉住 = 永久」（2026-10-11 口径对齐）。
        * 真正的反馈是列表里多出一行带「钉」标记的版本（storage 变化会重渲染） */
       var pinBtn = mkBtn('钉住当前版',
-        '把这一刻的正文存成一个钉住的版本：不参与时间窗折叠，也不会被自动清理（每篇最多 20 个）');
+        '把这一刻的正文存成一个钉住的版本：不参与时间窗折叠、清空历史时保留（每篇最多 20 个）；超过 14 天仍会过期');
       pinBtn.addEventListener('click', function () {
         var f = document.querySelector(IFRAME_SEL);
         try {
@@ -809,8 +812,8 @@
           'border-radius:9px!important;padding:1px 7px!important;font-size:10px!important;',
           it.label || '钉');
         pinChip.title = it.label
-          ? '你手动钉住的版本：不参与时间窗折叠，也不会被自动清理'
-          : '大幅删改「之前」的版本已自动钉住：不会被时间窗折叠掉，用来找回刚删掉的内容';
+          ? '你手动钉住的版本：不参与时间窗折叠、清空历史时保留；超过 14 天仍会过期'
+          : '大幅删改「之前」的版本已自动钉住：不会被时间窗折叠掉，用来找回刚删掉的内容（超过 14 天仍会过期）';
         row.appendChild(pinChip);
       }
       var d = '—';
@@ -819,7 +822,8 @@
           ? '与当前正文一致'
           : '比当前 ' + (len > curLen ? '+' : '−') + Math.abs(len - curLen) + ' 字';
       }
-      row.appendChild(el('span', 'flex:1 1 auto!important;opacity:.55!important;font-size:11px!important;', d));
+      row.appendChild(el('span', 'flex:1 1 auto!important;min-width:0!important;overflow:hidden!important;' +
+        'white-space:nowrap!important;text-overflow:ellipsis!important;opacity:.55!important;font-size:11px!important;', d));
       var btn = el('button', 'flex:none!important;cursor:pointer!important;border:0!important;' +
         'border-radius:6px!important;padding:3px 9px!important;font:11px/1.4 system-ui,sans-serif!important;' +
         'background:rgba(255,255,255,.14)!important;color:#ddd!important;', '复制');
@@ -829,6 +833,33 @@
         setTimeout(function () { if (btn.parentNode) btn.textContent = '复制'; }, 1600);
       });
       row.appendChild(btn);
+      /* 钉住的版本不受「清空历史」影响 ⇒ 删不掉就只能等 14 天过期。补一个显式
+       * 删除入口（两段式确认防手滑）：它是钉住版本**唯一**的删除途径。只给 pin
+       * 行加 —— 普通行本就能被「清空历史」一并清掉，无需单独入口。
+       * 按 (aid, ts) 定位删除（同篇同毫秒重复的概率可忽略）。 */
+      if (it.pin) {
+        var del = el('button', 'flex:none!important;cursor:pointer!important;border:0!important;' +
+          'border-radius:6px!important;padding:3px 7px!important;font:11px/1.4 system-ui,sans-serif!important;' +
+          'background:rgba(255,90,90,.16)!important;color:#ff9d9d!important;', '删除');
+        del.title = '删除这一版快照（不可恢复）—— 钉住的版本不受「清空历史」影响，这是它唯一的删除途径';
+        del.addEventListener('click', function () {
+          if (del.dataset.arm !== '1') {
+            del.dataset.arm = '1';
+            del.textContent = '确认？';
+            setTimeout(function () { if (del.parentNode) { del.dataset.arm = ''; del.textContent = '删除'; } }, 3000);
+            return;
+          }
+          chrome.storage.local.get(KEY, function (res) {
+            var all = (res && res[KEY] && res[KEY].items) || [];
+            writeItems(all.filter(function (x) {
+              return !(x && x.aid === it.aid && x.ts === it.ts);
+            }));
+          });
+          del.dataset.arm = '';
+          del.textContent = '已删除 ✓';
+        });
+        row.appendChild(del);
+      }
       return row;
     }
     /* 入口胶囊两态（2026-10-03 定稿）：**常态永远是影子**——不因打字或

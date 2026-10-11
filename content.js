@@ -21,6 +21,55 @@ window.decorationsGloballyHidden = false;
     LC_I18N.observe();
   }
 
+  /* i18n 语言切换的「页面内提示」（#16 收尾 · 2026-10-11）─────────────
+   * 切语言只改扩展面板（popup 会 self reload）+ 之后新渲染的节点，**已经渲染
+   * 出来的旧文案不会自己变**（译文不是字典键，就地对不上）；切回简体更必须
+   * 刷新页面才恢复。这里在顶层帧弹一个半透明提示 + 一键刷新，**绝不强制
+   * reload** —— 用户可能正写着文章，刷掉会丢字（与「不干扰写作」原则冲突）。
+   * 只在顶层帧注册（window === window.top），避免每个 iframe 各弹一份。 */
+  if (typeof LC_I18N !== "undefined" && window === window.top) {
+    LC_I18N.onChange(function () {
+      var host = document.body || document.documentElement;
+      if (!host) return;
+      var prev = document.getElementById('lc-i18n-tip');
+      if (prev) prev.remove();
+      var T = LC_I18N.t;
+      var tip = document.createElement('div');
+      tip.id = 'lc-i18n-tip';
+      tip.className = 'lc-i18n-tip';
+      tip.setAttribute('style',
+        'position:fixed !important;left:50% !important;bottom:28px !important;' +
+        'transform:translateX(-50%) !important;z-index:2147483000 !important;' +
+        'display:flex !important;align-items:center !important;gap:12px !important;' +
+        'padding:10px 14px !important;border-radius:10px !important;max-width:86vw !important;' +
+        'background:rgba(30,30,36,.94) !important;color:#eee !important;' +
+        'border:1px solid #3a3a44 !important;box-shadow:0 8px 24px rgba(0,0,0,.28) !important;' +
+        'font-size:13px !important;line-height:1.4 !important;' +
+        'backdrop-filter:blur(10px) !important;-webkit-backdrop-filter:blur(10px) !important;');
+      var msg = document.createElement('span');
+      msg.textContent = T('界面语言已切换，刷新本页生效');
+      var go = document.createElement('a');
+      go.href = 'javascript:void(0)';
+      go.textContent = T('刷新本页');
+      go.setAttribute('style',
+        'color:#8ea1ff !important;cursor:pointer !important;flex-shrink:0 !important;' +
+        'font-weight:600 !important;text-decoration:none !important;');
+      go.addEventListener('click', function () { location.reload(); });
+      var later = document.createElement('a');
+      later.href = 'javascript:void(0)';
+      later.textContent = T('知道了');
+      later.setAttribute('style',
+        'color:#9aa0aa !important;cursor:pointer !important;flex-shrink:0 !important;' +
+        'text-decoration:none !important;');
+      later.addEventListener('click', function () { tip.remove(); });
+      tip.appendChild(msg);
+      tip.appendChild(go);
+      tip.appendChild(later);
+      host.appendChild(tip);
+      setTimeout(function () { if (tip.parentNode) tip.remove(); }, 20000);
+    });
+  }
+
   if (window !== window.top) {
   const href = location.href;
 
@@ -93,9 +142,15 @@ window.decorationsGloballyHidden = false;
       el.style.removeProperty('filter');
       delete el.dataset.emojiFixed;
     });
-    // 清除包裹的 span
+    // 清除包裹的 span（正文 + 昵称，同款包裹）
     document.querySelectorAll('.bcmtlstf.s-fc4.itag span[style*="invert"]').forEach(span => {
       span.replaceWith(span.textContent);
+    });
+    document.querySelectorAll('a[data-lc-nick-emoji] span[style*="invert"]').forEach(span => {
+      span.replaceWith(span.textContent);
+    });
+    document.querySelectorAll('a[data-lc-nick-emoji]').forEach(a => {
+      delete a.dataset.lcNickEmoji;
     });
     if (emojiObserver) {
       emojiObserver.disconnect();
@@ -121,6 +176,29 @@ window.decorationsGloballyHidden = false;
         );
         if (newHtml !== html) el.innerHTML = newHtml;
       }
+      /* 昵称里的 emoji：整帧反相同样把它反成负片，而正文分支够不着昵称 ——
+       * 同一页两种观感（2026-10-11 comment.do 真机实证：lofterhuati 详情页评论帧
+       * 昵称 = 正文 span 的同级 a.s-fc2.itag.bcmtlstk，在链接内、净反色 1、无补偿；
+       * 正文 emoji 净反色 2 → 正常）。昵称与正文同处一个容器，故不硬编码容器类名：
+       * 从正文元素向上最多 3 层找「含非正文 <a>」的那层，补偿其中的 <a>。
+       * 只把 emoji 字符包 span，**绝不整个元素/容器反色**：帧内 img 已有全局还原
+       * 规则，容器级再反一次会让头像净反色变 3 次（负片）。 */
+      let box = el.parentElement, hop = 0, nicks = null;
+      while (box && hop < 3 && !nicks) {
+        const cand = [];
+        box.querySelectorAll('a').forEach(a => { if (!el.contains(a)) cand.push(a); });
+        if (cand.length) nicks = cand; else { box = box.parentElement; hop++; }
+      }
+      (nicks || []).forEach(a => {
+        if (a.dataset.lcNickEmoji) return;
+        a.dataset.lcNickEmoji = '1';
+        const h = a.innerHTML;
+        const nh = h.replace(
+          /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/gu,
+          '<span style="filter: invert(100%) hue-rotate(180deg); display: inline-block;">$1</span>'
+        );
+        if (nh !== h) a.innerHTML = nh;
+      });
     });
   };
 
