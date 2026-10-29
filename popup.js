@@ -98,6 +98,16 @@
     return _pvUrls.get(v) || "";
   };
 
+  /* 安全：把任意文本安全地塞进 HTML（文本节点与属性值通用）。
+   * 2026-10-29 安全自查加：popup 是带 chrome.* 权限的扩展页，而**导入别人分享的主题包
+   * JSON** 是唯一能把外部字符串送进来的通道 —— 一旦原样拼进 innerHTML，就是一个可以
+   * 读到全部设置、还能调用消息中继的执行面。这里选「编码」而不是「删字符」：删字符会把
+   * 用户写的 `3<5` 悄悄变成 `35`，编码后渲染结果与原文一致，只是不再解析成标签。 */
+  function lcEscHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+      c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === '"' ? "&quot;" : "&#39;");
+  }
+
   /* 只替 src、不重建 DOM —— 避免打断用户正在调的滑块/输入框 */
   function lcRefreshAssetPreviews() {
     const bp = $("bg-preview");
@@ -515,7 +525,7 @@
 
       card.innerHTML = `
         <div style="display:flex;gap:10px;align-items:flex-start;">
-          <img data-lc-pv="${dec.dataUrl || ""}" src="${pvOf(dec.dataUrl)}" style="width:52px;height:52px;object-fit:contain;border-radius:6px;flex-shrink:0;background:repeating-conic-gradient(rgba(128,128,128,.18) 0 25%,transparent 0 50%) 0 0/12px 12px,rgba(128,128,128,.08);" />
+          <img data-lc-pv="${lcEscHtml(dec.dataUrl || "")}" src="${lcEscHtml(pvOf(dec.dataUrl))}" style="width:52px;height:52px;object-fit:contain;border-radius:6px;flex-shrink:0;background:repeating-conic-gradient(rgba(128,128,128,.18) 0 25%,transparent 0 50%) 0 0/12px 12px,rgba(128,128,128,.08);" />
           <div style="flex:1;min-width:0;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
               <span style="font-size:12px;color:var(--lc-text);font-weight:500;">装饰 #${idx + 1}</span>
@@ -1017,7 +1027,7 @@
     }
     container.innerHTML = dialogues.map((text, i) => `
     <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--lc-soft);border-radius:8px;margin-bottom:8px;">
-      <span data-lc-raw style="flex:1;font-size:13px;color:var(--lc-text);word-break:break-word;">${text}</span>
+      <span data-lc-raw style="flex:1;font-size:13px;color:var(--lc-text);word-break:break-word;">${lcEscHtml(text)}</span>
       <button class="btn dialogue-del-btn" data-didx="${i}" type="button" style="padding:2px 8px;font-size:11px;background:color-mix(in srgb,#ef4444 12%,var(--lc-card));color:#ef4444;border:none;border-radius:4px;cursor:pointer;">删除</button>
     </div>
   `).join('');

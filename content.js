@@ -8928,6 +8928,10 @@ function bindGlobalDecListener() {
   async function fetchTitle(blogName, fpost) {
     if (titleCache[fpost]) return titleCache[fpost];
     try {
+      /* 安全：blogName / fpost 都来自页面 DOM，直接拼进 URL 可能被引导到他域
+       * （`a@evil` 这类 userinfo、或带 `/` 的路径穿越）。这里只放行博客子域
+       * 与 post id 的合法字符集，不合法就当没标题 —— 只取 <title>，丢了不影响功能。 */
+      if (!/^[a-z0-9-]{1,64}$/i.test(String(blogName)) || !/^[a-z0-9_]{1,64}$/i.test(String(fpost))) return "";
       const url = "https://" + blogName + ".lofter.com/post/" + fpost;
       const res = await fetch(url);
       const html = await res.text();

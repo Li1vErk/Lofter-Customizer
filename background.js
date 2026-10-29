@@ -38,8 +38,19 @@ chrome.commands.onCommand.addListener((command) => {
  * postmanage 页（www.lofter.com）逐篇抓博客子域的详情页会跨域重定向，
  * content script 直 fetch 撞 CORS；SW 有 host_permissions（*.lofter.com），
  * 由这里代抓并回传 HTML 文本。credentials:'include' 带登录态（SSR 直出依赖）。 */
+/* 2026-10-29 安全自查补的守卫：**这是全扩展唯一带登录态的出站通道**
+ * （credentials:'include'），原来只校验「url 是字符串」就代抓。导出与身份探针的目标
+ * 永远在 LOFTER 自家域名内，所以收紧成白名单 —— 万一上游出现注入（例如用户导入别人
+ * 分享的主题包 JSON），也无法把它当成「带 cookie 的任意 URL 代理」来用。
+ * 注意：`(?:[a-z0-9-]+\.)*` 只允许子域标签，`https://lofter.com.evil.com/` 这类
+ * 前缀伪造（`lofter.com` 后不是 `/`）与 userinfo 形态（`lofter.com@evil.com`）都不匹配。 */
+const LC_FETCH_ALLOW = /^https:\/\/(?:[a-z0-9-]+\.)*(?:lofter\.com|lf127\.net)(?::\d+)?\//i;
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.action !== 'lcExportFetch' || typeof msg.url !== 'string') return false;
+  if (!LC_FETCH_ALLOW.test(msg.url)) {
+    sendResponse({ ok: false, status: 0, error: 'host not allowed' });
+    return false;
+  }
   fetch(msg.url, { credentials: 'include', redirect: 'follow' })
     .then((r) => {
       if (!r.ok) { sendResponse({ ok: false, status: r.status }); return; }
