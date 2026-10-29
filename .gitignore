@@ -34,6 +34,8 @@ tmp-*
 docs/todo-priorities.md
 docs/panel-ia.md
 docs/handoff.md
+docs/idb-migration-plan.md
+docs/tag-block-plan.md
 
 # tools：本地调试脚本与实测产物，整目录只保留本地（不入库、不推送）
 tools/

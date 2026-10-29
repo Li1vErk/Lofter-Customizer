@@ -546,8 +546,99 @@ window.decorationsGloballyHidden = false;
   }
   function sanitizeDataUrl(val) {
     if (!val) return "";
-    if (val.startsWith("data:image/") && !val.includes('"')) return val;
+    /* #20：大件（背景图 / 回顶图 / 装饰图 / 音效）改存扩展 origin 的 IndexedDB，
+       settings 里只留引用 "lcidb:<id>"。两种形态都放行；含双引号一律拒（防 CSS 注入）。 */
+    if ((val.startsWith("data:image/") || val.startsWith("lcidb:")) && !val.includes('"'))
+      return val;
     return "";
+  }
+
+  /* ---------- #20 素材引用解析（IndexedDB 大件） ----------
+   * 页面（content script）访问的是**宿主页 origin** 的存储，读不到扩展的 IndexedDB；
+   * 而扩展 origin 造的 blob: URL 在 lofter.com 里是跨源（CSS / img.src 都取不到）
+   * ⇒ 只能请 background 读出来、回 base64，再在**页内**建 objectURL。
+   * buildCSS 是同步的 ⇒ 这里维护「ref → URL」缓存：同步读缓存、异步预热，就绪后重建。
+   * 未就绪返回 ""（降级成空图，不阻塞首屏）；老 dataUrl 原样返回 ⇒ 迁移与否都正常显示。 */
+  const _assetUrls = new Map();     /* ref -> objectURL */
+  const _assetPending = new Set();  /* 正在请求的 ref */
+  let _assetFlushT = 0;
+  const _assetIsRef = (v) => !!(v && typeof v === "string" && v.indexOf("lcidb:") === 0);
+
+  function resolveAsset(v) {
+    if (!v) return "";
+    if (v.indexOf("data:") === 0) return v; /* 老形态：直接用 */
+    if (v.indexOf("lcidb:") === 0) return _assetUrls.get(v) || "";
+    return "";
+  }
+
+  function collectAssetRefs(s) {
+    const out = [];
+    const add = (v) => { if (_assetIsRef(v)) out.push(v); };
+    try {
+      if (s.background && s.background.image) add(s.background.image.dataUrl);
+      if (s.gtotop) add(s.gtotop.imageDataUrl);
+      (s.decorations || []).forEach((d) => {
+        add(d.dataUrl);
+        if (d.interactive) add(d.interactive.soundFile);
+      });
+    } catch (e) {}
+    return out;
+  }
+
+  /* base64 → 页内 objectURL。LCAssets 只借它的纯函数（**禁止**在 content 里调
+     LCAssets.open/putBlob —— 那会开在宿主页 origin 的库上，是明确的设计禁忌）。 */
+  function lcUrlFromDataUrl(dataUrl) {
+    const A = (typeof LCAssets !== "undefined") ? LCAssets : null;
+    if (!A || !A.dataUrlToBlob) return "";
+    const blob = A.dataUrlToBlob(dataUrl);
+    if (!blob) return "";
+    try { return URL.createObjectURL(blob); } catch (e) { return ""; }
+  }
+
+  /* 多个 ref 同时到达时合并成一次重建（applyAll 不轻） */
+  function scheduleAssetFlush() {
+    clearTimeout(_assetFlushT);
+    _assetFlushT = setTimeout(() => { invalidateCSS(); applyAll(); }, 60);
+  }
+
+  function warmAssets(s) {
+    if (!s) return;
+    const refs = collectAssetRefs(s);
+    const live = new Set(refs);
+
+    /* 回收：已不再被引用的 URL 立刻 revoke（换图 / 关功能 / 删装饰） */
+    _assetUrls.forEach((url, ref) => {
+      if (live.has(ref)) return;
+      _assetUrls.delete(ref);
+      try { URL.revokeObjectURL(url); } catch (e) {}
+    });
+
+    refs.forEach((ref) => {
+      if (_assetUrls.has(ref) || _assetPending.has(ref)) return;
+      _assetPending.add(ref);
+      try {
+        chrome.runtime.sendMessage({ action: "lcIdbGet", ref: ref }, (resp) => {
+          _assetPending.delete(ref);
+          if (chrome.runtime.lastError) return; /* 取不到 ⇒ 保持降级空图，不打断其它功能 */
+          if (!resp || !resp.ok || !resp.dataUrl) return;
+          const url = lcUrlFromDataUrl(resp.dataUrl);
+          if (!url) return;
+          _assetUrls.set(ref, url);
+          scheduleAssetFlush(); /* URL 就绪 → 让 CSS / img.src 用上它 */
+        });
+      } catch (e) { _assetPending.delete(ref); }
+    });
+  }
+
+  /* 背景图的实际可用 src（老 dataUrl 原样、引用走缓存、未就绪给 ""） */
+  function lcBgImageSrc() {
+    const b = settings.background || {};
+    return resolveAsset(b.image && b.image.dataUrl);
+  }
+
+  /* 自定义音效的实际可用 src（页面里播放要真的 URL，不能拿 "lcidb:..." 去 new Audio） */
+  function lcSoundSrc(v) {
+    return resolveAsset(v);
   }
   function sanitizeNumber(val, min, max, def) {
     const n = Number(val);
@@ -3929,9 +4020,11 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         b.pattern.bg,
         b.pattern.size,
       );
-    else if (b.mode === "image" && b.image.dataUrl)
+    else if (b.mode === "image" && lcBgImageSrc())
+      /* #20 引用形态未就绪时 lcBgImageSrc() 给 "" ⇒ 自然落到「没有图」这一档，
+         URL 到位后由 scheduleAssetFlush 重建（首屏不闪、不阻塞） */
       css =
-        `background:url("${b.image.dataUrl}") center/cover no-repeat;` +
+        `background:url("${lcBgImageSrc()}") center/cover no-repeat;` +
         (b.image.blur
           ? `filter:blur(${b.image.blur}px);transform:scale(1.06);`
           : "");
@@ -4025,7 +4118,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         // 编辑模式下：已有图片只更新 zIndex/src/透明度，不动位置/大小
         // 但要确保编辑样式（pointerEvents、outline、手柄）正确
         img.style.zIndex = String(decorations.length - idx);
-        img.src = dec.dataUrl;
+        img.src = resolveAsset(dec.dataUrl);
         img.style.opacity = String((dec.opacity ?? 100) / 100);
         img.style.pointerEvents = "auto";
         img.style.cursor = "move";
@@ -4035,7 +4128,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         existing.delete(dec.id);
         return;
       }
-      img.src = dec.dataUrl;
+      img.src = resolveAsset(dec.dataUrl);
       img.style.left = (dec.x ?? 50) + "%";
       img.style.top = (dec.y ?? 50) + "%";
       img.style.width = (dec.width ?? 20) + "%";
@@ -6742,11 +6835,13 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
 
   function lcNavLuma(el) {
     const b = settings.background || {};
-    if (b.mode === "image" && b.image && b.image.dataUrl) {
+    const lcBgResolved = lcBgImageSrc();
+    if (b.mode === "image" && lcBgResolved) {
+      /* key 仍用 ref（稳定，同一张图不必重复采样），src 用解析后的 URL */
       if (lcLumaImgKey !== b.image.dataUrl || !lcLumaImg) {
         lcLumaImgKey = b.image.dataUrl;
         lcLumaImg = new Image();
-        lcLumaImg.src = b.image.dataUrl;
+        lcLumaImg.src = lcBgResolved;
       }
       if (!lcLumaImg.complete || !lcLumaImg.naturalWidth) return null; // 图未就绪：保持现状
       const ctx = lcLumaCv.getContext("2d", { willReadFrequently: true });
@@ -7017,11 +7112,12 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
           (a[2] + c[2]) / 2,
         ]);
     }
-    if (!(b.mode === "image" && b.image && b.image.dataUrl)) return 0.9;
+    const lcBgResolved2 = lcBgImageSrc();
+    if (!(b.mode === "image" && lcBgResolved2)) return 0.9;
     if (lcLumaImgKey !== b.image.dataUrl || !lcLumaImg) {
       lcLumaImgKey = b.image.dataUrl;
       lcLumaImg = new Image();
-      lcLumaImg.src = b.image.dataUrl;
+      lcLumaImg.src = lcBgResolved2;
       lcFaceCvVer++;
     }
     /* 图刚换/刚加载完成时画布还是旧的：挂一次性 load 钩子补采样
@@ -7504,6 +7600,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       window.decorationsGloballyHidden =
         window.settings.decorationsVisible === false;
       invalidateCSS();
+      warmAssets(window.settings); /* #20：先解析素材引用（异步），就绪后自己重建 CSS */
       applyAll();
       armDarkScheduleTick();
     });
@@ -7517,6 +7614,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       window.decorationsGloballyHidden =
         window.settings.decorationsVisible === false;
       invalidateCSS();
+      warmAssets(window.settings); /* #20：外部改了设置 ⇒ 重新对账素材引用 */
       applyAll();
       armDarkScheduleTick();
     }
@@ -7751,11 +7849,15 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     return audioCtx;
   }
 
-  // 通用音效合成函数
-  function tone(ctx, { type = "sine", freq = [], gain = [], dur }) {
+  // 通用音效合成函数。
+  // at（可选）：AudioContext 时间轴上的绝对起点。多段音效（boing/beep/stretch/bubbles）
+  // 必须共用同一次点击的时间基线精确排程 —— 旧实现用 setTimeout 排第二段，
+  // 主线程一卡两段之间就裂出「哔。啵」式的缝；现在第二段 start 直接排在
+  // 第一段结束的时间点上，间隙为零，且不受掉帧影响。
+  function tone(ctx, { type = "sine", freq = [], gain = [], dur, at }) {
     const osc = ctx.createOscillator();
     const gn = ctx.createGain();
-    const t = ctx.currentTime;
+    const t = typeof at === "number" ? at : ctx.currentTime;
 
     osc.type = type;
 
@@ -7780,13 +7882,108 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     osc.stop(t + dur);
   }
 
+  /* 2026-10-29 自定义音效提速：预解码成 AudioBuffer，走 WebAudio 起播。
+     原实现给自定义音效用 `new Audio(src).play()`（HTMLAudioElement），Windows 上
+     启动延迟 50~300ms —— 这是「点下去到出声」之间最后一笔能省的开销（预设音效走
+     振荡器，本来就只有音频管线那 10~40ms）。
+     策略：解码结果按 src 缓存；缓冲没就绪的那一次仍走 HTMLAudio（宁可这一下慢，
+     也不能没声），同时后台解码，下次点击即走快路径。 */
+  const customBufferCache = new Map(); /* src -> AudioBuffer */
+  const customDecoding = new Set(); /* 解码中的 src，防并发重复 fetch */
+
+  function playCustomBuffer(src) {
+    const buf = customBufferCache.get(src);
+    if (!buf) return false;
+    try {
+      const ctx = getAudioCtx();
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      const node = ctx.createBufferSource();
+      node.buffer = buf;
+      node.connect(ctx.destination);
+      node.start();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function decodeCustomSound(src) {
+    if (!src || customBufferCache.has(src) || customDecoding.has(src)) return;
+    customDecoding.add(src);
+    (async () => {
+      try {
+        const ctx = getAudioCtx();
+        const resp = await fetch(src);
+        const arr = await resp.arrayBuffer();
+        const buf = await new Promise((res, rej) => {
+          /* 新内核返回 Promise、旧内核只认回调 —— 两条都兜住 */
+          const p = ctx.decodeAudioData(arr, res, rej);
+          if (p && typeof p.then === "function") p.then(res, rej);
+        });
+        if (!buf) return;
+        if (customBufferCache.size > 8) customBufferCache.clear(); /* 素材换代不无限攒 */
+        customBufferCache.set(src, buf);
+      } catch (e) {
+        /* 解码失败 / 取不到源：静默保留 HTMLAudio 兜底，绝不让 content script 炸 */
+      } finally {
+        customDecoding.delete(src);
+      }
+    })();
+  }
+
+  /* 预热：扫所有装饰的自定义音效，首次用户手势后后台解码（手势里建 ctx 不报警告） */
+  function preloadCustomSounds() {
+    try {
+      (window.settings.decorations || []).forEach((d) => {
+        const ia = d && d.interactive;
+        if (!ia || !ia.enabled || !ia.sound) return;
+        if ((ia.soundPreset || "pop") !== "custom") return;
+        if (!ia.soundFile) return;
+        const src = lcSoundSrc(ia.soundFile);
+        if (src) decodeCustomSound(src);
+      });
+    } catch (e) {}
+  }
+  window.lcPreloadCustomSounds = preloadCustomSounds;
+
+  /* 2026-10-26 首击提速：AudioContext 预建。
+     必须在**用户手势**里建并 resume —— 页面加载时凭空 new 一个，Chrome 会在
+     控制台打「AudioContext was not allowed to start」警告，等于用噪音换性能。
+     所以挂钩到 document 的 pointerdown（捕获、once、passive）：用户第一次点
+     页面任意地方就把 ctx 备好，之后点装饰不再付构造函数那几毫秒。
+     2026-10-29：顺手把自定义音效的预解码也挂上（ctx 已就绪才解码）。 */
+  let audioWarmTried = false;
+  function warmAudioCtx() {
+    if (audioWarmTried) return;
+    audioWarmTried = true;
+    try {
+      const ctx = getAudioCtx();
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    } catch (e) {}
+    preloadCustomSounds();
+  }
+  window.lcWarmAudioCtx = warmAudioCtx;
+  document.addEventListener("pointerdown", warmAudioCtx, {
+    capture: true,
+    once: true,
+    passive: true,
+  });
+
   function playPopSound(preset, customDataUrl) {
     try {
-      if (customDataUrl) {
-        let audio = customAudioCache.get(customDataUrl);
+      /* #20：自定义音效可能是引用形态 —— 必须换成页内 URL 再喂给 Audio，
+         直接拿 "lcidb:..." 去 new Audio 是取不到源的（等于静默无声）。 */
+      const customSrc = customDataUrl ? lcSoundSrc(customDataUrl) : "";
+      if (customSrc) {
+        /* 快路径：已预解码 ⇒ WebAudio 直接起播（~10ms 级，替代 HTMLAudio 的 50~300ms） */
+        if (playCustomBuffer(customSrc)) return;
+        /* 缓冲还没好：这一次先 HTMLAudio 保证有声，同时后台解码（下次就走快路径） */
+        decodeCustomSound(customSrc);
+        let audio = customAudioCache.get(customSrc);
         if (!audio) {
-          audio = new Audio(customDataUrl);
-          customAudioCache.set(customDataUrl, audio);
+          if (customAudioCache.size > 8) customAudioCache.clear(); /* URL 换代时不无限攒 */
+          audio = new Audio(customSrc);
+          customAudioCache.set(customSrc, audio);
         }
         audio.currentTime = 0;
         audio.play().catch(() => {});
@@ -7883,21 +8080,21 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
             ],
             dur: 0.18,
           });
-          setTimeout(() => {
-            tone(ctx, {
-              freq: [
-                [0, 650],
-                [0.04, 1050, 1],
-                [0.14, 500, 1],
-              ],
-              gain: [
-                [0, 0.001],
-                [0.02, 0.28, 1],
-                [0.15, 0.001, 1],
-              ],
-              dur: 0.17,
-            });
-          }, 150);
+          /* 第二段精确排在 t+0.15（原 setTimeout 150ms：主线程卡就断开） */
+          tone(ctx, {
+            at: t + 0.15,
+            freq: [
+              [0, 650],
+              [0.04, 1050, 1],
+              [0.14, 500, 1],
+            ],
+            gain: [
+              [0, 0.001],
+              [0.02, 0.28, 1],
+              [0.15, 0.001, 1],
+            ],
+            dur: 0.17,
+          });
           break;
         }
         case "beep": {
@@ -7915,21 +8112,21 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
             ],
             dur: 0.13,
           });
-          setTimeout(() => {
-            tone(ctx, {
-              type: "square",
-              freq: [
-                [0, 1100],
-                [0.06, 850, 1],
-              ],
-              gain: [
-                [0, 0.001],
-                [0.01, 0.1, 1],
-                [0.1, 0.001, 1],
-              ],
-              dur: 0.11,
-            });
-          }, 120);
+          /* 第二段精确排在 t+0.12 */
+          tone(ctx, {
+            at: t + 0.12,
+            type: "square",
+            freq: [
+              [0, 1100],
+              [0.06, 850, 1],
+            ],
+            gain: [
+              [0, 0.001],
+              [0.01, 0.1, 1],
+              [0.1, 0.001, 1],
+            ],
+            dur: 0.11,
+          });
           break;
         }
         case "stretch": {
@@ -7946,41 +8143,41 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
             ],
             dur: 0.4,
           });
-          setTimeout(() => {
-            tone(ctx, {
-              type: "sine",
-              freq: [
-                [0, 180],
-                [0.08, 420, 1],
-                [0.2, 240, 1],
-              ],
-              gain: [
-                [0, 0.001],
-                [0.02, 0.35, 1],
-                [0.22, 0.001, 1],
-              ],
-              dur: 0.24,
-            });
-          }, 370);
+          /* 第二段精确排在 t+0.37 */
+          tone(ctx, {
+            at: t + 0.37,
+            type: "sine",
+            freq: [
+              [0, 180],
+              [0.08, 420, 1],
+              [0.2, 240, 1],
+            ],
+            gain: [
+              [0, 0.001],
+              [0.02, 0.35, 1],
+              [0.22, 0.001, 1],
+            ],
+            dur: 0.24,
+          });
           break;
         }
         case "bubbles": {
+          /* 四个泡统一在 t0 时间轴上排程（原 setTimeout 链：卡顿时节奏散架） */
           [0, 90, 190, 300].forEach((d) => {
-            setTimeout(() => {
-              const base = 300 + Math.random() * 250;
-              tone(ctx, {
-                freq: [
-                  [0, base],
-                  [0.06, base * 2.2, 1],
-                ],
-                gain: [
-                  [0, 0.001],
-                  [0.01, 0.25, 1],
-                  [0.08, 0.001, 1],
-                ],
-                dur: 0.09,
-              });
-            }, d);
+            const base = 300 + Math.random() * 250;
+            tone(ctx, {
+              at: t + d / 1000,
+              freq: [
+                [0, base],
+                [0.06, base * 2.2, 1],
+              ],
+              gain: [
+                [0, 0.001],
+                [0.01, 0.25, 1],
+                [0.08, 0.001, 1],
+              ],
+              dur: 0.09,
+            });
           });
           break;
         }
@@ -8247,12 +8444,14 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   window.spawnDialogueBubble = spawnDialogueBubble;
 
   /* ---------- 挤压形变动画 ---------- */
-  function applySqueezeEffect(img) {
+  /* 2026-10-25 重写：旧实现 = 下压 transition 0.1s → 等 transitionend 事件 → 回弹
+     transition（+250ms setTimeout 兜底），三段「事件接力」每一环在掉帧页面上都会
+     被拉长，体感就是「压扁状态停很久才回弹」。现改为**一条 WAAPI 序列**：
+     img.animate() 的 transform 动画在合成器时间轴上跑，主线程再卡时长也是准的；
+     下压/回弹衔接用 finished promise，不靠事件不靠定时器。视觉参数（强度、
+     回弹风格曲线与时长）与旧版完全一致。 */
+  function applySqueezeEffect(img, rectIn) {
     const decId = img.dataset.decId;
-
-    // 先彻底停止呼吸动画
-    img.classList.remove("lc-dec-breathe", "lc-dec-breathe-squish");
-    void img.offsetHeight;
 
     // 读取当前配置（挤压阶段）
     const dec = (window.settings.decorations || []).find((d) => d.id === decId);
@@ -8273,7 +8472,8 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     // 关键：计算底部补偿偏移量
     // scaleY 压缩后，元素中心会向上偏移 (原始高 - 压缩后高)/2
     // 我们要把整个元素向下推同样的距离，让底部回到原位
-    const rect = img.getBoundingClientRect();
+    // rectIn：点击安检门已量过的 rect，直接复用 —— 同一帧少一次强制布局
+    const rect = rectIn || img.getBoundingClientRect();
     const offsetY = (rect.height * (1 - scaleY)) / 2;
 
     // 回弹风格：时间和曲线都不同，让差异更明显
@@ -8284,18 +8484,42 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     };
     const bounce = bounceMap[ia.bounceStyle] || bounceMap.elastic;
 
-    // 令牌：连续快速点击时让旧动画的回调全部失效
+    // 令牌：连续快速点击时让旧动画的恢复回调全部失效
     const token = (img._lcSqueezeToken = (img._lcSqueezeToken || 0) + 1);
 
-    // 下压：快速且干脆（所有风格下压阶段都一样）
-    img.style.transition = "transform 0.1s cubic-bezier(0.4, 0, 0.2, 1)";
-    img.style.transform = `translate(-50%, calc(-50% + ${offsetY}px)) scale(${scaleX}, ${scaleY})`;
+    // 停呼吸动画（WAAPI 运行期间优先于 CSS class 动画，结束后再恢复 class）
+    img.classList.remove("lc-dec-breathe", "lc-dec-breathe-squish");
+
+    // 连续点击：取消上一次还没跑完的 WAAPI 动画，避免两层动画叠加
+    if (img._lcSqueezeAnim) {
+      try {
+        img._lcSqueezeAnim.cancel();
+      } catch (e) {}
+      img._lcSqueezeAnim = null;
+    }
+
+    // 下压：快速且干脆（所有风格下压阶段都一样，0.1s）
+    // 回弹：按 bounce.duration + bounce.curve
+    const pressDur = 0.1;
+    const totalMs = Math.round((pressDur + bounce.duration) * 1000);
+    const pressOffset = Math.round((pressDur * 1000 * 100) / totalMs) / 100;
+    const BASE = "translate(-50%, -50%)";
+    const SQUASH = `translate(-50%, calc(-50% + ${offsetY}px)) scale(${scaleX}, ${scaleY})`;
+    const anim = img.animate(
+      [
+        { transform: BASE, easing: "cubic-bezier(0.4, 0, 0.2, 1)" },
+        { transform: SQUASH, offset: pressOffset, easing: bounce.curve },
+        { transform: BASE },
+      ],
+      { duration: totalMs, fill: "none" },
+    );
+    img._lcSqueezeAnim = anim;
 
     // 恢复呼吸动画（重新读取最新配置，避免闭包过时）
     const restoreBreathe = () => {
-      img.style.transition = "";
+      if (img._lcSqueezeToken !== token) return;
+      img._lcSqueezeAnim = null;
       img.style.transform = "translate(-50%, -50%)";
-      void img.offsetHeight;
 
       const currentDec = (window.settings.decorations || []).find(
         (d) => d.id === decId,
@@ -8312,36 +8536,9 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       }
     };
 
-    // 回弹：用 transitionend 驱动（比嵌套 setTimeout 更精准，不受定时器排队延迟影响）
-    const startBounce = () => {
-      if (img._lcSqueezeToken !== token) return;
-      img.removeEventListener("transitionend", startBounce);
-      img.style.transition = `transform ${bounce.duration}s ${bounce.curve}`;
-      img.style.transform = `translate(-50%, -50%) scale(1)`;
-
-      let bounceDone = false;
-      const onBounceEnd = (e) => {
-        if (
-          e.propertyName !== "transform" ||
-          img._lcSqueezeToken !== token ||
-          bounceDone
-        )
-          return;
-        bounceDone = true;
-        img.removeEventListener("transitionend", onBounceEnd);
-        restoreBreathe();
-      };
-      img.addEventListener("transitionend", onBounceEnd);
-      // 兜底：transition 未触发（元素被隐藏等）时也能恢复
-      setTimeout(() => {
-        if (img._lcSqueezeToken === token && !bounceDone) restoreBreathe();
-      }, bounce.duration * 1000 + 150);
-    };
-    img.addEventListener("transitionend", startBounce);
-    // 兜底：transitionend 未触发时仍能进入回弹
-    setTimeout(() => {
-      if (img._lcSqueezeToken === token) startBounce();
-    }, 250);
+    anim.finished.then(restoreBreathe).catch(() => {
+      /* cancel() 会让 finished 进入 rejected —— 静默吞掉即可（新点击已接管） */
+    });
   }
   window.applySqueezeEffect = applySqueezeEffect;
 
@@ -8524,10 +8721,16 @@ function bindGlobalDecListener() {
 
       if (imgs.length === 0) return;
 
-      const decOf = (img) =>
-        (window.settings.decorations || []).find(
-          (d) => d.id === img.dataset.decId,
-        );
+      /* 2026-10-26 提速：配置与层级一次遍历缓存成 Map。
+         旧实现在 sort 比较器里反复 find() + getComputedStyle(a).zIndex，
+         每点一下都要强制样式重算（大页面十几~几十 ms），这就是「比点击瞬间
+         慢一点点」的主因。装饰的 z-index 是 render 时写死的内联值
+         （content.js 里 img.style.zIndex = …），读内联字符串零成本，
+         且与计算值完全一致（插件 CSS 里没有 !important 的 z-index 作用于装饰图）。 */
+      const decById = new Map();
+      (window.settings.decorations || []).forEach((d) => decById.set(d.id, d));
+      const decOf = (img) => decById.get(img.dataset.decId) || null;
+      const zOf = (img) => parseInt(img.style.zIndex, 10) || 0;
 
       /* 命中顺序：卡片上层的贴图优先（视觉层级高者先接点击），同层内按 z-index 降序。
          不能只按 img 的 z-index——上下两个容器的图各自从「容器内序号」取值，会撞号。 */
@@ -8535,9 +8738,7 @@ function bindGlobalDecListener() {
         const aa = decOf(a)?.aboveCards ? 1 : 0;
         const ab = decOf(b)?.aboveCards ? 1 : 0;
         if (aa !== ab) return ab - aa;
-        const za = parseInt(getComputedStyle(a).zIndex) || 0;
-        const zb = parseInt(getComputedStyle(b).zIndex) || 0;
-        return zb - za;
+        return zOf(b) - zOf(a);
       });
 
       const x = e.clientX;
@@ -8580,14 +8781,17 @@ function bindGlobalDecListener() {
             if (inHotZone) {
               e.stopPropagation();
 
-              if (ia.squeeze !== false) {
-                window.applySqueezeEffect(img);
-              }
+              /* 2026-10-26 提速：音效抢跑 —— 音频不依赖布局，先出声；
+                 挤压动画需要读 rect 尺寸，放后面。 */
               if (ia.sound) {
                 const preset = ia.soundPreset || "pop";
                 const customFile =
                   preset === "custom" ? ia.soundFile || "" : "";
                 window.playPopSound(preset, customFile);
+              }
+              if (ia.squeeze !== false) {
+                /* 复用命中测试已读到的 rect，少一次强制布局 */
+                window.applySqueezeEffect(img, rect);
               }
               if (ia.particles && ia.emojis && ia.emojis.length > 0) {
                 window.spawnEmojiParticles(img, ia.emojis, x, y);

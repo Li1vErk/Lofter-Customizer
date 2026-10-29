@@ -1,5 +1,12 @@
 // background.js - Service Worker for Manifest V3
 
+/* #20 大文件素材库（IndexedDB）：popup 写、SW 读。
+ * 接入方式：manifest 的 background.service_worker **没有**声明 type:module ⇒ 这是
+ * classic worker ⇒ 只能用 importScripts（不能 ES import）。lc-assets.js 因此写成
+ * IIFE 挂全局，SW 与 popup 共用同一份实现。
+ * 必须在这一行之后才使用 self.LCAssets。 */
+importScripts('lc-assets.js');
+
 chrome.commands.onCommand.addListener((command) => {
   // 先读取设置，检查快捷键是否启用
   chrome.storage.local.get('lc_settings_v1', (result) => {
@@ -71,5 +78,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }).catch((e) => sendResponse({ ok: false, error: String(e) }));
     })
     .catch((e) => sendResponse({ ok: false, status: 0, error: String(e) }));
+  return true; // 异步 sendResponse
+});
+
+/* #20 素材中继：页面（content script）取「扩展 origin 的 IndexedDB」里的图片字节。
+ * 为什么必须绕这一道：content script 访问的是**宿主页 origin** 的存储，读不到扩展的库；
+ * 而扩展 origin 造出来的 blob: URL 在 lofter.com 里是跨源，CSS / img.src 都取不到 ⇒
+ * 只能在**页内**建 URL。于是链路是「SW 读 IDB → base64 回传 → 页面 atob 成 Blob →
+ * 页内 createObjectURL」，与上面 lcFetchImage 完全同构（SW 无 DOM ⇒ 只能回字符串）。
+ * 守卫：ref 必须过 lc-assets.js 的白名单正则（挡路径穿越与畸形 id），且只回 base64 一个字段。 */
+/* 单件上限**引用 lc-assets.js 的单一真相源**（不要在这里另写一个数字：写侧 popup 与读侧
+   这里一旦不同步，就会出现「写得进、读不出」的孤儿记录 —— 2026-10-15 真机踩过）。
+   对外口径「原图 ≤ 23MB」；下方兜底值只在 lc-assets.js 加载失败时生效。 */
+const LC_ASSET_MAX = (self.LCAssets && self.LCAssets.MAX_BYTES) || 24 * 1024 * 1024;
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.action !== 'lcIdbGet' || typeof msg.ref !== 'string') return false;
+  const A = self.LCAssets;
+  if (!A) { sendResponse({ ok: false, error: 'assets module missing' }); return false; }
+  const id = A.idFromRef(msg.ref);
+  if (!id) { sendResponse({ ok: false, error: 'bad ref' }); return false; }
+  A.getRecord(id)
+    .then((rec) => {
+      if (!rec || !rec.blob) { sendResponse({ ok: false, error: 'not found' }); return; }
+      rec.blob.arrayBuffer()
+        .then((ab) => {
+          const u8 = new Uint8Array(ab);
+          if (u8.length > LC_ASSET_MAX) { sendResponse({ ok: false, error: 'too large' }); return; }
+          const type = rec.type || rec.blob.type || 'application/octet-stream';
+          sendResponse({ ok: true, type: type, dataUrl: 'data:' + type + ';base64,' + A.bytesToB64(u8) });
+        })
+        .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    })
+    .catch((e) => sendResponse({ ok: false, error: String(e) }));
   return true; // 异步 sendResponse
 });

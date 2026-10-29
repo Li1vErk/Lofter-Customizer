@@ -913,6 +913,48 @@
       margin: 0 0 12px 0;
     }
 
+    /* #21 渐进披露：开关关闭时折叠具体设置，只留一行摘要。
+       高度用 grid-template-rows 0fr↔1fr 过渡（不测量 scrollHeight，
+       内部列表增删也不会把动画算错）；老内核不支持该过渡时直接跳变。
+       摘要行只有一行灰字——不给「修改」按钮，开关本身就是唯一的展开入口；
+       也不写「未生效」，开关关着就是没生效。 */
+    .lc-fold-row {
+      display: none;
+      margin: 10px 0 2px;
+    }
+    .lc-fold-row.show { display: block; }
+    .lc-fold-sum {
+      display: block;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--lc-sub);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .lc-fold-body {
+      display: grid;
+      grid-template-rows: 1fr;
+      opacity: 1;
+      transition:
+        grid-template-rows 0.24s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 0.16s ease;
+    }
+    .lc-fold-body > .lc-fold-inner {
+      overflow: hidden;
+      min-height: 0;
+    }
+    .lc-fold-body.closed {
+      grid-template-rows: 0fr;
+      opacity: 0;
+    }
+    /* 折叠体内部的最后一条开关同样不能留悬空分隔线——上面的
+       `.grp-card > .toggle:last-child` 只管得到卡片的直接子元素，
+       而「已过滤 N 条」「合并为单个 .md」现在都躲在 .lc-fold-inner 里 */
+    .lc-fold-inner > .toggle:last-child {
+      border-bottom: none;
+    }
+
     /* 数据栏按钮行：右对齐，按钮不撑满 */
     /* ---------- 底栏 ---------- */
     .foot {
@@ -1240,9 +1282,15 @@
     <section class="pane" data-pane="func" data-page-node-id="lcFuncPane">
       <div class="grp-card"><div class="grp-title">关键词过滤</div>
         <label class="toggle">
-          <span>启用关键词/用户过滤</span>
+          <span>启用关键词/用户/标签过滤</span>
           <input type="checkbox" id="filter-enabled" />
         </label>
+        <!-- #21 渐进披露（2026-10-29）：关掉开关就把具体设置折起来，只留一行
+             名单概览。折叠 ≠ 隐藏状态：名单还在，只是没生效。 -->
+        <div class="lc-fold-row" id="filter-fold-row">
+          <span class="lc-fold-sum" id="filter-summary"></span>
+        </div>
+        <div class="lc-fold-body closed" id="filter-body"><div class="lc-fold-inner">
         <div class="row" style="flex-wrap:wrap;row-gap:12px;margin-top:12px;"><label style="flex:0 0 100%;">生效范围</label>
           <div class="lc-mods" id="filter-scope">
             <label><input type="checkbox" id="filter-scope-home" checked />首页</label>
@@ -1263,16 +1311,18 @@
           <span>显示「已过滤 N 条」提示</span>
           <input type="checkbox" id="filter-counter" />
         </label>
+        </div></div>
       </div>
       <div class="grp-card"><div class="grp-title">官方黑名单<button type="button" class="help-dot" data-hint="official-help" title="什么是官方黑名单？">?</button></div>
         <div class="row" style="margin-bottom:8px;">
           <div class="lc-mods" id="official-mode">
             <label><input type="radio" name="lc-off-mode" value="user" checked />拉黑用户</label>
-            <label><input type="radio" name="lc-off-mode" value="tag" />屏蔽 tag</label>
+            <label><input type="radio" name="lc-off-mode" value="tag" />屏蔽 tag（本地）</label>
           </div>
         </div>
         <p class="hint collapsible plain" id="official-help" style="margin:4px 0 12px 0;">拉黑由 LOFTER 官方执行：动态和标签页不再显示对方内容，对方也无法评论/私信你；但对方可能感知到（在 App 里进你主页会看到提示）。插件本地的「隐藏」完全无感，两者不通用。</p>
-        <p class="hint collapsible plain" id="official-tag-help" style="margin:4px 0 12px 0;display:none;">屏蔽 tag 是插件本地行为：首页/标签页不再显示带该 tag 的帖子卡片，评论区不受影响，对方无感知。悬停帖子卡片上的 tag 也会出现「屏蔽」小按钮。</p>
+        <!-- 2026-10-23 作者把这一卡误当成"官方标签屏蔽"的入口 ⇒ 文案常显（不再折叠）+ 点明两套名单互不相通 -->
+        <p class="hint plain" id="official-tag-help" style="margin:4px 0 12px 0;display:none;">这是<b>插件本地</b>的名单，和 LOFTER 官方设置里的「标签屏蔽」互不相通：官方那份存在服务端、全站生效（手机 App 也算），插件读不到它，也不会把它写进导出文件；这里只影响本浏览器，但<b>会随配置导出</b>。首页/标签页不再显示带该 tag 的卡片，评论区不受影响。</p>
         <div style="display:flex;gap:6px;">
           <input id="official-add-input" type="text" placeholder="粘贴对方主页链接或 ID"
             style="flex:1;min-width:0;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);">
@@ -1300,6 +1350,12 @@
           <span>启用文章导出</span>
           <input type="checkbox" id="export-enabled" />
         </label>
+        <!-- #21 渐进披露：与关键词过滤同一套口径——关掉就把范围 / 合并 / 长说明
+             折起来，只留一行「批量管理页 · 合并为单个 .md」式的概览 -->
+        <div class="lc-fold-row" id="export-fold-row">
+          <span class="lc-fold-sum" id="export-summary"></span>
+        </div>
+        <div class="lc-fold-body closed" id="export-body"><div class="lc-fold-inner">
         <div class="row" style="flex-wrap:wrap;row-gap:12px;margin-top:12px;"><label style="flex:0 0 100%;">生效范围</label>
           <div class="lc-mods" id="export-scope">
             <label><input type="checkbox" id="export-scope-manage" checked />批量管理页</label>
@@ -1310,6 +1366,10 @@
           <span>合并为单个 .md（长篇连载）</span>
           <input type="checkbox" id="export-merged" />
         </label>
+        </div></div>
+        <!-- 长说明刻意留在折叠体**外面**：它的 ? 在卡片标题行，折叠态也能点；
+             放在 0 高度的折叠体里会被裁掉，点了像是没反应。collapsible 本身
+             默认隐藏，展开态视觉顺序仍是「范围 → 合并 → 说明」。 -->
         <p class="hint collapsible plain" id="export-help" style="margin:4px 0 0 0;">批量管理页顶栏会出现「全选（已加载）」和「导出」：先选中若干篇再点导出，每篇存一个 .md，图片保留 LOFTER 图床外链。导出逐篇抓取详情页（每篇约 0.4 秒），量大请等进度条走完，中途可取消。只导出自己已发布的内容，草稿与他人文章不在此列。</p>
       </div>
       <div class="grp-card"><div class="grp-title">编辑防丢<button type="button" class="help-dot" data-hint="draft-help" title="编辑防丢说明">?</button></div>
@@ -1380,7 +1440,7 @@
           <label><input type="checkbox" data-mod="emoji" checked data-page-node-id="lcMod7" />表情</label>
           <label><input type="checkbox" data-mod="misc" checked data-page-node-id="lcMod5" />其他</label>
         </div>
-        <p class="hint plain" style="margin-bottom:12px;" data-page-node-id="lcExpHint">勾选要导出的栏目，与面板标签一一对应，方便只恢复某一栏。</p>
+        <p class="hint plain" style="margin-bottom:12px;" data-page-node-id="lcExpHint">勾选要导出的栏目，与面板标签一一对应，方便只恢复某一栏。「功能」板块含屏蔽名单（关键词 / 屏蔽用户 / 屏蔽标签），名单非空时导出前会问你要不要带上它们。</p>
         <div class="lc-export-row" data-page-node-id="lcExpPartRow">
           <button class="btn btn-primary" id="cfg-export-part" type="button" data-page-node-id="lcExpPart">导出全部</button>
           <span id="cfg-export-tip" style="display:inline-flex;align-items:center;gap:4px;" data-page-node-id="lcExpTip"></span>
@@ -1628,9 +1688,31 @@
     </div>
   </div>
 
+  <!-- 导出隐私三选一（A+B 合体）：只在所选范围含非空屏蔽名单时弹出。
+       「包含」= 自用换机/备份；「分享模式」= 剔除屏蔽名单后导出，发给别人用 -->
+  <div id="lc-export-privacy-overlay"
+    style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10001;align-items:center;justify-content:center;">
+    <div
+      style="background:var(--lc-card);border-radius:12px;width:300px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.15);overflow:hidden;">
+      <div style="padding:14px 16px 6px;">
+        <span style="font-size:14px;font-weight:500;color:var(--lc-text);">导出文件包含屏蔽名单</span>
+      </div>
+      <div style="padding:0 16px 12px;font-size:12px;color:var(--lc-sub);line-height:1.6;" id="lc-export-privacy-desc">
+        <!-- 动态填充：关键词 N 个 / 用户 N 个 / 标签 N 个 -->
+      </div>
+      <div style="padding:0 16px 14px;display:flex;flex-direction:column;gap:8px;">
+        <button id="lc-export-privacy-keep" type="button" class="btn"
+          style="padding:8px 12px;font-size:13px;background:var(--lc-accent);color:#fff;border:none;">包含名单，导出（自己换机 / 备份）</button>
+        <button id="lc-export-privacy-share" type="button" class="btn" style="padding:8px 12px;font-size:13px;">分享模式导出（不含屏蔽名单）</button>
+        <button id="lc-export-privacy-cancel" type="button" class="btn" style="padding:6px 12px;font-size:12px;border:none;background:none;">取消</button>
+      </div>
+    </div>
+  </div>
+
   <script src="defaults.js"></script>
   <script src="lc-i18n-dict.js"></script>
   <script src="lc-i18n.js"></script>
+  <script src="lc-assets.js"></script>
   <script src="lc-dwr.js"></script>
   <script src="popup.js"></script>
 

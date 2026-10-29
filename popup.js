@@ -80,6 +80,203 @@
     img.src = dataUrl;
   });
 
+  /* ---------- #20 大件素材库（popup 侧） ----------
+   * 大件不再塞 chrome.storage.local（整个扩展共用一个 10MB 池，base64 还膨胀 1.33×
+   * ⇒ 单文件 6–7MB 就写不进），改存扩展 origin 的 IndexedDB，settings 里只留一条引用
+   * "lcidb:<id>"。popup 与 IDB 同 origin ⇒ 直接读写；页面侧拿不到扩展的库，由
+   * background 中继回 base64、在页内建 objectURL（blob:chrome-extension:// 在
+   * lofter.com 里跨源，取不到）。
+   * 内存纪律：一条引用只对应一个 objectURL，换图/删除/清空时必须 revoke。 */
+  const _pvUrls = new Map(); /* ref -> objectURL（本页预览用） */
+  const LC_ASSETS = (typeof LCAssets !== "undefined") ? LCAssets : null;
+
+  const lcIsRef = (v) => !!(v && typeof v === "string" && v.indexOf("lcidb:") === 0);
+  /* 同步取「可用的 src」：老 dataUrl 原样返回；引用给已解析好的 URL；未就绪给 "" */
+  const pvOf = (v) => {
+    if (!v) return "";
+    if (v.indexOf("data:") === 0) return v;
+    return _pvUrls.get(v) || "";
+  };
+
+  /* 只替 src、不重建 DOM —— 避免打断用户正在调的滑块/输入框 */
+  function lcRefreshAssetPreviews() {
+    const bp = $("bg-preview");
+    if (bp && state.background && state.background.image) {
+      const src = pvOf(state.background.image.dataUrl);
+      if (src) { bp.src = src; bp.style.display = "block"; }
+    }
+    const gp = $("gtotop-preview");
+    if (gp && state.gtotop) {
+      const src = pvOf(state.gtotop.imageDataUrl);
+      if (src) { gp.src = src; gp.style.display = "block"; }
+    }
+    document.querySelectorAll("img[data-lc-pv]").forEach((el) => {
+      const src = pvOf(el.getAttribute("data-lc-pv"));
+      if (src) el.src = src;
+    });
+  }
+
+  /* 把 settings 里已有的引用解析成本页 URL（重开面板后预览不能是空的） */
+  function warmPreviewAssets(s) {
+    if (!LC_ASSETS || !s) return;
+    const refs = [];
+    const add = (v) => { if (lcIsRef(v)) refs.push(v); };
+    try {
+      if (s.background && s.background.image) add(s.background.image.dataUrl);
+      if (s.gtotop) add(s.gtotop.imageDataUrl);
+      (s.decorations || []).forEach((d) => {
+        add(d.dataUrl);
+        if (d.interactive) add(d.interactive.soundFile);
+      });
+    } catch (e) { return; }
+
+    const live = new Set(refs);
+    _pvUrls.forEach((url, ref) => {
+      if (live.has(ref)) return;
+      _pvUrls.delete(ref);
+      try { URL.revokeObjectURL(url); } catch (e) {}
+    });
+
+    refs.forEach((ref) => {
+      if (_pvUrls.has(ref)) return;
+      const id = LC_ASSETS.idOf(ref);
+      if (!id) return;
+      LC_ASSETS.getRecord(id).then((rec) => {
+        if (!rec || !rec.blob) return;
+        const url = URL.createObjectURL(rec.blob);
+        _pvUrls.set(ref, url);
+        lcRefreshAssetPreviews();
+      }).catch(() => {});
+    });
+  }
+
+  /* 体积超限的统一错误（文案见 lcAssetFail）。上限值一律取 LC_ASSETS.MAX_BYTES，
+     不在这里另写数字 —— 写侧与读侧各写一个数就是孤儿记录的起点。 */
+  function lcTooLarge(size) {
+    const e = new Error("TOO_LARGE");
+    e.code = "TOO_LARGE";
+    e.size = size;
+    e.maxMb = (LC_ASSETS && LC_ASSETS.MAX_MB) || 23;
+    return e;
+  }
+
+  /* 选中的文件 → 一条 lcidb 引用（compress 不给就原样存：GIF 走这条，不压缩） */
+  async function lcIngest(file, kind, compress) {
+    if (!LC_ASSETS || !LC_ASSETS.isSupported()) throw new Error(T("浏览器存储不可用"));
+    const maxB = (LC_ASSETS && LC_ASSETS.MAX_BYTES) || (24 * 1024 * 1024);
+    let blob = file;
+    /* 体积守卫必须在**写入前**拦。2026-10-15 真机踩到：只在读侧拦 ⇒ 24.6MB 照样写进 IDB，
+       留下一条永远读不出来的孤儿记录（白占磁盘 + 用户看不到任何提示 + 面板也统计不到）。
+       压缩型（装饰图/回顶图）允许「先压后判」—— 压完可能已远低于上限，直接按原文件拒是过度拦截。 */
+    const willCompress = !!(compress && file.type !== "image/gif");
+    if (!willCompress && file.size > maxB) throw lcTooLarge(file.size);
+    if (willCompress) {
+      const du = await readFile(file);
+      const out = await compressImage(du, compress.maxW, compress.maxH, compress.quality);
+      blob = LC_ASSETS.dataUrlToBlob(out) || file;
+    }
+    if (blob.size > maxB) throw lcTooLarge(blob.size);
+    const id = LC_ASSETS.newId(kind);
+    await LC_ASSETS.putBlob(id, blob, { type: blob.type || file.type, size: blob.size });
+    const ref = LC_ASSETS.makeRef(id);
+    try { _pvUrls.set(ref, URL.createObjectURL(blob)); } catch (e) {}
+    return ref;
+  }
+
+  /* 某条引用彻底不用了：revoke 预览 URL + 删 IDB 记录（不留孤儿） */
+  function lcDropRef(v) {
+    if (!lcIsRef(v)) return;
+    const url = _pvUrls.get(v);
+    if (url) { try { URL.revokeObjectURL(url); } catch (e) {} _pvUrls.delete(v); }
+    if (LC_ASSETS) { const id = LC_ASSETS.idOf(v); if (id) LC_ASSETS.del(id).catch(() => {}); }
+  }
+
+  function lcAssetFail(err) {
+    /* 超限要给「多大 / 上限多少 / 该怎么办」三件事。
+       此处句中的 23 与 lc-assets.js 的 MAX_MB 保持同步（改上限时同步改这一条词条）。 */
+    if (err && err.code === "TOO_LARGE") {
+      const cur = (Number(err.size) / 1048576).toFixed(1);
+      alert(T("这张图太大了：") + cur +
+        T("MB。单张上限 23MB，请先把它压缩到上限以内再上传。"));
+      return;
+    }
+    alert(T("素材保存失败：") + ((err && err.message) || err) + "\n" +
+      T("图片未写入本地素材库，请重试或换一张小一点的。"));
+  }
+
+  /* ───── #20 B2：老配置增量迁移（popup 打开时自动跑）─────
+     把 settings 里仍是 base64 的素材（B1 之前上传的老装饰图 / 老音效等）
+     搬进 IDB、字段位换成 lcidb: 引用。设计约束（方案稿 §11.2.4 定稿）：
+     · **递归全扫 + 数组逐项** —— 不写死 path 白名单：decorations[i] 每一项
+       都覆盖，将来新增素材字段自动纳入（口径与取证探针 scanStrings 一致）。
+     · **幂等** —— 再跑一遍没有 data: 大件就是 0 迁移，不会重复写 IDB。
+     · **按件事务** —— 单件失败跳过并记录，不拖累其余；失败件保持原样
+       （仍是 data:），下次打开面板自动重试。
+     · **原样搬，不重新压缩** —— GIF 压了丢动画、别的压了掉画质；
+       压缩只发生在新上传（lcIngest）那一刻。 */
+  async function lcIdbMigrate(s) {
+    const out = { found: 0, migrated: 0, failed: 0, errors: [] };
+    if (!LC_ASSETS || !LC_ASSETS.isSupported() || !s || typeof s !== "object") return out;
+    const slots = [];
+    const walk = (v, depth) => {
+      if (!v || typeof v !== "object" || depth > 10) return;
+      const keys = Object.keys(v);
+      for (const k of keys) {
+        const val = v[k];
+        if (typeof val === "string" &&
+            (val.indexOf("data:image/") === 0 || val.indexOf("data:audio/") === 0)) {
+          slots.push({ host: v, key: k, val: val });
+        } else if (val && typeof val === "object") {
+          walk(val, depth + 1);
+        }
+      }
+    };
+    walk(s, 0);
+    out.found = slots.length;
+    if (!out.found) return out;
+    for (const slot of slots) {
+      try {
+        if (lcIsRef(slot.val)) continue; /* 已是引用（防御，正常扫不到） */
+        const blob = LC_ASSETS.dataUrlToBlob(slot.val);
+        if (!blob) throw new Error("dataUrl 解析失败");
+        const kind = slot.val.indexOf("data:audio/") === 0 ? "aud" : "img";
+        const id = LC_ASSETS.newId(kind);
+        await LC_ASSETS.putBlob(id, blob, { type: blob.type, size: blob.size });
+        slot.host[slot.key] = LC_ASSETS.makeRef(id);
+        out.migrated++;
+      } catch (e) {
+        out.failed++;
+        out.errors.push(String((slot.host && slot.host.id) || slot.key) +
+          ": " + String((e && e.message) || e));
+      }
+    }
+    return out;
+  }
+
+  /* 迁移结果 → 占用块顶上一条一次性提示。
+     两条消失路径：① 迁移后再打开面板 found=0，压根不显示（真正的幂等，不重复打扰）；
+     ② 本次面板内 8s 后淡出自删（占用块顶部位置宝贵，不留常驻横幅）。 */
+  const LC_MIG_FADE_MS = 8000;
+  function lcShowMigrateResult(m) {
+    if (!m || (!m.migrated && !m.failed)) return;
+    const box = $("lc-usage");
+    if (!box || box.querySelector("[data-lc-mig]")) return;
+    const el = document.createElement("div");
+    el.setAttribute("data-lc-mig", "1");
+    el.style.cssText = "margin:6px 0 0 0;font-size:12px;color:var(--lc-text);" +
+      "transition:opacity .6s ease,height .3s ease;overflow:hidden;";
+    el.textContent = m.failed
+      ? T("素材迁移：成功 ") + m.migrated + T(" 件，失败 ") + m.failed +
+        T(" 件（失败件保持原样，下次打开面板会自动重试）。")
+      : T("旧版素材已搬进独立素材库：") + m.migrated +
+        T(" 件（图片照常显示，只是不再占这 10MB）。");
+    box.insertBefore(el, box.firstChild);
+    setTimeout(() => {
+      el.style.opacity = "0";
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 700);
+    }, LC_MIG_FADE_MS);
+  }
+
   /* 标签切换（--i 驱动 .tabs::before 滑动色块平移） */
   const tabsBar = $("tabs");
   /* 记住最后停留的栏：切语言等场景 popup 会整页重载，不记就每次弹回第一栏。
@@ -318,7 +515,7 @@
 
       card.innerHTML = `
         <div style="display:flex;gap:10px;align-items:flex-start;">
-          <img src="${dec.dataUrl}" style="width:52px;height:52px;object-fit:contain;border-radius:6px;flex-shrink:0;background:repeating-conic-gradient(rgba(128,128,128,.18) 0 25%,transparent 0 50%) 0 0/12px 12px,rgba(128,128,128,.08);" />
+          <img data-lc-pv="${dec.dataUrl || ""}" src="${pvOf(dec.dataUrl)}" style="width:52px;height:52px;object-fit:contain;border-radius:6px;flex-shrink:0;background:repeating-conic-gradient(rgba(128,128,128,.18) 0 25%,transparent 0 50%) 0 0/12px 12px,rgba(128,128,128,.08);" />
           <div style="flex:1;min-width:0;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
               <span style="font-size:12px;color:var(--lc-text);font-weight:500;">装饰 #${idx + 1}</span>
@@ -601,7 +798,13 @@
       btn.addEventListener("click", (e) => {
         const idx = +e.target.dataset.del;
         if (confirm(T("( \u02b6> <)\u055e \u055e确定删除这个装饰图吗？"))) {
+          const removed = state.decorations[idx];
           state.decorations.splice(idx, 1);
+          /* #20：连同它的素材一起清（图 + 自定义音效），不留孤儿记录 */
+          if (removed) {
+            lcDropRef(removed.dataUrl);
+            if (removed.interactive) lcDropRef(removed.interactive.soundFile);
+          }
           renderDecorations();
           save();
         }
@@ -849,7 +1052,7 @@
     $("bg-blur").value = s.background.image.blur; $("bg-blur-v").textContent = s.background.image.blur + "px";
     $("bg-alpha").value = s.background.contentAlpha; $("bg-alpha-v").textContent = s.background.contentAlpha + "%";
     const img = $("bg-preview");
-    if (s.background.image.dataUrl) { img.src = s.background.image.dataUrl; img.style.display = "block"; } else { img.style.display = "none"; }
+    if (s.background.image.dataUrl) { img.src = pvOf(s.background.image.dataUrl); img.style.display = img.getAttribute("src") ? "block" : "none"; } else { img.style.display = "none"; }
 
     // 卡片
     $("card-enabled").checked = s.card.enabled;
@@ -925,7 +1128,7 @@
     // 返回顶层换图片
     const gp = $("gtotop-preview");
     if (s.gtotop && s.gtotop.imageDataUrl) {
-      gp.src = s.gtotop.imageDataUrl; gp.style.display = "block";
+      gp.src = pvOf(s.gtotop.imageDataUrl); gp.style.display = gp.getAttribute("src") ? "block" : "none";
     } else { gp.style.display = "none"; }
 
     // 返回顶层图片大小调整
@@ -963,6 +1166,7 @@
     $("export-scope-manage").checked = !!(ex.scope && ex.scope.manage !== false);
     $("export-scope-detail").checked = !!(ex.scope && ex.scope.detail);
     $("export-merged").checked = !!(ex.merged);
+    renderExportFold();
 
     // 编辑防丢（#12 B-lite）
     const dr = s.draft || LC_clone(LC_DEFAULTS.draft);
@@ -1165,7 +1369,18 @@
   on("bg-blur", "input", (e) => { state.background.image.blur = +e.target.value; $("bg-blur-v").textContent = e.target.value + "px"; save(); });
   on("bg-alpha", "input", (e) => { state.background.contentAlpha = +e.target.value; $("bg-alpha-v").textContent = e.target.value + "%"; save(); });
   on("bg-file-btn", "click", () => $("bg-file").click());
-  on("bg-file", "change", async (e) => { const f = e.target.files[0]; if (!f) return; state.background.image.dataUrl = await readFile(f); $("bg-preview").src = state.background.image.dataUrl; $("bg-preview").style.display = "block"; save(); });
+  on("bg-file", "change", async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const prev = state.background.image.dataUrl;
+    try {
+      const ref = await lcIngest(f, "img"); /* 背景图不压缩：GIF 原样存（真机实测 23.3MB 可用 ✅ / 24.6MB 超限 ⇒ 上限 23MB，超限在写入前就拒并明确提示） */
+      state.background.image.dataUrl = ref;
+      if (prev !== ref) lcDropRef(prev);
+      $("bg-preview").src = pvOf(ref);
+      $("bg-preview").style.display = "block";
+      save();
+    } catch (err) { lcAssetFail(err); }
+  });
 
   on("card-enabled", "change", (e) => { state.card.enabled = e.target.checked; save(); });
   on("card-radius", "input", (e) => { state.card.radius = +e.target.value; $("card-radius-v").textContent = e.target.value + "px"; save(); });
@@ -1575,7 +1790,80 @@
           )
           .join("")
       : `<p class="hint" style="margin:0;">暂无。在帖子作者名或用户评论旁点「隐藏」即可添加。</p>`;
+    renderFilterFold();
   }
+
+  /* ---------- #21 渐进披露：通用折叠（2026-10-29） ----------
+   * 一个开关 gate 一块具体设置：关 → 收起、只留一行摘要；开 → 展开、摘要让位。
+   *
+   * 为什么没有「修改」按钮、也没写「未生效」（作者 2026-10-29 拍板）：
+   * 开关本身就是唯一的展开入口——要生效、要改名单，正常人都会先把开关打开，
+   * 而开关一开卡片就展开了。再给一个「关闭态下点改」的第二条路属于重复入口，
+   * 只会让人怀疑「我是不是得点修改才会生效」。「未生效」同理：开关关着就是
+   * 没生效，写在摘要旁边是同一句话说两遍。
+   *
+   * 折叠 ≠ 隐藏状态：摘要必须报数量（「5 个关键词 · 3 个用户」），否则用户
+   * 会以为名单被清空了。 */
+  function lcBindFold(cfg) {
+    const row = $(cfg.row);
+    const body = $(cfg.body);
+    const en = $(cfg.en);
+    return function render() {
+      if (!row || !body || !en) return;
+      const on = !!en.checked;
+      body.classList.toggle("closed", !on);
+      /* 折起来时把里面的控件设 inert：不可见却能 Tab 聚焦是坑。
+         老内核没有 inert 属性也不报错（赋值即普通属性），不影响折叠本身 */
+      try {
+        body.inert = !on;
+      } catch (e) {}
+      row.classList.toggle("show", !on);
+      if (on) return;
+      const el = $(cfg.sum);
+      if (el) el.textContent = cfg.sumText();
+    };
+  }
+
+  /* 摘要文案（纯函数，便于自检）：只列非零项，全零返回空串（由调用方
+     换成「未设置屏蔽内容」）。 */
+  function lcFilterSumText(f) {
+    const n = (a) => (Array.isArray(a) ? a.length : 0);
+    /* 量词短语单独过 T()：i18n 运行时是「整节点等值」匹配，运行时拼出来的
+       「5 个关键词」永远匹配不上字典，所以只能整段短语进字典、数字在外面拼 */
+    const parts = [];
+    if (n(f && f.keywords)) parts.push(n(f.keywords) + " " + T("个关键词"));
+    if (n(f && f.users)) parts.push(n(f.users) + " " + T("个用户"));
+    if (n(f && f.tags)) parts.push(n(f.tags) + " " + T("个标签"));
+    return parts.length ? parts.join(" · ") : "";
+  }
+
+  /* 文章导出的摘要：报「导出在哪几个位置 + 是否合并」，与过滤那边同理——
+     折叠后不报范围，用户会以为设置被重置了 */
+  function lcExportSumText(ex) {
+    const sc = (ex && ex.scope) || {};
+    const parts = [];
+    if (sc.manage !== false) parts.push(T("批量管理页"));
+    if (sc.detail) parts.push(T("文章详情页"));
+    if (!parts.length) return T("未选择导出位置");
+    if (ex && ex.merged) parts.push(T("合并为单个 .md"));
+    return parts.join(" · ");
+  }
+
+  const renderFilterFold = lcBindFold({
+    row: "filter-fold-row",
+    body: "filter-body",
+    en: "filter-enabled",
+    sum: "filter-summary",
+    sumText: () => lcFilterSumText(state.filter) || T("未设置屏蔽内容"),
+  });
+
+  const renderExportFold = lcBindFold({
+    row: "export-fold-row",
+    body: "export-body",
+    en: "export-enabled",
+    sum: "export-summary",
+    sumText: () => lcExportSumText(state.export),
+  });
 
   on("filter-users", "click", (e) => {
     const b = e.target.closest("[data-filter-unmute]");
@@ -1606,6 +1894,7 @@
         if (JSON.stringify(cur.tags) !== JSON.stringify(nf.tags)) {
           cur.tags = nf.tags;
           if (lcOffMode === "tag") renderTagBlockList();
+          renderFilterFold(); /* 摘要里的标签数（两种模式都要刷） */
         }
       }
     });
@@ -1613,6 +1902,7 @@
 
   on("filter-enabled", "change", (e) => {
     ensureFilter().enabled = e.target.checked;
+    renderFilterFold();
     save();
   });
   on("filter-scope-home", "change", (e) => {
@@ -1648,18 +1938,22 @@
   }
   on("export-enabled", "change", (e) => {
     ensureExport().enabled = e.target.checked;
+    renderExportFold();
     save();
   });
   on("export-scope-manage", "change", (e) => {
     ensureExport().scope.manage = e.target.checked;
+    renderExportFold(); /* 折叠态下改不到，但摘要口径要始终跟手 */
     save();
   });
   on("export-scope-detail", "change", (e) => {
     ensureExport().scope.detail = e.target.checked;
+    renderExportFold();
     save();
   });
   on("export-merged", "change", (e) => {
     ensureExport().merged = e.target.checked;
+    renderExportFold();
     save();
   });
 
@@ -1701,6 +1995,7 @@
         seen.add(k);
         return true;
       });
+    renderFilterFold(); /* 关闭态下手动展开编辑时，摘要要跟着变 */
     save();
   });
 
@@ -1709,6 +2004,10 @@
    * 回复解析用手写解析器，不能 new Function）。 */
   let lcOfficialList = []; /* {id, blogId, blogName, nick, ava} */
   let lcOfficialLoading = false;
+  /* 失败态要单独存：原先 catch 里「先设文案、再 render」会被 render 覆盖成
+     「0 人」⇒ 用户看到的失败其实是假的 0 人（2026-10-23 真机反馈暴露） */
+  let lcOfficialErr = null;
+  let lcOfficialRetried = false; /* 首次失败自动重试一次，只一次 */
 
   /* 卡片模式：同一张卡、同一个输入框，在「拉黑用户（官方 DWR）」与
    * 「屏蔽 tag（本地 filter.tags）」间切换——两个名单的日常管理动作
@@ -1764,7 +2063,9 @@
     if (lcOffMode === "tag") return;
     $("official-count").textContent = lcOfficialLoading
       ? "读取中…"
-      : lcOfficialList.length + " 人";
+      : lcOfficialErr
+        ? "读取失败"
+        : lcOfficialList.length + " 人";
     const toggleBtn = $("official-toggle");
     if (toggleBtn) toggleBtn.textContent = lcOfficialExpanded ? "收起" : "展开";
     if (!lcOfficialExpanded) {
@@ -1774,6 +2075,14 @@
     }
     box.style.display = "";
     if (lcOfficialLoading) return;
+    if (lcOfficialErr) {
+      /* 给明确出口：真机上首次打开面板常因 DWR 会话未就绪而失败，重开面板就好 ⇒
+         自动重试一次（见 lcOfficialRefresh），仍失败再让用户手动点 */
+      box.innerHTML = `<p class="hint" style="margin:0;">读取失败：${lcOfficialEsc(lcOfficialErr)}。<br>` +
+        `首次打开面板时偶尔会这样，点<button class="lc-link" data-official-retry type="button" style="font-size:12px;padding:0 2px;">重试</button>` +
+        `即可；一直失败请确认已在浏览器登录 LOFTER。</p>`;
+      return;
+    }
     if (!lcOfficialList.length) {
       box.innerHTML = `<p class="hint" style="margin:0;">黑名单为空。</p>`;
       return;
@@ -1858,6 +2167,7 @@
     const f = ensureFilter();
     const tags = f.tags || [];
     $("official-count").textContent = tags.length + " 个";
+    renderFilterFold(); /* 摘要里的标签数随名单走 */
     const toggleBtn = $("official-toggle");
     if (toggleBtn) toggleBtn.textContent = lcOfficialExpanded ? "收起" : "展开";
     if (!lcOfficialExpanded) {
@@ -1917,9 +2227,10 @@
     } catch (e) {}
   }
 
-  async function lcOfficialRefresh() {
+  async function lcOfficialRefresh(isRetry) {
     if (lcOfficialLoading) return;
     lcOfficialLoading = true;
+    lcOfficialErr = null;
     renderOfficialList();
     try {
       const raw = await lcDwr("getBlacklistUserList", [
@@ -1956,16 +2267,23 @@
         return;
       }
     } catch (err) {
-      $("official-count").textContent = "读取失败";
+      lcOfficialErr = (err && err.message) || String(err);
       lcOfficialList = [];
-      renderOfficialList();
-      $("official-list").style.display = "";
-      $("official-list").innerHTML =
-        `<p class="hint" style="margin:0;">读取失败：${lcOfficialEsc(err.message)}。请确认已在浏览器登录 LOFTER 后重试。</p>`;
-      return;
     } finally {
       lcOfficialLoading = false;
     }
+    /* 真机现象（2026-10-23）：面板一打开就拉，DWR 会话常未就绪 ⇒ 失败；
+       用户关掉重开就正常。自动补一次重试兜住这个瞬态（只一次，
+       避免未登录场景反复打服务端），之后交给「重试」按钮 */
+    if (lcOfficialErr) {
+      renderOfficialList();
+      if (!isRetry && !lcOfficialRetried) {
+        lcOfficialRetried = true;
+        setTimeout(() => { lcOfficialRefresh(true).catch(() => {}); }, 1200);
+      }
+      return;
+    }
+    lcOfficialRetried = false;
     renderOfficialList();
     lcOfficialPersist();
   }
@@ -2027,6 +2345,12 @@
   });
 
   on("official-list", "click", async (e) => {
+    /* 失败态的「重试」出口（首次打开面板 DWR 未就绪时用） */
+    if (e.target.closest("[data-official-retry]")) {
+      lcOfficialRetried = true; /* 手动重试不再自动补刀 */
+      lcOfficialRefresh(true).catch(() => {});
+      return;
+    }
     const tb = e.target.closest("[data-tag-unblock]");
     if (tb) {
       const f = ensureFilter();
@@ -2074,17 +2398,19 @@
   on("gtotop-file-btn", "click", () => $("gtotop-file").click());
   on("gtotop-file", "change", async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    let dataUrl = await readFile(f);
-    if (f.type !== 'image/gif') {
-      dataUrl = await compressImage(dataUrl, 200, 200, 0.85);
-    }
-    state.gtotop.imageDataUrl = dataUrl;
-    $("gtotop-preview").src = dataUrl;
-    $("gtotop-preview").style.display = "block";
-    syncGtotopSize();
-    save();
+    const prev = state.gtotop.imageDataUrl;
+    try {
+      const ref = await lcIngest(f, "img", { maxW: 200, maxH: 200, quality: 0.85 });
+      state.gtotop.imageDataUrl = ref;
+      if (prev !== ref) lcDropRef(prev);
+      $("gtotop-preview").src = pvOf(ref);
+      $("gtotop-preview").style.display = "block";
+      syncGtotopSize();
+      save();
+    } catch (err) { lcAssetFail(err); }
   });
   on("gtotop-clear", "click", () => {
+    lcDropRef(state.gtotop.imageDataUrl);
     state.gtotop.imageDataUrl = "";
     $("gtotop-preview").src = "";
     $("gtotop-preview").style.display = "none";
@@ -2098,14 +2424,14 @@
     const files = Array.from(e.target.files);
     if (!files.length) return;
     for (const f of files) {
-      let dataUrl = await readFile(f);
-      if (f.type !== 'image/gif') {
-        dataUrl = await compressImage(dataUrl, 800, 800, 0.85);
-      }
+      let ref;
+      try {
+        ref = await lcIngest(f, "img", { maxW: 800, maxH: 800, quality: 0.85 });
+      } catch (err) { lcAssetFail(err); continue; }
       if (!state.decorations) state.decorations = [];
       state.decorations.push({
         id: 'dec_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-        dataUrl,
+        dataUrl: ref,
         width: 20,
         x: 5,
         y: 50,
@@ -2231,23 +2557,171 @@
     return data;
   }
 
-  function cfgExport(mods, decoIds) {
+  /* ---------- #20 B3：素材引用收集 + 导出隐私（A+B 合体）+ _format:2 ---------- */
+  /* 递归收集 lcidb: 引用的槽位（host/key 可写回，导入换 id 用）。
+     口径与 lcIdbMigrate 的 walk 一致：数组逐项、深度有界 */
+  function lcAssetRefSlots(v, out, depth) {
+    out = out || [];
+    if (!v || typeof v !== "object" || depth > 10) return out;
+    for (const k of Object.keys(v)) {
+      const val = v[k];
+      if (typeof val === "string" && LC_ASSETS && LC_ASSETS.isRef(val)) {
+        out.push({ host: v, key: k, ref: val, id: LC_ASSETS.idOf(val) });
+      } else if (val && typeof val === "object") {
+        lcAssetRefSlots(val, out, depth + 1);
+      }
+    }
+    return out;
+  }
+
+  /* A+B 合体（作者 2026-10-23 拍板）：所选范围含屏蔽名单且名单非空才弹窗。
+     filter 在「功能」模块 keys 里；mods=null = 全选。平时零打扰。 */
+  function lcExportPrivacy(st, mods) {
+    const hits = !mods || mods.indexOf("func") >= 0;
+    if (!hits || !st || !st.filter) return null;
+    const f = st.filter;
+    const n = (a) => (Array.isArray(a) ? a.length : 0);
+    const kw = n(f.keywords), us = n(f.users), tg = n(f.tags);
+    if (!kw && !us && !tg) return null;
+    return { keywords: kw, users: us, tags: tg };
+  }
+  /* 分享模式：只剔三个名单数组，开关结构保留（导入方设置项完整） */
+  function lcStripFilterLists(data) {
+    const f = data && data.filter;
+    if (!f || typeof f !== "object") return 0;
+    let n = 0;
+    ["keywords", "users", "tags"].forEach((k) => {
+      if (Array.isArray(f[k])) { n += f[k].length; f[k] = []; }
+    });
+    return n;
+  }
+  function askExportPrivacy(p) {
+    return new Promise((resolve) => {
+      const ov = $("lc-export-privacy-overlay");
+      $("lc-export-privacy-desc").textContent =
+        `这份导出包含你的屏蔽关键词（${p.keywords} 个）、屏蔽用户（${p.users} 个）与屏蔽标签（${p.tags} 个）——屏蔽了谁、防什么词属于隐私。` +
+        "自己换机或备份选「包含」；文件要发给别人请选分享模式（只剔除这三份名单，其余设置不受影响）。";
+      const done = (v) => { ov.style.display = "none"; resolve(v); };
+      $("lc-export-privacy-keep").onclick = () => done("keep");
+      $("lc-export-privacy-share").onclick = () => done("share");
+      $("lc-export-privacy-cancel").onclick = () => done(null);
+      ov.onclick = (e) => { if (e.target === ov) done(null); };
+      ov.style.display = "flex";
+    });
+  }
+
+  /* 导出：把引用对应的本体读出来内嵌（_assets，顶层）。断链计入 broken */
+  async function lcExportAssets(slots) {
+    const assets = {};
+    let broken = 0;
+    for (const s of slots) {
+      if (assets[s.id]) continue;
+      try {
+        const rec = await LC_ASSETS.getRecord(s.id);
+        if (!rec || !rec.blob) { broken++; continue; }
+        const ab = await rec.blob.arrayBuffer();
+        assets[s.id] = {
+          b64: LC_ASSETS.bytesToB64(new Uint8Array(ab)),
+          type: rec.type || rec.blob.type || "",
+        };
+      } catch (e) { broken++; }
+    }
+    return { assets: assets, broken: broken };
+  }
+
+  /* 导入：_assets 写进本地素材库。
+     ⚠ 2026-10-24 真机走查修：旧实现「库里已有同 id ⇒ 换新 id 写入」在**重复导入同一文件**时
+     会把每一轮的旧记录留成孤儿（实测导 6 次堆了 18 条 / 约 7.5MB，probe-idb-verify 的 orphans 列出）。
+     id 由本扩展生成（时间戳 + 随机后缀），不同素材撞 id 概率≈0 ⇒ 库里已有同 id 就是同一份素材，
+     直接**覆盖写**：重复导入幂等、零孤儿、引用不必重写（少一次 remap）。
+     断链（_assets 没给本体）仍计入 fail，引用保持原样由用户重新上传。 */
+  async function lcImportAssets(data, assets) {
+    const out = { ok: 0, fail: 0 };
+    if (!assets || typeof assets !== "object") return out;
+    const slots = lcAssetRefSlots(data);
+    const done = {}; /* 同一 id 多个引用只写一次库 */
+    for (const s of slots) {
+      if (done[s.id]) continue;
+      done[s.id] = 1;
+      const a = assets[s.id];
+      if (!a || typeof a.b64 !== "string") { out.fail++; continue; }
+      try {
+        const bytes = LC_ASSETS.b64ToBytes(a.b64);
+        const blob = new Blob([bytes], { type: a.type || "application/octet-stream" });
+        await LC_ASSETS.putBlob(s.id, blob, { type: blob.type, size: blob.size });
+        out.ok++;
+      } catch (e) { out.fail++; }
+    }
+    return out;
+  }
+
+  /* 导入 / 迁移后统一刷新。settings 整份换掉 ⇒ 不只是主区：
+     · render() 含装饰列表与屏蔽用户列表，但**不含**本地 tag 计数、不含素材预览
+     · renderTagBlockList() 负责「屏蔽 tag（本地）」的 N 个（漏了就是「显示 1，展开变 0」）
+     · warmPreviewAssets() 必须补：导入进来的都是 lcidb: 引用，本页还没建 objectURL
+       ⇒ 不补则背景/装饰缩略图全空（2026-10-24 真机走查抓到的两处） */
+  function lcRefreshAll() {
+    render();
+    initRanges();
+    syncCfgMods();
+    renderTagBlockList();
+    warmPreviewAssets(state);
+  }
+
+  /* D7 双数字（占用面板 IDB 行）：estimate 的 indexedDB 桶含已删未回收空间
+     且对刚写入记账滞后 ⇒ 槽位是「约」，活数据才是准数 */
+  function lcUsageIdbRow(rep) {
+    const rep0 = rep || {};
+    const live = Number(rep0.bytes) || 0;
+    const slot = Number(rep0.idbUsage) || 0;
+    return {
+      label: "独立素材库",
+      main: lcFmtBytes(live) + (rep0.count ? " · " + rep0.count + " 件" : ""),
+      note: "图片/音频大件本体；另占槽约 " + lcFmtBytes(slot) +
+        "（含已删未回收空间，由浏览器择机回收）",
+    };
+  }
+
+  async function cfgExport(mods, decoIds) {
     const picked = cfgPick(mods);
     /* 按张分享：只保留勾选的装饰图（decorationsVisible 不受影响） */
     if (decoIds && Array.isArray(picked.decorations)) {
       picked.decorations = picked.decorations.filter((d) => decoIds.includes(d.id));
     }
+    /* A+B 合体：所选范围含非空屏蔽名单 → 三选一弹窗（平时不弹零打扰）。
+       分享模式剔的是导出副本，不动 state */
+    const priv = lcExportPrivacy(state, mods);
+    if (priv) {
+      const v = await askExportPrivacy(priv);
+      if (v === null) return;
+      if (v === "share") lcStripFilterLists(picked);
+    }
+    /* _format:2：lcidb: 引用对应的本体读出来内嵌进顶层 _assets */
+    let assets = null, broken = 0;
+    if (LC_ASSETS && LC_ASSETS.isSupported()) {
+      const slots = lcAssetRefSlots(picked);
+      if (slots.length) {
+        const r = await lcExportAssets(slots);
+        if (Object.keys(r.assets).length) assets = r.assets;
+        broken = r.broken;
+      }
+    }
     cfgDownload(
       `lofter-customizer-settings-${mods ? "part" : "all"}-${cfgDate()}.json`,
       {
         _type: "lofter-customizer-settings",
-        _format: 1,
+        _format: 2,
         _app: chrome.runtime.getManifest().version,
         _exportedAt: new Date().toISOString(),
         _modules: mods || "all",
+        ...(assets ? { _assets: assets } : {}),
         data: picked,
       },
     );
+    if (broken) {
+      alert(T("注意：有 ") + broken +
+        T(" 个素材引用找不到本体（可能来自别的设备），这些图导入后会缺失，可在原设备重新导出或在本机重新上传。"));
+    }
   }
 
   /* 数据栏：模块勾选 → 导出按钮文案/可用态 + 已选计数
@@ -2350,7 +2824,8 @@
       cb.dataset.decId = d.id;
       cb.checked = cfgDecoPick ? cfgDecoPick.includes(d.id) : true;
       const img = document.createElement("img");
-      img.src = d.dataUrl;
+      img.setAttribute("data-lc-pv", d.dataUrl || ""); /* 解析完成后只替 src，不重建列表 */
+      img.src = pvOf(d.dataUrl);
       img.alt = "";
       const span = document.createElement("span");
       span.textContent = decoShareLabel(d, i);
@@ -2436,6 +2911,12 @@
     const wrapped = raw._type === "lofter-customizer-settings";
     let data = wrapped && raw.data && typeof raw.data === "object" ? raw.data : raw;
     const mods = wrapped && Array.isArray(raw._modules) ? raw._modules : null;
+    /* _format:2：大件本体在顶层 _assets（base64）。旧版 v1.10.0 导入这种文件
+       会忽略 _assets 且拒绝 lcidb: 引用 ⇒ 回退场景，数据卡口径「降级需先导出」 */
+    const assetsIn =
+      wrapped && raw._format === 2 && raw._assets && typeof raw._assets === "object"
+        ? raw._assets
+        : null;
 
     const dropped = Object.keys(data).filter((k) => !LC_KNOWN_KEYS.has(k));
     dropped.forEach((k) => delete data[k]);
@@ -2496,7 +2977,27 @@
       );
     }
     if (dropped.length) lines.push("", `已忽略无法识别的项：${dropped.join("、")}`);
+    if (assetsIn) {
+      lines.push(
+        "",
+        `文件含 ${Object.keys(assetsIn).length} 个素材大件（图片/音频），会一并写入本地素材库（重复导入同一文件不会重复占用）。`,
+      );
+    }
     if (!confirm(lines.join("\n") + "\n\n" + T("继续？"))) return;
+
+    /* _format:2 素材重建：先写库再合并（用户取消就不写）。
+       失败件引用保持原样 = 断链，结果弹窗说明 */
+    if (assetsIn && LC_ASSETS && LC_ASSETS.isSupported()) {
+      const r = await lcImportAssets(data, assetsIn);
+      if (r.ok || r.fail) {
+        alert(
+          r.fail
+            ? T("素材导入：成功 ") + r.ok + T(" 件，失败 ") + r.fail +
+              T(" 件（失败件的图会缺失，可重新上传）。")
+            : T("已一并导入 ") + r.ok + T(" 个素材大件。"),
+        );
+      }
+    }
 
     const hasSettings = Object.keys(data).length > 0;
     if (mods) {
@@ -2524,8 +3025,7 @@
       state.decorations = currentDecsBefore.concat(inc);
     }
 
-    render();
-    initRanges();
+    lcRefreshAll();
     save();
     /* 自定义表情：原始键直接落 storage（content.js 与 popup 都读同一份），
        本地缓存同步更新，避免连续导入两次时用的是旧缓存 */
@@ -2549,6 +3049,15 @@
      * `el.textContent = "…"` / `innerHTML = "…"` 的动态文案，不必逐处包 T()）。 */
     if (i18n) i18n.set(state.lang);
     render();
+    warmPreviewAssets(state); /* #20：引用形态的图先留空，解析完再补 src（不阻塞首渲染） */
+    /* #20 B2：老配置增量迁移 —— 异步跑，不阻塞首渲染；迁完才 save/render */
+    lcIdbMigrate(state).then((m) => {
+      if (!m || !m.found) return;
+      console.log("[LC] 素材迁移:", JSON.stringify(m));
+      if (m.migrated) { save(); render(); }
+      warmPreviewAssets(state);
+      lcShowMigrateResult(m);
+    }).catch(() => {});
     initRanges();
     syncCfgMods(); // 装饰图计数/按张入口依赖加载后的 state.decorations，初渲染时还没到手
     if (i18n) i18n.watch(document.body);
@@ -2872,7 +3381,7 @@
       soundFileInput.click();
     });
 
-    soundFileInput.addEventListener('change', (e) => {
+    soundFileInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
 
@@ -2889,19 +3398,22 @@
         return;
       }
 
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        soundModalPending.preset = 'custom';
-        soundModalPending.soundFile = ev.target.result;
-        soundModalPending.soundFileName = file.name;
-        renderSoundModal();
-        saveSoundConfig(); // 即时保存
+      let ref;
+      try {
+        ref = await lcIngest(file, 'aud'); /* 音频原样存，不压缩 */
+      } catch (err) { lcAssetFail(err); return; }
 
-        // 自动试听
-        const audio = new Audio(ev.target.result);
-        audio.play().catch(() => { });
-      };
-      reader.readAsDataURL(file);
+      const prev = soundModalPending.soundFile;
+      soundModalPending.preset = 'custom';
+      soundModalPending.soundFile = ref;
+      soundModalPending.soundFileName = file.name;
+      if (prev !== ref) lcDropRef(prev);
+      renderSoundModal();
+      saveSoundConfig(); // 即时保存
+
+      // 自动试听
+      const audio = new Audio(pvOf(ref));
+      audio.play().catch(() => { });
     });
 
     // 自定义音频项点击（选中但不播放，防止和试听按钮冲突）
@@ -2923,7 +3435,7 @@
     $('lc-sound-play-custom').addEventListener('click', (e) => {
       e.stopPropagation(); // 防止触发父元素的选中
       if (soundModalPending.soundFile) {
-        const audio = new Audio(soundModalPending.soundFile);
+        const audio = new Audio(pvOf(soundModalPending.soundFile));
         audio.play().catch(() => { });
       }
     });
@@ -3042,8 +3554,8 @@
    * ============================================================ */
   const LC_QUOTA_FALLBACK = 10 * 1024 * 1024;
   const LC_USAGE_GROUPS = [
-    { label: "设置与素材", keys: ["lc_settings_v1"],
-      note: "背景图 / 装饰图 / 回顶按钮图 / 嵌入字体 / 自定义音效" },
+    { label: "设置与素材引用", keys: ["lc_settings_v1"],
+      note: "各项设置；图片/音频大件已移入独立素材库（IndexedDB），这里只剩引用" },
     { label: "草稿快照", keys: ["lc_draft_snap_v1"],
       note: "编辑防丢的正文快照（按上限自动修剪）" },
     { label: "表情包", keys: ["lc_emoji_v1"],
@@ -3088,31 +3600,54 @@
         barEl.style.background =
           pct >= 85 ? "#e5533d" : pct >= 60 ? "#e6a23c" : "#667eea";
       }
-      /* 分组统计：逐组异步查，结果按索引落位后再拼（不能依赖回调顺序） */
+      /* 分组统计：逐组异步查，结果按索引落位后再拼（不能依赖回调顺序）。
+         IDB 行（D7 双数字）与分组并行查，两边都齐才渲染 */
       const out = new Array(LC_USAGE_GROUPS.length);
-      let done = 0;
+      let done = 0, idbHtml = null;
+      const tryRender = () => {
+        if (done !== LC_USAGE_GROUPS.length || idbHtml === null) return;
+        listEl.innerHTML = idbHtml +
+          out
+          /* 空组不占行，但主设置键恒显（0 也要让用户看到"这栏没吃空间"） */
+          .filter((r) => r && (r.n > 0 || r.g.keys[0] === "lc_settings_v1"))
+          .map((r) =>
+            '<div style="display:flex;gap:8px;"><span style="flex:0 0 auto;min-width:74px;">' +
+            T(r.g.label) +
+            '</span><span style="flex:0 0 auto;color:var(--lc-text);min-width:62px;">' +
+            lcFmtBytes(r.n) +
+            '</span><span style="opacity:.75;">' + T(r.g.note) + '</span></div>'
+          )
+          .join("");
+        if (hintEl) {
+          hintEl.textContent = pct >= 95
+            ? T("存储几乎满了，很可能保存失败。请立即清理：删除不用的装饰图 / 背景图 / 自定义音效（「显示」「装饰」栏）。")
+            : pct >= 85
+            ? T("已接近上限：再加数据可能保存失败（会弹提示）。建议先删掉不用的装饰图或草稿快照。")
+            : T("上限是全部数据共用的 10MB（不是每项各 10MB）。图片与音频大件已存进独立素材库（IndexedDB），不占这 10MB；这里主要是设置文本与草稿快照。清理入口：草稿快照在「编辑防丢」。");
+        }
+      };
       LC_USAGE_GROUPS.forEach((g, i) => {
         chrome.storage.local.getBytesInUse(g.keys, (n) => {
           out[i] = { g: g, n: Number(n) || 0 };
-          if (++done !== LC_USAGE_GROUPS.length) return;
-          listEl.innerHTML = out
-            /* 空组不占行，但主设置键恒显（0 也要让用户看到"这栏没吃空间"） */
-            .filter((r) => r && (r.n > 0 || r.g.keys[0] === "lc_settings_v1"))
-            .map((r) =>
-              '<div style="display:flex;gap:8px;"><span style="flex:0 0 auto;min-width:74px;">' +
-              T(r.g.label) +
-              '</span><span style="flex:0 0 auto;color:var(--lc-text);min-width:62px;">' +
-              lcFmtBytes(r.n) +
-              '</span><span style="opacity:.75;">' + T(r.g.note) + '</span></div>'
-            )
-            .join("");
-          if (hintEl) {
-            hintEl.textContent = pct >= 85
-              ? T("已接近上限：再加图片或音效可能保存失败（会弹提示）。建议先删掉不用的装饰图、背景图或自定义音效。")
-              : T("上限是全部数据共用的 10MB（不是每项各 10MB）；图片与音频以 base64 存，占用约为原文件的 1.33 倍。清理入口在各栏目：背景图 / 装饰图 / 自定义音效在「显示」「装饰」栏，草稿快照在「编辑防丢」。");
-          }
+          done++;
+          tryRender();
         });
       });
+      /* IDB 行：活数据是准数，槽位（estimate）含已删未回收且记账滞后 ⇒ 带「约」 */
+      (async () => {
+        try {
+          if (LC_ASSETS && LC_ASSETS.usageReport) {
+            const row = lcUsageIdbRow(await LC_ASSETS.usageReport());
+            idbHtml =
+              '<div style="display:flex;gap:8px;"><span style="flex:0 0 auto;min-width:74px;">' +
+              T(row.label) +
+              '</span><span style="flex:0 0 auto;color:var(--lc-text);min-width:62px;">' +
+              row.main +
+              '</span><span style="opacity:.75;">' + T(row.note) + '</span></div>';
+          } else idbHtml = "";
+        } catch (e) { idbHtml = ""; }
+        tryRender();
+      })();
     });
   }
 
@@ -3141,7 +3676,7 @@
     }
     lcStateLoaded = true; // 外部改动即说明存储可读，同上
     applyDarkFollow(state);
-    if (touched) render();
+    if (touched) { render(); warmPreviewAssets(state); }
   });
 
 })();
