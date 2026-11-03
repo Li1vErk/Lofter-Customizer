@@ -827,6 +827,92 @@
       padding-top: 12px;
     }
 
+    /* 导入前配置备份（方案 C，2026-11-02）：平时只是「导入配置…」后面一枚
+       小胶囊，点开才展开。之前的浅底条常驻约 72px，作者觉得它挂在按钮旁边
+       字号和颜色都不搭；折叠后备份仍可发现（胶囊带「有备份」三个字），
+       但不占版面。展开体复用 .lc-fold-body 的 0fr↔1fr 过渡。 */
+    .lc-prev-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--lc-accent-weak);
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--lc-accent);
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    /* 聚焦环只给键盘：鼠标点完留一圈紫边会像选中态 */
+    .lc-prev-pill:focus-visible {
+      outline: 2px solid var(--lc-accent);
+      outline-offset: 1px;
+    }
+
+    /* 箭头用两条边框画，不写字符 —— i18n 运行时是整节点等值匹配，
+       胶囊里混一个「›」会让「有备份」永远匹配不上字典 */
+    .lc-prev-pill-cv {
+      width: 5px;
+      height: 5px;
+      margin-top: -1px;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(-45deg);
+      transition: transform 0.18s ease;
+    }
+
+    .lc-prev-pill[aria-expanded="true"] .lc-prev-pill-cv {
+      transform: rotate(45deg);
+    }
+
+    .lc-prev-cfg-box {
+      margin-top: 10px;
+      background: var(--lc-accent-weak);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+
+    .lc-prev-cfg-t {
+      font-size: 12px;
+      color: var(--lc-text);
+    }
+
+    .lc-prev-cfg-s {
+      font-size: 11px;
+      color: var(--lc-sub);
+      margin-top: 2px;
+    }
+
+    .lc-prev-cfg-acts {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    /* 这是「撤销点」的次要动作，不该跟主按钮等重 ⇒ 小一号的实心按钮 */
+    .lc-prev-cfg-acts .btn {
+      padding: 4px 10px;
+    }
+
+    .lc-prev-cfg-drop {
+      background: none;
+      border: none;
+      padding: 2px 1px;
+      font-size: 12px;
+      font-family: inherit;
+      color: var(--lc-sub);
+      cursor: pointer;
+      transition: color 0.15s ease;
+    }
+
+    .lc-prev-cfg-drop:hover {
+      color: var(--lc-danger);
+    }
+
     /* .btn 同优先级但声明在后面会覆盖背景/边框，这里提到 0-2-0 压住它 */
     .btn.btn-primary {
       background: var(--lc-accent);
@@ -1453,24 +1539,47 @@
           <input type="file" id="cfg-import-file" accept="application/json,.json" hidden data-page-node-id="lcImpFile" />
           <button class="btn" id="cfg-import" type="button" data-page-node-id="lcImpBtn">导入配置…</button>
           <button type="button" class="help-dot" data-hint="cfg-import-help" title="导入说明" data-page-node-id="lcImpHelp">?</button>
+          <!-- 有备份时才出现的入口胶囊：不点开就只占这一枚，不占一行版面 -->
+          <span class="lc-prev-pill" id="lc-prev-cfg-pill" role="button" tabindex="0" aria-expanded="false" aria-controls="lc-prev-cfg-body" style="display:none;" data-page-node-id="lcPrevCfgPill"><span data-page-node-id="lcPrevCfgPillT">有备份</span><span class="lc-prev-pill-cv" aria-hidden="true"></span></span>
         </div>
         <p class="hint collapsible plain" id="cfg-import-help" data-page-node-id="lcImpHint2">导入会覆盖对应模块的现有设置，覆盖前会先弹确认框；装饰图可选择覆盖或追加。文件只保存在你电脑上、不会上传；图片、词卡和自定义音效都内嵌在导出的配置文件里，对方无需原文件。</p>
+        <!-- 导入前快照：导入会整份覆盖设置，这里留一条不用用户准备的退路。
+             默认 display:none（没有备份时连 0 高度都不占），有备份才由 popup.js 放出来 -->
+        <div class="lc-fold-body closed" id="lc-prev-cfg-body" style="display:none;" data-page-node-id="lcPrevCfgBody">
+          <div class="lc-fold-inner">
+            <div class="lc-prev-cfg-box">
+              <div class="lc-prev-cfg-t" id="lc-prev-cfg-tip" data-page-node-id="lcPrevCfgTip"></div>
+              <div class="lc-prev-cfg-s" data-page-node-id="lcPrevCfgSub">导入已覆盖设置，这份是导入前的那一份</div>
+              <div class="lc-prev-cfg-acts">
+                <button class="btn btn-primary" id="lc-prev-cfg-restore" type="button" data-page-node-id="lcPrevCfgRestore">还原到这份配置</button>
+                <button class="lc-prev-cfg-drop" id="lc-prev-cfg-drop" type="button" data-page-node-id="lcPrevCfgDrop">丢弃</button>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <div id="lc-usage" style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--lc-line);">
           <div style="display:flex;align-items:center;gap:8px;">
             <span style="font-size:12px;color:var(--lc-sub);" data-page-node-id="lcUsageLabel">存储占用</span>
-            <span id="lc-usage-total" class="hint" style="margin:0;" data-page-node-id="lcUsageTotal">统计中…</span>
             <button class="lc-link" id="lc-usage-refresh" type="button" style="margin-left:auto;" data-page-node-id="lcUsageRefresh">刷新</button>
+          </div>
+          <!-- 两套额度分开说：storage.local 有 10MB 硬上限（要进度条），IndexedDB 极宽（不给额度） -->
+          <div style="display:flex;gap:8px;align-items:baseline;margin-top:6px;font-size:12px;">
+            <span style="flex:0 0 auto;min-width:74px;color:var(--lc-sub);" data-page-node-id="lcUsageK1">设置与草稿</span>
+            <span id="lc-usage-total" class="hint" style="margin:0;" data-page-node-id="lcUsageTotal">统计中…</span>
           </div>
           <div style="height:6px;border-radius:3px;background:var(--lc-line);overflow:hidden;margin-top:6px;">
             <div id="lc-usage-bar" style="height:100%;width:0%;background:#667eea;transition:width .25s ease;"></div>
           </div>
-          <!-- 分组明细默认收起（大多数用户只需要看总量条；分账是排查占用时的排查工具） -->
+          <!-- 图片与音频（IndexedDB）：常显，不再藏在明细里——它是用户自己的东西，不是排查项 -->
+          <div id="lc-usage-idb" style="margin-top:8px;font-size:12px;color:var(--lc-sub);line-height:1.9;" data-page-node-id="lcUsageIdb"></div>
+          <!-- 分组明细默认收起（大多数用户只需要看两条汇总；分账是排查占用时的排查工具） -->
           <div id="lc-usage-detail" style="display:none;">
             <div id="lc-usage-list" style="margin-top:8px;font-size:12px;color:var(--lc-sub);line-height:1.9;" data-page-node-id="lcUsageList"></div>
             <p class="hint plain" id="lc-usage-hint" style="margin:6px 0 0 0;" data-page-node-id="lcUsageHint"></p>
           </div>
-          <button class="lc-link" id="lc-usage-more" type="button" style="margin-top:6px;" data-page-node-id="lcUsageMore">展开明细</button>
+          <!-- 明细只拆「设置与草稿」，所以留出间距，别看着像在展开上面那行素材 -->
+          <button class="lc-link" id="lc-usage-more" type="button" style="margin-top:10px;" data-page-node-id="lcUsageMore">展开明细</button>
         </div>
       </div>
 

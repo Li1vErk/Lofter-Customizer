@@ -16,6 +16,11 @@
 
   let t = 0;
 
+  /* 导入前快照（2026-11-02）：导入会整份覆盖设置，覆盖前把 state 深拷一份存这里，
+     卡片里给一条「还原」。独立键、不进 settings、不进导出（导出只走 cfgPick 的白名单）。
+     体积 ≈ 设置本身（1~2 KB）：大件都是以 lcidb: 引用记的，不复制图片本体。 */
+  const LC_PREIMPORT_KEY = "lc_pre_import_v1";
+
   /* i18n（#16 港澳台繁体）：内核缺失时全部退化为恒等，功能零影响。
    * popup 是插件自己的页面，整页可以安全替换 —— 唯一要防的是「从 LOFTER
    * 抓来的数据」（官方黑名单昵称 / 已隐藏用户 / 屏蔽 tag），那些节点打
@@ -201,6 +206,19 @@
     if (LC_ASSETS) { const id = LC_ASSETS.idOf(v); if (id) LC_ASSETS.del(id).catch(() => {}); }
   }
 
+  /* 只在「settings 里再没有任何槽位引用它」时才删。
+     2026-11-02：音效弹窗的「删除自定义音频」只把 soundFile 置空就保存 —— 引用没了、
+     本体留在 IDB，每删一次多一条孤儿（真机实测 2 条）。这类调用点无法保证自己
+     一定在「settings 已改」之后执行（弹窗未绑定装饰时 saveSoundConfig 直接 return），
+     所以判定权收回这里：state 里还找得到这条引用就什么都不做。 */
+  function lcDropRefIfUnused(v) {
+    if (!lcIsRef(v)) return false;
+    const still = lcAssetRefSlots(state).some((s) => s.ref === v);
+    if (still) return false;
+    lcDropRef(v);
+    return true;
+  }
+
   function lcAssetFail(err) {
     /* 超限要给「多大 / 上限多少 / 该怎么办」三件事。
        此处句中的 23 与 lc-assets.js 的 MAX_MB 保持同步（改上限时同步改这一条词条）。 */
@@ -278,7 +296,7 @@
     el.textContent = m.failed
       ? T("素材迁移：成功 ") + m.migrated + T(" 件，失败 ") + m.failed +
         T(" 件（失败件保持原样，下次打开面板会自动重试）。")
-      : T("旧版素材已搬进独立素材库：") + m.migrated +
+      : T("旧版素材已搬到新位置：") + m.migrated +
         T(" 件（图片照常显示，只是不再占这 10MB）。");
     box.insertBefore(el, box.firstChild);
     setTimeout(() => {
@@ -2639,6 +2657,21 @@
     return { assets: assets, broken: broken };
   }
 
+  /* 写入前比对：库里已有同 id 记录 ⇒ 内容一样就**不写**。
+     为什么不能只靠覆盖写：IDB 的 put 是「追加新副本 + 旧副本变待回收空间」，
+     同 id 覆盖 10 轮记录数恒为 3、估用却涨到 10 × 单轮（probe-idb-churn 真机实测）。
+     跳过写入才是真幂等 —— 恢复备份、清空重装这类高频操作才不会越导越大。
+     成本控制：先看 listMeta 的 size（库里没这条就不读盘），size 对上才读旧字节逐字节比。 */
+  async function lcSameAssetBytes(id, bytes) {
+    const rec = await LC_ASSETS.getRecord(id);
+    if (!rec || !rec.blob || rec.blob.size !== bytes.length) return false;
+    let cur;
+    try { cur = new Uint8Array(await rec.blob.arrayBuffer()); } catch (e) { return false; }
+    if (cur.length !== bytes.length) return false;
+    for (let i = 0; i < bytes.length; i++) { if (cur[i] !== bytes[i]) return false; }
+    return true;
+  }
+
   /* 导入：_assets 写进本地素材库。
      ⚠ 2026-10-24 真机走查修：旧实现「库里已有同 id ⇒ 换新 id 写入」在**重复导入同一文件**时
      会把每一轮的旧记录留成孤儿（实测导 6 次堆了 18 条 / 约 7.5MB，probe-idb-verify 的 orphans 列出）。
@@ -2646,10 +2679,17 @@
      直接**覆盖写**：重复导入幂等、零孤儿、引用不必重写（少一次 remap）。
      断链（_assets 没给本体）仍计入 fail，引用保持原样由用户重新上传。 */
   async function lcImportAssets(data, assets) {
-    const out = { ok: 0, fail: 0 };
+    const out = { ok: 0, skip: 0, fail: 0 };
     if (!assets || typeof assets !== "object") return out;
     const slots = lcAssetRefSlots(data);
     const done = {}; /* 同一 id 多个引用只写一次库 */
+    /* size 索引：只用来决定「要不要白读一遍旧字节」，读不到就退回全写（不影响正确性） */
+    let sizeById = null;
+    try {
+      if (LC_ASSETS && LC_ASSETS.listMeta) {
+        sizeById = new Map((await LC_ASSETS.listMeta()).map((m) => [m.id, Number(m.size) || 0]));
+      }
+    } catch (e) { sizeById = null; }
     for (const s of slots) {
       if (done[s.id]) continue;
       done[s.id] = 1;
@@ -2657,6 +2697,8 @@
       if (!a || typeof a.b64 !== "string") { out.fail++; continue; }
       try {
         const bytes = LC_ASSETS.b64ToBytes(a.b64);
+        if (sizeById && sizeById.get(s.id) === bytes.length &&
+            await lcSameAssetBytes(s.id, bytes)) { out.skip++; continue; }
         const blob = new Blob([bytes], { type: a.type || "application/octet-stream" });
         await LC_ASSETS.putBlob(s.id, blob, { type: blob.type, size: blob.size });
         out.ok++;
@@ -2678,17 +2720,151 @@
     warmPreviewAssets(state);
   }
 
-  /* D7 双数字（占用面板 IDB 行）：estimate 的 indexedDB 桶含已删未回收空间
-     且对刚写入记账滞后 ⇒ 槽位是「约」，活数据才是准数 */
-  function lcUsageIdbRow(rep) {
+  /* ─────────── 导入前快照（覆盖式导入的唯一后路） ───────────
+     为什么要它：导入是整份覆盖，用户事后想回到导入前只能靠「自己提前导出过」——
+     而意识到风险、找到导出按钮、存好文件这三步任何一步没做就来不及了。
+     这里改成插件自动存（只有 1~2 KB，大件都是以 lcidb: 引用记的），用户什么都不用准备。
+     它成立的前提是「孤儿不自动清」：素材还在库里，所以还原设置就能完整还原画面。 */
+  function lcFmtWhen(ms) {
+    const d = new Date(Number(ms) || 0);
+    const pad = (n) => (n < 10 ? "0" + n : "" + n);
+    return (d.getMonth() + 1) + "-" + pad(d.getDate()) + " " +
+      pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+
+  /* 展开/收起：默认收起。折叠时把里面设 inert —— 0 高度的按钮仍能被 Tab 聚焦，
+     用户按 Tab 会跳到看不见的地方。auto 属性赋值在老大内核上也不报错。 */
+  function lcSetPreImportOpen(open) {
+    const pill = $("lc-prev-cfg-pill"), body = $("lc-prev-cfg-body");
+    if (!pill || !body) return;
+    body.classList.toggle("closed", !open);
+    pill.setAttribute("aria-expanded", open ? "true" : "false");
+    try {
+      body.inert = !open;
+    } catch (e) {}
+  }
+
+  function lcTogglePreImport() {
+    const pill = $("lc-prev-cfg-pill");
+    if (!pill) return;
+    lcSetPreImportOpen(pill.getAttribute("aria-expanded") !== "true");
+  }
+
+  /* 方案 C（2026-11-02）：平时只在「导入配置…」后面挂一枚「有备份」胶囊。
+     为什么不常驻一块提示条：备份是低频用的撤销点，常驻约 72px 会一直挤在
+     导入按钮下面，字号也压不过周围的实心按钮（作者反馈）。
+     但也不能只留一个图标——胶囊写着「有备份」，用户扫一眼就知道这里能反悔。 */
+  function lcRenderPreImportRow(bak) {
+    const pill = $("lc-prev-cfg-pill"), tip = $("lc-prev-cfg-tip"), body = $("lc-prev-cfg-body");
+    if (!pill || !tip || !body) return;
+    if (!bak || !bak.state) {
+      pill.style.display = "none";
+      body.style.display = "none";
+      tip.textContent = "";
+      lcSetPreImportOpen(false);
+      return;
+    }
+    tip.textContent = T(`导入前的配置 · ${lcFmtWhen(bak.at)}`);
+    /* 先放回 DOM 但保持 closed（0fr 高度）：新出现的备份不该自己弹开，
+       那样等于把常驻条又还回去了，只是晚了一步 */
+    if (body.style.display === "none") lcSetPreImportOpen(false);
+    body.style.display = "";
+    pill.style.display = "";
+  }
+
+  /* 还原：写回快照 → 一次性删除（它是「撤销」，不是长期备份；留着会与当前配置混淆）。
+     断链要提前说：素材若被「清理」过，还原后那些图不显示 —— 用户有权在知情下选择还原。 */
+  async function lcRestorePreImport() {
+    const btn = $("lc-prev-cfg-restore");
+    if (btn) btn.disabled = true;
+    try {
+      const bak = await new Promise((res) => {
+        try {
+          chrome.storage.local.get([LC_PREIMPORT_KEY], (r) => res(r && r[LC_PREIMPORT_KEY]));
+        } catch (e) { res(null); }
+      });
+      if (!bak || !bak.state) { lcRenderPreImportRow(null); return; }
+      let missing = 0;
+      try {
+        if (LC_ASSETS && LC_ASSETS.listMeta) {
+          const have = new Set((await LC_ASSETS.listMeta()).map((m) => m.id));
+          new Set(lcAssetRefSlots(bak.state).map((s) => s.id))
+            .forEach((id) => { if (!have.has(id)) missing++; });
+        }
+      } catch (e) { missing = 0; }
+      const ok = confirm(
+        T(`将还原到 ${lcFmtWhen(bak.at)} 的配置。导入之后你改过的设置会一起回退。`) +
+        (missing
+          ? "\n\n" + T(`其中 ${missing} 件图片/音频已不在素材库里，还原后这几处会显示不出来。`)
+          : "") +
+        "\n\n" + T("还原后这条备份会被清除。"),
+      );
+      if (!ok) return;
+      state = LC_migrateNav(LC_clone(bak.state));
+      lcRefreshAll();
+      save();
+      chrome.storage.local.remove(LC_PREIMPORT_KEY);
+      lcRenderPreImportRow(null);
+      alert(T("已还原到导入前的配置。刷新 LOFTER 页面后生效。"));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  /* 丢弃备份：用户明确表示不再需要这个「撤销点」。
+     它和「还原」是互斥的两个出口 —— 还原会消费掉备份，丢弃直接删掉，两者之后整块都消失 */
+  async function lcDropPreImport() {
+    const btn = $("lc-prev-cfg-drop");
+    if (btn) btn.disabled = true;
+    try {
+      const yes = confirm(
+        T("删除这份导入前的配置备份？") + "\n\n" +
+        T("删除后就不能再还原到导入前的设置了。当前设置和素材都不受影响。"),
+      );
+      if (!yes) return;
+      chrome.storage.local.remove(LC_PREIMPORT_KEY);
+      lcRenderPreImportRow(null);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  /* 素材库对账：把 IDB 记录分成「settings 还引用着」与「没人引用」两组。
+     为什么要分：usageReport 的 count/bytes 是 **IDB 全表**，孤儿（导入换 id / 删除音效
+     只清引用留下的死记录）会被算成用户的素材 —— 真机实测面板显示 9.10 MB · 23 件，
+     而 settings 实际只引用 3 件 1.25 MB。用户看到的是一个他并不拥有的数字。 */
+  async function lcIdbScan() {
+    const metas = await LC_ASSETS.listMeta();
+    const refIds = new Set(lcAssetRefSlots(state).map((s) => s.id));
+    const sum = (arr) => arr.reduce((a, r) => a + (Number(r.size) || 0), 0);
+    const live = metas.filter((m) => refIds.has(m.id));
+    const dead = metas.filter((m) => !refIds.has(m.id));
+    return { metas, live, dead, liveBytes: sum(live), deadBytes: sum(dead) };
+  }
+
+  /* 面板素材行（2026-11-02 作者拍板 B 方案）：只报「用户实际拥有的素材」，
+     不再报 estimate 的槽位。三点理由，都是真机实测换来的：
+       ① 槽位是浏览器记账（delete 只标记，由 Chrome 择机回收），插件与用户都动不了
+       ② 它会自己回落 —— 实测清理后 17.63 MB 在三小时内回到 9.78 MB，不是待办事项
+       ③ 「占槽」是内部黑话；用户看到「占槽 39.8 MB vs 素材 1.25 MB」只会以为插件屯垃圾
+     孤儿条数（「另 N 件未使用」）保留：那是用户能处理、也确实该处理的唯一数字。
+     scan 缺省时退回全表口径（LC_ASSETS.listMeta 不可用的降级路径） */
+  function lcUsageIdbRow(rep, scan) {
     const rep0 = rep || {};
-    const live = Number(rep0.bytes) || 0;
-    const slot = Number(rep0.idbUsage) || 0;
+    const s = scan || {};
+    const hasScan = Array.isArray(s.live);
+    const live = hasScan ? (Number(s.liveBytes) || 0) : (Number(rep0.bytes) || 0);
+    const liveN = hasScan ? s.live.length : (Number(rep0.count) || 0);
+    const deadN = hasScan ? s.dead.length : 0;
     return {
-      label: "独立素材库",
-      main: lcFmtBytes(live) + (rep0.count ? " · " + rep0.count + " 件" : ""),
-      note: "图片/音频大件本体；另占槽约 " + lcFmtBytes(slot) +
-        "（含已删未回收空间，由浏览器择机回收）",
+      label: "图片与音频",
+      main: liveN ? lcFmtBytes(live) + " · " + liveN + " 件" : "0 B",
+      note: deadN
+        ? T(`另 ${deadN} 件未使用`)
+        /* 空库时别留一个孤零零的 0 B —— 新装用户看到这句才知道这里本来就该是空的 */
+        : liveN ? "" : T("还没有图片或音频素材"),
+      deadN: deadN,
+      deadBytes: hasScan ? (Number(s.deadBytes) || 0) : 0,
     };
   }
 
@@ -2899,6 +3075,16 @@
   });
 
   on("cfg-import", "click", () => $("cfg-import-file").click());
+  on("lc-prev-cfg-restore", "click", lcRestorePreImport);
+  on("lc-prev-cfg-drop", "click", lcDropPreImport);
+  /* 胶囊是 span（要跟按钮排在一行又不抢按钮的体量）⇒ 键盘得自己补 */
+  on("lc-prev-cfg-pill", "click", lcTogglePreImport);
+  on("lc-prev-cfg-pill", "keydown", (e) => {
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      lcTogglePreImport();
+    }
+  });
 
   on("cfg-import-file", "change", async (e) => {
     const f = e.target.files && e.target.files[0];
@@ -2995,16 +3181,30 @@
     }
     if (!confirm(lines.join("\n") + "\n\n" + T("继续？"))) return;
 
+    /* 导入前快照：确认已通过、即将动 state 的那一刻存 —— 太早会被「取消」浪费，太晚就不是原状了 */
+    const bak = { at: Date.now(), state: LC_clone(state) };
+    await new Promise((res) => {
+      try {
+        chrome.storage.local.set({ [LC_PREIMPORT_KEY]: bak }, () => {
+          void chrome.runtime.lastError; /* 读了才不报 unchecked */
+          res();
+        });
+      } catch (e) { res(); }
+    });
+    lcRenderPreImportRow(bak);
+
     /* _format:2 素材重建：先写库再合并（用户取消就不写）。
        失败件引用保持原样 = 断链，结果弹窗说明 */
     if (assetsIn && LC_ASSETS && LC_ASSETS.isSupported()) {
       const r = await lcImportAssets(data, assetsIn);
-      if (r.ok || r.fail) {
+      if (r.ok || r.fail || r.skip) {
+        const parts = [];
+        if (r.ok) parts.push(r.ok + T(" 件已写入"));
+        if (r.skip) parts.push(r.skip + T(" 件已存在、跳过"));
+        if (r.fail) parts.push(r.fail + T(" 件失败"));
         alert(
-          r.fail
-            ? T("素材导入：成功 ") + r.ok + T(" 件，失败 ") + r.fail +
-              T(" 件（失败件的图会缺失，可重新上传）。")
-            : T("已一并导入 ") + r.ok + T(" 个素材大件。"),
+          T("素材：") + parts.join(T("，")) +
+          (r.fail ? T("。失败的图会缺失，可重新上传。") : T("。")),
         );
       }
     }
@@ -3047,9 +3247,11 @@
   });
 
   buildFontOptions();
-  chrome.storage.local.get([LC_STORAGE_KEY].concat(LC_RAW_KEYS), (res) => {
+  chrome.storage.local.get([LC_STORAGE_KEY, LC_PREIMPORT_KEY].concat(LC_RAW_KEYS), (res) => {
     /* LC_migrateNav：老配置「导航栏透明」迁移为毛玻璃（本批两档化） */
     state = LC_migrateNav(LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {}));
+    /* 导入前快照：有才显示那一行（新装用户看不到多余的东西） */
+    lcRenderPreImportRow(res[LC_PREIMPORT_KEY]);
     /* 原始键（自定义表情）本地缓存：导出取它、导入回写它 */
     LC_RAW_KEYS.forEach((k) => {
       if (res[k] !== undefined) lcRawCache[k] = res[k];
@@ -3453,12 +3655,17 @@
     // 删除自定义音频
     $('lc-sound-delete-custom').addEventListener('click', (e) => {
       e.stopPropagation(); // 防止触发父元素的选中
+      const prev = soundModalPending.soundFile;
       soundModalPending.preset = 'pop';
       soundModalPending.soundFile = '';
       soundModalPending.soundFileName = '';
       soundFileInput.value = '';
       renderSoundModal();
       saveSoundConfig(); // 即时保存
+      /* 2026-11-02：原来只清了引用、没删库里的本体 ⇒ 每删一次音效留一条孤儿。
+         放在 saveSoundConfig 之后（此时 settings 已不引用），且用 IfUnused 兜住
+         「弹窗没绑定装饰 ⇒ save 直接 return ⇒ 引用其实还在」这个边界。 */
+      if (prev) lcDropRefIfUnused(prev);
     });
   }
 
@@ -3564,14 +3771,16 @@
    * ============================================================ */
   const LC_QUOTA_FALLBACK = 10 * 1024 * 1024;
   const LC_USAGE_GROUPS = [
-    { label: "设置与素材引用", keys: ["lc_settings_v1"],
-      note: "各项设置；图片/音频大件已移入独立素材库（IndexedDB），这里只剩引用" },
+    { label: "设置", keys: ["lc_settings_v1"],
+      note: "各项设置；图片/音频大件不在这里，只留引用" },
     { label: "草稿快照", keys: ["lc_draft_snap_v1"],
       note: "编辑防丢的正文快照（按上限自动修剪）" },
     { label: "表情包", keys: ["lc_emoji_v1"],
       note: "内置表情 + 你导入的自定义表情" },
     { label: "官方黑名单", keys: ["lc_official_bl_v1"],
       note: "跟随 LOFTER 账号的黑名单镜像" },
+    { label: "导入前备份", keys: [LC_PREIMPORT_KEY],
+      note: "上一次导入配置前的设置快照，用于一键还原" },
     { label: "其它缓存", keys: ["lc_self_v1", "lc_draft_tmpkey_v1", "lc_cmt_diag_v1",
       "lc_cmt_diag_req_v1", "lc_ep_diag_v1"],
       note: "身份缓存与诊断标记" },
@@ -3596,27 +3805,31 @@
 
   function lcRenderUsage() {
     const totalEl = $("lc-usage-total"), listEl = $("lc-usage-list"),
-      barEl = $("lc-usage-bar"), hintEl = $("lc-usage-hint");
+      barEl = $("lc-usage-bar"), hintEl = $("lc-usage-hint"), idbEl = $("lc-usage-idb");
     if (!totalEl || !chrome.storage.local.getBytesInUse) return;
     totalEl.textContent = T("统计中…");
     const quota = chrome.storage.local.QUOTA_BYTES || LC_QUOTA_FALLBACK;
     chrome.storage.local.getBytesInUse(null, (total) => {
       const used = Number(total) || 0;
       const pct = Math.min(100, (used / quota) * 100);
+      /* 整数额度别显示成「10.00 MB」（10.00 这种小数位对固定额度是噪音） */
+      const quotaTxt = lcFmtBytes(quota).replace(/\.00 (MB|KB)$/, " $1");
       totalEl.textContent =
-        lcFmtBytes(used) + " / " + lcFmtBytes(quota) + " · " + pct.toFixed(0) + "%";
+        lcFmtBytes(used) + " / " + quotaTxt + " · " + pct.toFixed(0) + "%";
       if (barEl) {
         barEl.style.width = pct + "%";
         barEl.style.background =
           pct >= 85 ? "#e5533d" : pct >= 60 ? "#e6a23c" : "#667eea";
       }
       /* 分组统计：逐组异步查，结果按索引落位后再拼（不能依赖回调顺序）。
-         IDB 行（D7 双数字）与分组并行查，两边都齐才渲染 */
+         IDB 行与分组并行查，两边都齐才渲染 —— 但两者写的是**不同容器**：
+         素材行常显（#lc-usage-idb），逐键分账留在收起区（#lc-usage-list） */
       const out = new Array(LC_USAGE_GROUPS.length);
       let done = 0, idbHtml = null;
       const tryRender = () => {
         if (done !== LC_USAGE_GROUPS.length || idbHtml === null) return;
-        listEl.innerHTML = idbHtml +
+        if (idbEl) idbEl.innerHTML = idbHtml;
+        listEl.innerHTML =
           out
           /* 空组不占行，但主设置键恒显（0 也要让用户看到"这栏没吃空间"） */
           .filter((r) => r && (r.n > 0 || r.g.keys[0] === "lc_settings_v1"))
@@ -3633,7 +3846,7 @@
             ? T("存储几乎满了，很可能保存失败。请立即清理：删除不用的装饰图 / 背景图 / 自定义音效（「显示」「装饰」栏）。")
             : pct >= 85
             ? T("已接近上限：再加数据可能保存失败（会弹提示）。建议先删掉不用的装饰图或草稿快照。")
-            : T("上限是全部数据共用的 10MB（不是每项各 10MB）。图片与音频大件已存进独立素材库（IndexedDB），不占这 10MB；这里主要是设置文本与草稿快照。清理入口：草稿快照在「编辑防丢」。");
+            : T("上限是全部数据共用的 10MB（不是每项各 10MB）。图片与音频大件另存，不占这 10MB。清理入口：草稿快照在「编辑防丢」。");
         }
       };
       LC_USAGE_GROUPS.forEach((g, i) => {
@@ -3643,17 +3856,34 @@
           tryRender();
         });
       });
-      /* IDB 行：活数据是准数，槽位（estimate）含已删未回收且记账滞后 ⇒ 带「约」 */
+      /* 素材行：只报在用的（按 settings 引用对账），孤儿条数交给用户处理 */
       (async () => {
         try {
           if (LC_ASSETS && LC_ASSETS.usageReport) {
-            const row = lcUsageIdbRow(await LC_ASSETS.usageReport());
+            const rep = await LC_ASSETS.usageReport();
+            /* listMeta 拿不到就退回全表口径（宁可数字保守，不能让这一行消失） */
+            let scan = null;
+            try { if (LC_ASSETS.listMeta) scan = await lcIdbScan(); } catch (e) { scan = null; }
+            const row = lcUsageIdbRow(rep, scan);
+            /* 两列网格（标签 / 内容），而不是单行 flex：
+               ① 备注与「清理」绑成一组不换行的尾巴 —— 单行 flex 在窄宽度下会把带
+                  margin-left:auto 的按钮单独顶到下一行，孤零零悬在右边（真机走查抓的）
+               ② 内容列内部换行时，第二行自然对齐到数值列（x=82），不会贴回最左边 */
+            const tail =
+              (row.note ? '<span style="opacity:.75;white-space:nowrap;">' + row.note + '</span>' : '') +
+              (row.deadN
+                ? '<button class="lc-link" type="button" data-idb-clean="1" style="white-space:nowrap;">' +
+                  T("清理") + '</button>'
+                : '');
             idbHtml =
-              '<div style="display:flex;gap:8px;"><span style="flex:0 0 auto;min-width:74px;">' +
-              T(row.label) +
-              '</span><span style="flex:0 0 auto;color:var(--lc-text);min-width:62px;">' +
-              row.main +
-              '</span><span style="opacity:.75;">' + T(row.note) + '</span></div>';
+              '<div style="display:grid;grid-template-columns:74px 1fr;column-gap:8px;align-items:baseline;">' +
+              '<span>' + T(row.label) + '</span>' +
+              '<span style="display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;">' +
+              '<span style="color:var(--lc-text);white-space:nowrap;">' + row.main + '</span>' +
+              (tail
+                ? '<span style="display:inline-flex;align-items:baseline;gap:6px;">' + tail + '</span>'
+                : '') +
+              '</span></div>';
           } else idbHtml = "";
         } catch (e) { idbHtml = ""; }
         tryRender();
@@ -3662,6 +3892,30 @@
   }
 
   on("lc-usage-refresh", "click", lcRenderUsage);
+  /* 「清理未使用」：删掉没有任何设置引用的素材记录（孤儿）。
+     事件委托挂在整块 #lc-usage 上 —— 素材行会从常显区重建，绑在旧容器（明细列表）上会收不到。
+     删完重新 scan 再刷一次，让行内的条数/按钮自己消失（不靠本地状态推测）。 */
+  on("lc-usage", "click", async (e) => {
+    const btn = e.target.closest("[data-idb-clean]");
+    if (!btn || !LC_ASSETS) return;
+    btn.disabled = true;
+    try {
+      const scan = await lcIdbScan();
+      if (!scan.dead.length) { lcRenderUsage(); return; }
+      const ok = confirm(
+        T(`确定删除 ${scan.dead.length} 件未使用的素材（${lcFmtBytes(scan.deadBytes)}）吗？`) +
+        "\n\n" +
+        T("这些素材没有任何设置引用（多是重复导入、或已被替换掉的旧图与旧音效），删除不影响你的背景图、装饰图和音效。")
+      );
+      if (!ok) { btn.disabled = false; return; }
+      for (const m of scan.dead) {
+        try { await LC_ASSETS.del(m.id); } catch (err) {}
+      }
+      lcRenderUsage();
+    } catch (err) {
+      btn.disabled = false;
+    }
+  });
   /* 分组明细默认收起：展开时才把明细区显示出来（数据本身照常统计，
      这样展开/收起即时切换、不用重查） */
   on("lc-usage-more", "click", () => {
