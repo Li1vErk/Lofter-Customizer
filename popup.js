@@ -1268,7 +1268,11 @@
     $("lang-select").value = s.lang || "zh-Hans";
     /* 悬浮按钮开关（「其他 → 面板」）：默认开 */
     const fabCb = $("show-fab");
-    if (fabCb) fabCb.checked = !(s.panel && s.panel.showFab === false);
+    if (fabCb) {
+      fabCb.checked = !(s.panel && s.panel.showFab === false);
+      /* 关着的话说明要摊开（重新打开面板时也得是这个态，不能等用户再点一次） */
+      lcFabHelpSync(fabCb.checked);
+    }
 
     // 背景
     $("bg-mode").value = s.background.mode;
@@ -1978,9 +1982,19 @@
   /* ---------- 悬浮按钮总开关（「其他 → 面板」）----------
    * 写进 lc_settings_v1.panel.showFab；content.js 侧的 FAB 模块监听
    * storage 变更即时隐藏/恢复（不必刷新页面）。 */
+  /* 「其他 → 面板」：说明折进 ?，但**关掉开关时自动摊开** —— 那一刻用户最需要知道
+   * 「面板还能从工具栏打开」。重新打开就收回折叠（2026-11-10 作者：常驻说明左侧空一块） */
+  function lcFabHelpSync(show) {
+    const hint = $("fab-help");
+    const dot = document.querySelector('.help-dot[data-hint="fab-help"]');
+    if (hint) hint.classList.toggle("open", !show);
+    if (dot) dot.classList.toggle("on", !show);
+  }
+
   on("show-fab", "change", (e) => {
     if (!state.panel) state.panel = LC_clone(LC_DEFAULTS.panel);
     state.panel.showFab = e.target.checked;
+    lcFabHelpSync(e.target.checked);
     save();
   });
 
@@ -2365,6 +2379,19 @@
     if (help) help.style.display = tag ? "none" : "";
     const tagHelp = $("official-tag-help");
     if (tagHelp) tagHelp.style.display = tag ? "" : "none";
+    /* 卡头那枚 ? 跟着页签换目标：tag 页签下官方黑名单说明是隐藏的，
+       不换就会点了没反应（2026-11-10 走查发现）。换目标时把两边的展开态都收掉，
+       免得切回来看到「? 是亮的但内容关了」或反过来 */
+    const tagDetail = $("official-tag-detail");
+    if (tagDetail) tagDetail.style.display = tag ? "" : "none";
+    const dot = $("official-help-dot");
+    if (dot) {
+      dot.setAttribute("data-hint", tag ? "official-tag-detail" : "official-help");
+      dot.title = tag ? "官方与本地两份名单有什么区别？" : "什么是官方黑名单？";
+      dot.classList.remove("on");
+    }
+    if (help) help.classList.remove("open");
+    if (tagDetail) tagDetail.classList.remove("open");
     const addHint = $("official-add-hint");
     if (addHint) addHint.style.display = tag ? "none" : "";
     const cRow = $("official-comments-row");
@@ -2538,12 +2565,14 @@
     );
   }
 
+  /* 段头：名字与计数不许折（280px 下「官方」曾被挤成竖排「官 / 方」），
+   * 说明单独占剩余宽度、需要时自己换行 */
   function lcTagSecHead(name, count, note) {
     return (
       `<div style="display:flex;align-items:baseline;gap:6px;margin:10px 0 6px 0;">` +
-      `<span style="font-size:11px;font-weight:600;">${lcEscHtml(name)}</span>` +
-      `<span class="hint" style="margin:0;font-size:11px;">${lcEscHtml(count)}</span>` +
-      `<span class="hint" style="margin:0;font-size:11px;opacity:.72;">${lcEscHtml(note)}</span>` +
+      `<span style="flex:0 0 auto;white-space:nowrap;font-size:11px;font-weight:600;">${lcEscHtml(name)}</span>` +
+      `<span class="hint" style="flex:0 0 auto;white-space:nowrap;margin:0;font-size:11px;">${lcEscHtml(count)}</span>` +
+      `<span class="hint" style="flex:1;min-width:0;margin:0;font-size:11px;opacity:.72;">${lcEscHtml(note)}</span>` +
       `</div>`
     );
   }
@@ -2585,10 +2614,12 @@
       ? tags.map((t, i) => lcTagRowHtml(t, i, false)).join("")
       : `<p class="hint" style="margin:0;">暂无。悬停帖子卡片上的 tag 点「屏蔽」，或在这里输入。</p>`;
 
+    /* 两段的差异写在各自的段头上（贴着对象解释，比在顶部写一段话更好读）：
+     * 官方「全端生效 · 不随导出」 ↔ 本地「仅此浏览器 · 会随配置导出」 */
     box.innerHTML =
-      lcTagSecHead("官方", lcTags.state === "ok" ? off.length + " / 100" : "", "全端生效（含手机 App）") +
+      lcTagSecHead("官方", lcTags.state === "ok" ? off.length + " / 100" : "", "全端生效（含手机 App）· 不随导出") +
       offBody +
-      lcTagSecHead("本地", tags.length + " 个", "仅此浏览器，会随配置导出") +
+      lcTagSecHead("本地", tags.length + " 个", "仅此浏览器 · 会随配置导出") +
       localBody;
   }
 

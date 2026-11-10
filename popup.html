@@ -1433,17 +1433,19 @@
         </label>
         </div></div>
       </div>
-      <div class="grp-card"><div class="grp-title">官方黑名单<button type="button" class="help-dot" data-hint="official-help" title="什么是官方黑名单？">?</button></div>
+      <div class="grp-card"><div class="grp-title">官方黑名单<button type="button" class="help-dot" id="official-help-dot" data-hint="official-help" title="什么是官方黑名单？">?</button></div>
         <div class="row" style="margin-bottom:8px;">
           <div class="lc-mods" id="official-mode">
             <label><input type="radio" name="lc-off-mode" value="user" checked />拉黑用户</label>
-            <label><input type="radio" name="lc-off-mode" value="tag" />屏蔽 tag（本地）</label>
+            <!-- 2026-11-10 #39：不再标「（本地）」—— 现在优先写官方，标本地会让人以为它只存本地 -->
+            <label><input type="radio" name="lc-off-mode" value="tag" />屏蔽 tag</label>
           </div>
         </div>
         <p class="hint collapsible plain" id="official-help" style="margin:4px 0 12px 0;">拉黑由 LOFTER 官方执行：动态和标签页不再显示对方内容，对方也无法评论/私信你；但对方可能感知到（在 App 里进你主页会看到提示）。插件本地的「隐藏」完全无感，两者不通用。</p>
-        <!-- 2026-10-23 作者把这一卡误当成"官方标签屏蔽"的入口 ⇒ 文案常显（不再折叠）+ 点明两套名单互不相通 -->
-        <!-- 2026-11-10 #39 接上官方接口后重写：现在读得到也写得进了，原文案「插件读不到它」已不成立 -->
-        <p class="hint plain" id="official-tag-help" style="margin:4px 0 12px 0;display:none;">这里管两份名单：<b>官方</b>那份存在 LOFTER 服务端，全站生效（手机 App 也算），上限 100 个；<b>本地</b>那份只影响本浏览器，但会随配置导出。添加时官方没满就写官方，满了自动存本地。官方名单属于账号数据、不会写进导出文件。两段名单都会让首页/标签页不再显示带该 tag 的卡片，评论区不受影响。</p>
+        <!-- 2026-11-10 #39 接上官方接口后重写：常显一句行为规则（用户最需要知道「我加的会去哪」），
+             两套名单的差异交给两段各自的段头说（见 renderTagBlockList），细则收进 ? -->
+        <p class="hint plain" id="official-tag-help" style="margin:4px 0 10px 0;display:none;">加 tag 时先写官方；官方满 100 条后自动存本地。</p>
+        <p class="hint collapsible" id="official-tag-detail" style="margin:0 0 10px 0;">官方名单存在 LOFTER 服务端，全站生效（手机 App 也算），上限 100 条；它属于账号数据，不会写进导出文件。本地名单只影响本浏览器，会随配置导出。两段都让首页 / 标签页不再显示带该 tag 的卡片，评论区不受影响。官方满员时不会顶掉已在用的条目 —— 要腾位置得先在官方段移除一条。</p>
         <div style="display:flex;gap:6px;">
           <input id="official-add-input" type="text" placeholder="粘贴对方主页链接或 ID"
             style="flex:1;min-width:0;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);">
@@ -1451,7 +1453,10 @@
             style="padding:6px 12px;font-size:12px;white-space:nowrap;">拉黑</button>
         </div>
         <p class="hint plain" id="official-add-hint">无需进 LOFTER 设置页，这里直接添加/移除（等价于官方「设置 → 黑名单」）。</p>
-        <div class="row" style="margin:14px 0 8px 0;align-items:center;"><label style="flex:0 0 auto;line-height:1.5;"><span id="official-list-label">黑名单成员</span></label><span class="hint" id="official-count" style="margin:0;line-height:1.5;">…</span><span id="official-toast" style="font-size:11px;color:#34a853;display:none;"></span><button id="official-toggle" type="button" class="btn" style="margin-left:auto;padding:2px 10px;font-size:11px;line-height:1.5;flex-shrink:0;color:var(--lc-sub);background:none;border:1px dashed var(--lc-line);border-radius:6px;cursor:pointer;">展开</button></div>
+        <div class="row" style="margin:14px 0 8px 0;align-items:center;"><label style="flex:0 0 auto;line-height:1.5;"><span id="official-list-label">黑名单成员</span></label><span class="hint" id="official-count" style="margin:0;line-height:1.5;">…</span><button id="official-toggle" type="button" class="btn" style="margin-left:auto;padding:2px 10px;font-size:11px;line-height:1.5;flex-shrink:0;color:var(--lc-sub);background:none;border:1px dashed var(--lc-line);border-radius:6px;cursor:pointer;">展开</button></div>
+        <!-- 2026-11-10：toast 从上一行挪出来单独占一行 —— 它之前是行内 flex 项，
+             一长（「已加入官方屏蔽「xxx」（全端生效）」）就把计数挤成两行、自己折三行 -->
+        <div id="official-toast" style="display:none;font-size:11px;color:#34a853;line-height:1.5;margin:0 0 8px 0;"></div>
         <div id="official-list"
           style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;padding-right:4px;display:none;"></div>
         <label class="toggle" id="official-comments-row">
@@ -1517,12 +1522,14 @@
     </section>
 
     <section class="pane" data-pane="misc" data-page-node-id="ZHR6vKyIVNU71GiLvGGY2D">
-      <div class="grp-card"><div class="grp-title">面板</div>
+      <div class="grp-card"><div class="grp-title">面板<button type="button" class="help-dot" data-hint="fab-help" title="悬浮按钮是什么？">?</button></div>
       <label class="toggle" data-page-node-id="lcFabToggleRow">
         <span data-page-node-id="lcFabToggleLabel">显示悬浮按钮</span>
         <input type="checkbox" id="show-fab" data-page-node-id="lcFabToggle" />
       </label>
-      <p class="hint" style="margin-left:90px;" data-page-node-id="lcFabHint">关掉后页面上的悬浮按钮消失。如果你常用，建议把插件固定到工具栏（点地址栏右侧的拼图图标 → 图钉）</p>
+      <!-- 2026-11-10：原来常显 + margin-left:90px（那 90px 是别处「两列控件」的缩进，这里没有第二列
+           ⇒ 左侧空一块）。改成同栏其它卡的做法：折进 ?，只在开关关掉时自动摊开（那时最需要知道去哪儿找面板） -->
+      <p class="hint collapsible plain" id="fab-help" style="margin:4px 0 0 0;" data-page-node-id="lcFabHint">悬浮按钮是页面右下角那个圆形入口。关掉后它消失，功能不受影响 —— 用工具栏的插件图标一样能打开面板（图标藏在拼图菜单里时，点拼图图标 → 图钉把它固定出来）。</p>
       </div>
 
       <div class="grp-card"><div class="grp-title">快捷键</div>
