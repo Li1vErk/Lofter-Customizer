@@ -1442,7 +1442,8 @@
         </div>
         <p class="hint collapsible plain" id="official-help" style="margin:4px 0 12px 0;">拉黑由 LOFTER 官方执行：动态和标签页不再显示对方内容，对方也无法评论/私信你；但对方可能感知到（在 App 里进你主页会看到提示）。插件本地的「隐藏」完全无感，两者不通用。</p>
         <!-- 2026-10-23 作者把这一卡误当成"官方标签屏蔽"的入口 ⇒ 文案常显（不再折叠）+ 点明两套名单互不相通 -->
-        <p class="hint plain" id="official-tag-help" style="margin:4px 0 12px 0;display:none;">这是<b>插件本地</b>的名单，和 LOFTER 官方设置里的「标签屏蔽」互不相通：官方那份存在服务端、全站生效（手机 App 也算），插件读不到它，也不会把它写进导出文件；这里只影响本浏览器，但<b>会随配置导出</b>。首页/标签页不再显示带该 tag 的卡片，评论区不受影响。</p>
+        <!-- 2026-11-10 #39 接上官方接口后重写：现在读得到也写得进了，原文案「插件读不到它」已不成立 -->
+        <p class="hint plain" id="official-tag-help" style="margin:4px 0 12px 0;display:none;">这里管两份名单：<b>官方</b>那份存在 LOFTER 服务端，全站生效（手机 App 也算），上限 100 个；<b>本地</b>那份只影响本浏览器，但会随配置导出。添加时官方没满就写官方，满了自动存本地。官方名单属于账号数据、不会写进导出文件。两段名单都会让首页/标签页不再显示带该 tag 的卡片，评论区不受影响。</p>
         <div style="display:flex;gap:6px;">
           <input id="official-add-input" type="text" placeholder="粘贴对方主页链接或 ID"
             style="flex:1;min-width:0;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);">
@@ -1856,6 +1857,7 @@
   <script src="lc-i18n-dict.js"></script>
   <script src="lc-i18n.js"></script>
   <script src="lc-assets.js"></script>
+  <script src="lc-official-tags.js"></script>
   <script src="lc-dwr.js"></script>
   <script src="popup.js"></script>
 

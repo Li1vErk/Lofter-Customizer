@@ -19,6 +19,13 @@
  *   addBlacklist         param0=string:blogName, param1=number:0 → 新条目
  *   removeBlacklist      param0=number:条目id（非 blogId！）      → 1
  *   getBlacklistUserList param0=number:页大小, param1=number:偏移 → 条目数组
+ *
+ * 官方「标签屏蔽」（2026-10-23 三轮抓包确认）：
+ *   updateUserForbidTags param0=Array:操作后的**完整**标签列表
+ *                        param1=string:本次操作的标签
+ *                        param2=number:0 添加 / 1 删除
+ *   ⚠ param0 是全量覆盖语义 ⇒ **发之前必须现读官方名单**，否则会把用户已有的
+ *     其他标签一次冲掉；相反地，它也是唯一能一次改写整份名单的入口（交换 / 批量）。
  */
 
 function LC_dwrParse(text) {
@@ -238,8 +245,52 @@ function LC_dwrParse(text) {
   return result;
 }
 
+/* DWR plaincall body 拼装（纯函数，便于自检）。
+ *
+ * params 每一项两种写法：
+ *   · 字符串 —— 原样当「类型:值」，如 "string:xxx" / "number:0"
+ *   · 数组   —— 视为一个 Java 数组参数，展开成 DWR 的「元素表 + 引用数组」：
+ *                 c0-e1=string:元素1
+ *                 c0-e2=string:元素2
+ *                 c0-param0=Array:[reference:c0-e1,reference:c0-e2]
+ *     为什么不能写内联字面量（`Array:["a","b"]`）：2026-10-23 的官方「标签屏蔽」
+ *     抓包里，连**单元素**都是 reference 形态（`c0-e1=string:mbti` +
+ *     `Array:[reference:c0-e1]`），空数组才是 `Array:[]`。照抄真实形态最稳。
+ *
+ * 标签名里带换行会把 body 切错行（DWR 按 \n 切）⇒ 直接抛错，不发半截请求。
+ */
+function LC_dwrBuildBody(scriptName, method, params) {
+  const elemLines = [];
+  const paramLines = [];
+  let e = 0;
+  (params || []).forEach((p, idx) => {
+    if (Array.isArray(p)) {
+      const refs = p.map((v) => {
+        const s = String(v);
+        if (/[\r\n]/.test(s)) throw new Error("DWR 数组元素含换行，body 会被切坏");
+        e += 1;
+        elemLines.push("c0-e" + e + "=string:" + s);
+        return "reference:c0-e" + e;
+      });
+      paramLines.push("c0-param" + idx + "=Array:[" + refs.join(",") + "]");
+    } else {
+      paramLines.push("c0-param" + idx + "=" + p);
+    }
+  });
+  return [
+    "callCount=1",
+    "scriptSessionId=${scriptSessionId}187", /* 官方原样发占位符，服务端不校验 */
+    "httpSessionId=", /* 空：鉴权全靠 Cookie */
+    "c0-scriptName=" + scriptName,
+    "c0-methodName=" + method,
+    "c0-id=0",
+  ].concat(elemLines, paramLines, [
+    "batchId=" + ((Date.now() % 100000000) | 0),
+  ]);
+}
+
 /* 直连调用（content script 在 lofter.com 页面里用：同源、带 Referer）。
- * params: ["string:xxx", "number:0", ...]（DWR 参数带类型前缀）。
+ * params: ["string:xxx", "number:0", ["数组元素", ...]]（DWR 参数带类型前缀）。
  * opt（可选，2026-10-06 加，向后兼容）：
  *   scriptName  默认 "UserBean"；归档接口传 "ArchiveBean"
  *   base        默认 "https://www.lofter.com"；传 location.origin 可保证同源
@@ -251,19 +302,10 @@ function LC_dwrDirect(method, params, opt) {
   opt = opt || {};
   const scriptName = opt.scriptName || "UserBean";
   const base = String(opt.base || "https://www.lofter.com").replace(/\/+$/, "");
-  const lines = [
-    "callCount=1",
-    "scriptSessionId=${scriptSessionId}187", /* 官方原样发占位符，服务端不校验 */
-    "httpSessionId=", /* 空：鉴权全靠 Cookie */
-    "c0-scriptName=" + scriptName,
-    "c0-methodName=" + method,
-    "c0-id=0",
-  ];
-  (params || []).forEach((p, idx) => lines.push("c0-param" + idx + "=" + p));
-  lines.push("batchId=" + ((Date.now() % 100000000) | 0));
   return Promise.resolve()
-    .then(() =>
-      fetch(base + "/dwr/call/plaincall/" + scriptName + "." + method + ".dwr", {
+    .then(() => {
+      const lines = LC_dwrBuildBody(scriptName, method, params);
+      return fetch(base + "/dwr/call/plaincall/" + scriptName + "." + method + ".dwr", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "text/plain" },
@@ -271,8 +313,8 @@ function LC_dwrDirect(method, params, opt) {
          *   "The specified call count is not a number"（200 但无数据）。
          *   User-Agent / Referer 由浏览器自动带上，二者缺一服务端回空 body。 */
         body: lines.join("\n"),
-      }),
-    )
+      });
+    })
     .then((r) => {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.text();
@@ -357,4 +399,5 @@ function LC_dwrCall(method, params, opt) {
 if (typeof window !== "undefined") {
   window.LC_dwrParse = LC_dwrParse;
   window.LC_dwrCall = LC_dwrCall;
+  window.LC_dwrBuildBody = LC_dwrBuildBody;
 }

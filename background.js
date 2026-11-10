@@ -6,6 +6,9 @@
  * IIFE 挂全局，SW 与 popup 共用同一份实现。
  * 必须在这一行之后才使用 self.LCAssets。 */
 importScripts('lc-assets.js');
+/* 官方「标签屏蔽」名单的解析（与 popup 共用同一份实现）。
+ * 同理是 classic worker ⇒ importScripts + IIFE 挂 self.LCOfficialTags。 */
+importScripts('lc-official-tags.js');
 
 chrome.commands.onCommand.addListener((command) => {
   // 先读取设置，检查快捷键是否启用
@@ -89,6 +92,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }).catch((e) => sendResponse({ ok: false, error: String(e) }));
     })
     .catch((e) => sendResponse({ ok: false, status: 0, error: String(e) }));
+  return true; // 异步 sendResponse
+});
+
+/* #39 官方标签屏蔽：读名单。
+ * 官方**没有** DWR 读接口，名单是设置页 SSR 直出在 textarea[name=js] 里
+ * （2026-10-23 三轮抓包定档）。popup 直连拿不到登录态 ⇒ 这里代抓。
+ * 与 lcExportFetch 的区别：**目标 URL 写死**，不接受调用方传入 —— 这条通道
+ * 带 cookie，能少一个参数就少一条被当成任意 URL 代理的路。
+ * 解析放在 lc-official-tags.js（纯字符串，SW 无 DOM 也能跑），只回 tags + 三态，
+ * 不回整页 HTML（几十 KB 没必要穿过消息通道）。 */
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.action !== 'lcOfficialTagsFetch') return false;
+  const T = self.LCOfficialTags;
+  if (!T) { sendResponse({ ok: false, state: 'error', tags: [], reason: 'module missing' }); return false; }
+  fetch('https://www.lofter.com/usertagforbid', { credentials: 'include', redirect: 'follow' })
+    .then((r) => {
+      if (!r.ok) {
+        sendResponse({ ok: false, state: 'error', tags: [], reason: 'HTTP ' + r.status, status: r.status });
+        return;
+      }
+      /* 跳登录页时 status 仍是 200（服务端 302 后跟到底），靠 classify 的特征词分辨 */
+      r.text().then((html) => {
+        const c = T.classify(html);
+        const out = { ok: c.state === 'ok', state: c.state, tags: c.tags, limit: T.LIMIT, status: r.status, url: r.url };
+        if (c.reason) out.reason = c.reason;
+        sendResponse(out);
+      }).catch((e) => sendResponse({ ok: false, state: 'error', tags: [], reason: String(e) }));
+    })
+    .catch((e) => sendResponse({ ok: false, state: 'error', tags: [], reason: String(e) }));
   return true; // 异步 sendResponse
 });
 

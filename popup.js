@@ -2341,8 +2341,13 @@
 
   on("official-toggle", "click", () => {
     lcOfficialExpanded = !lcOfficialExpanded;
-    if (lcOffMode === "tag") renderTagBlockList();
-    else renderOfficialList();
+    if (lcOffMode === "tag") {
+      renderTagBlockList();
+      /* 展开才看得见名单，这时还没读过就补一次（30 秒节流在 lcTagsRefresh 里） */
+      lcTagsRefresh().catch(() => {});
+    } else {
+      renderOfficialList();
+    }
   });
 
   /* ---------- 模式切换 + tag 屏蔽名单 ---------- */
@@ -2364,8 +2369,14 @@
     if (addHint) addHint.style.display = tag ? "none" : "";
     const cRow = $("official-comments-row");
     if (cRow) cRow.style.display = tag ? "none" : "";
-    if (tag) renderTagBlockList();
-    else renderOfficialList();
+    if (tag) {
+      renderTagBlockList();
+      /* 切到 tag 页签才去读官方名单（30 秒内不重复打）：
+       * 这是两个不同接口，默认页签是「拉黑用户」，没必要每次都多打一次 */
+      lcTagsRefresh().catch(() => {});
+    } else {
+      renderOfficialList();
+    }
   }
 
   on("official-mode", "change", () => {
@@ -2391,12 +2402,162 @@
     return s.trim();
   }
 
+  /* ---------- 官方「标签屏蔽」（#39）----------
+   * 和本地名单并排的两段，写通道完全不同：
+   *   官方 —— 服务端、账号级、上限 100、**全端生效（手机 App 也算）**。
+   *           没有 DWR 读接口，名单由设置页 SSR 直出（见 lc-official-tags.js）；
+   *           写接口 updateUserForbidTags 的 param0 是**操作后的完整列表**。
+   *   本地 —— settings.filter.tags，只影响本浏览器，会随配置导出。
+   *
+   * 三条不能省的动作顺序（写侧安全的前提）：
+   *   ① 写前现读：param0 全量覆盖 ⇒ 拿面板打开时的旧快照写，会把手机端刚加的标签冲掉
+   *   ② 写后对账：DWR 是反向 Ajax，POST 回空/状态 null **不代表失败**，只能再读一次比
+   *   ③ 先官方写成功、对账通过，才动本地列表（交换/降级时不会出现两边都不在或都在） */
+  const lcTags = { state: "idle", tags: [], reason: "", loading: false, at: 0 };
+  let lcTagsRetried = false;
+
+  /* 集合比较（不区分大小写、不看顺序）：服务端可能排序或改大小写 */
+  function lcSameTagSet(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    const norm = (x) => String(x).toLowerCase();
+    const s = new Set(a.map(norm));
+    const seen = new Set();
+    for (let i = 0; i < b.length; i++) {
+      const k = norm(b[i]);
+      if (!s.has(k) || seen.has(k)) return false;
+      seen.add(k);
+    }
+    return true;
+  }
+
+  function lcTagsErrText(r) {
+    if (!r) return "网络异常";
+    if (r.state === "login") return "请先登录 LOFTER";
+    if (r.state === "changed") return "官方页面形态可能已变化";
+    return r.reason || "网络异常";
+  }
+
+  /* 拉官方名单。失败自动补试一次（黑名单卡 2026-10-23 的老毛病：面板刚打开时
+   * 会话常未就绪，关掉重开就好 —— 这里自动兜一次，之后交给「重试」按钮） */
+  async function lcTagsRefresh(force) {
+    if (lcTags.loading) return;
+    if (!force && lcTags.at && Date.now() - lcTags.at < 30000) return;
+    lcTags.loading = true;
+    if (!lcTags.tags.length) lcTags.state = "loading";
+    renderTagBlockList();
+    let r;
+    try {
+      r = await LCOfficialTags.fetchList();
+    } catch (e) {
+      r = { ok: false, state: "error", tags: [], reason: String((e && e.message) || e) };
+    }
+    lcTags.loading = false;
+    lcTags.at = Date.now();
+    if (r.state === "ok") {
+      lcTags.state = "ok";
+      lcTags.tags = r.tags || [];
+      lcTags.reason = "";
+      lcTagsRetried = false;
+    } else {
+      lcTags.state = r.state || "error";
+      lcTags.reason = lcTagsErrText(r);
+      if (!force && !lcTagsRetried) {
+        lcTagsRetried = true;
+        setTimeout(() => { lcTagsRefresh(true).catch(() => {}); }, 1200);
+      }
+    }
+    renderTagBlockList();
+  }
+
+  /* 写官方名单：现读 → 算新列表 → 写 → 对账。
+   * mutate(当前列表) 返回写入后的完整列表；tag/act 只影响服务端的动作位。
+   * pre：调用方刚读到的结果（可选）。添加/升格为了判满本来就要读一次，
+   * 传进来就复用 —— 一次操作固定两次 GET（写前现读 + 写后对账），
+   * 而不是三次（判满读、commit 里再读、对账读）。 */
+  async function lcOfficialTagCommit(mutate, tag, act, pre) {
+    let cur = pre && pre.state === "ok" ? pre : null;
+    if (!cur) {
+      try {
+        cur = await LCOfficialTags.fetchList();
+      } catch (e) {
+        cur = { ok: false, state: "error", tags: [], reason: String((e && e.message) || e) };
+      }
+    }
+    if (cur.state !== "ok") {
+      lcTags.state = cur.state || "error";
+      lcTags.reason = lcTagsErrText(cur);
+      renderTagBlockList();
+      return { ok: false, reason: lcTags.reason };
+    }
+    const next = mutate(cur.tags.slice());
+    try {
+      await lcDwr("updateUserForbidTags", [next, "string:" + tag, "number:" + act]);
+    } catch (e) {
+      /* 网络/HTTP 失败：改动可能没到服务端，也可能到了没回执 —— 一律以现读为准 */
+      lcTags.state = "ok";
+      lcTags.tags = cur.tags;
+      renderTagBlockList();
+      return { ok: false, reason: String((e && e.message) || e) };
+    }
+    let after;
+    try {
+      after = await LCOfficialTags.fetchList();
+    } catch (e) {
+      after = { ok: false, state: "error", tags: [] };
+    }
+    if (after.state !== "ok") {
+      /* 写成功与否未知：不假装成功，让用户点重试（面板停在旧数据上会误导） */
+      lcTags.state = "ok";
+      lcTags.tags = cur.tags;
+      renderTagBlockList();
+      return { ok: false, reason: "写后读取失败，请重试" };
+    }
+    lcTags.state = "ok";
+    lcTags.tags = after.tags;
+    lcTags.at = Date.now();
+    renderTagBlockList();
+    if (!lcSameTagSet(after.tags, next)) {
+      /* DWR 静默拒绝 / 超上限 / 另一端刚改过：面板已经换成服务端现态，提示重试 */
+      return { ok: false, reason: "刚才的修改没有生效" };
+    }
+    return { ok: true, tags: after.tags };
+  }
+
+  function lcTagRowHtml(t, i, official) {
+    const btn = "padding:1px 8px;font-size:11px;flex-shrink:0;";
+    const acts = official
+      ? `<button class="btn" data-otag-demote="${i}" type="button" style="${btn}">移到本地</button>` +
+        `<button class="btn" data-otag-unblk="${i}" type="button" style="${btn}">移除</button>`
+      : `<button class="btn" data-tag-promote="${i}" type="button" style="${btn}">升到官方</button>` +
+        `<button class="btn" data-tag-unblock="${i}" type="button" style="${btn}">移除</button>`;
+    return (
+      `<div style="display:flex;gap:6px;align-items:center;padding:4px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-soft);">` +
+      `<span data-lc-raw style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${lcEscHtml(t)}</span>` +
+      acts +
+      `</div>`
+    );
+  }
+
+  function lcTagSecHead(name, count, note) {
+    return (
+      `<div style="display:flex;align-items:baseline;gap:6px;margin:10px 0 6px 0;">` +
+      `<span style="font-size:11px;font-weight:600;">${lcEscHtml(name)}</span>` +
+      `<span class="hint" style="margin:0;font-size:11px;">${lcEscHtml(count)}</span>` +
+      `<span class="hint" style="margin:0;font-size:11px;opacity:.72;">${lcEscHtml(note)}</span>` +
+      `</div>`
+    );
+  }
+
   function renderTagBlockList() {
     const box = $("official-list");
     if (!box) return;
     const f = ensureFilter();
     const tags = f.tags || [];
-    $("official-count").textContent = tags.length + " 个";
+    const off = lcTags.tags || [];
+    /* 头部计数：官方那份没读到就显示「…」，绝不用 0 冒充 ——
+     * 黑名单卡 2026-10-23 就因为「失败被渲染成 0 人」误导过作者 */
+    $("official-count").textContent =
+      "官方 " + (lcTags.state === "ok" ? off.length : "\u2026") + " · 本地 " + tags.length;
     renderFilterFold(); /* 摘要里的标签数随名单走 */
     const toggleBtn = $("official-toggle");
     if (toggleBtn) toggleBtn.textContent = lcOfficialExpanded ? "收起" : "展开";
@@ -2406,36 +2567,92 @@
       return;
     }
     box.style.display = "";
-    box.innerHTML = tags.length
-      ? tags
-          .map(
-            (t, i) =>
-              `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-soft);">` +
-              `<span data-lc-raw style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(t).replace(/[<>&"]/g, "")}</span>` +
-              `<button class="btn" data-tag-unblock="${i}" type="button" style="padding:1px 8px;font-size:11px;flex-shrink:0;">移除</button></div>`,
-          )
-          .join("")
+
+    let offBody;
+    if (lcTags.state === "ok") {
+      offBody = off.length
+        ? off.map((t, i) => lcTagRowHtml(t, i, true)).join("")
+        : `<p class="hint" style="margin:0;">官方名单为空。</p>`;
+    } else if (lcTags.state === "loading" || lcTags.state === "idle") {
+      offBody = `<p class="hint" style="margin:0;">读取中…</p>`;
+    } else {
+      offBody =
+        `<p class="hint" style="margin:0;">读取失败：${lcEscHtml(lcTags.reason)}。` +
+        `<button class="lc-link" data-otag-retry type="button" style="font-size:12px;padding:0 2px;">重试</button></p>`;
+    }
+
+    const localBody = tags.length
+      ? tags.map((t, i) => lcTagRowHtml(t, i, false)).join("")
       : `<p class="hint" style="margin:0;">暂无。悬停帖子卡片上的 tag 点「屏蔽」，或在这里输入。</p>`;
+
+    box.innerHTML =
+      lcTagSecHead("官方", lcTags.state === "ok" ? off.length + " / 100" : "", "全端生效（含手机 App）") +
+      offBody +
+      lcTagSecHead("本地", tags.length + " 个", "仅此浏览器，会随配置导出") +
+      localBody;
   }
 
-  function lcTagAdd() {
+  async function lcTagAdd() {
     const input = $("official-add-input");
+    const btn = $("official-add-btn");
     const name = lcTagNormalize(input.value);
     if (!name) {
       input.value = "";
       input.placeholder = "请输入 tag 名称或 tag 页链接";
       return;
     }
+    const low = name.toLowerCase();
     const f = ensureFilter();
-    if (f.tags.some((t) => String(t).toLowerCase() === name.toLowerCase())) {
-      lcOfficialToast("tag「" + name + "」已在屏蔽名单");
+    if (f.tags.some((t) => String(t).toLowerCase() === low)) {
+      lcOfficialToast("tag「" + name + "」已在本地屏蔽名单");
       return;
     }
-    f.tags.push(name);
-    renderTagBlockList();
-    save();
-    lcOfficialToast("已屏蔽 tag「" + name + "」");
-    input.value = "";
+    /* 写前现读：同时承担「查重（官方侧）」与「满员预检」两个职责。
+     * 满员时**不向官方发写**，直接落本地并说明 —— 不自动补位、不改官方名单。 */
+    const prev = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "…"; }
+    try {
+      let cur;
+      try {
+        cur = await LCOfficialTags.fetchList();
+      } catch (e) {
+        cur = { ok: false, state: "error", tags: [], reason: String((e && e.message) || e) };
+      }
+      if (cur.state !== "ok") {
+        lcTags.state = cur.state || "error";
+        lcTags.reason = lcTagsErrText(cur);
+        renderTagBlockList();
+        lcOfficialToast("读取官方名单失败：" + lcTags.reason);
+        return;
+      }
+      lcTags.state = "ok";
+      lcTags.tags = cur.tags;
+      lcTags.at = Date.now();
+      if (cur.tags.some((t) => String(t).toLowerCase() === low)) {
+        renderTagBlockList();
+        lcOfficialToast("tag「" + name + "」已在官方屏蔽名单");
+        return;
+      }
+      if (cur.tags.length >= LCOfficialTags.LIMIT) {
+        f.tags.push(name);
+        renderTagBlockList();
+        save();
+        lcOfficialToast("官方名单已满，已存为本地屏蔽（仅此浏览器生效）");
+        input.value = "";
+        return;
+      }
+      const r = await lcOfficialTagCommit((list) => list.concat([name]), name, 0, cur);
+      if (!r.ok) {
+        /* 官方写失败**不**在本地兜底：否则会出现「官方没加上、本地加上了」的
+         * 不确定态，用户以为全端生效而实际只有本机看得到 */
+        lcOfficialToast("加入官方名单失败：" + r.reason + "，请重试");
+        return;
+      }
+      lcOfficialToast("已加入官方屏蔽「" + name + "」（全端生效）");
+      input.value = "";
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = prev || "屏蔽"; }
+    }
   }
 
   /* 官方黑名单镜像到 storage（lc_official_bl_v1）：评论过滤（content.js
@@ -2583,12 +2800,133 @@
     }
     const tb = e.target.closest("[data-tag-unblock]");
     if (tb) {
+      /* 本地名单：可逆、只影响本机 ⇒ 单段确认（现状不变） */
       const f = ensureFilter();
       f.tags.splice(+tb.dataset.tagUnblock, 1);
       renderTagBlockList();
       save();
       return;
     }
+
+    /* ---------- 官方「标签屏蔽」段（#39）----------
+     * 动的是账号级、全端生效的数据：手机 App 上会立刻消失/出现，
+     * 所以删除、降级、升格都过两段确认（照黑名单卡的既有模式）。 */
+    const isTagMode = lcOffMode === "tag";
+
+    if (e.target.closest("[data-otag-retry]")) {
+      lcTagsRefresh(true).catch(() => {});
+      return;
+    }
+
+    /* 两段确认的公共前半段：第一次点只把按钮换成「确认…？」 */
+    const needConfirm = (btn) => {
+      if (btn.dataset.confirm === "1") return false;
+      btn.dataset.confirm = "1";
+      const label = btn.textContent;
+      btn.textContent = "确认？";
+      setTimeout(() => {
+        if (!btn.isConnected) return;
+        btn.dataset.confirm = "";
+        btn.textContent = label;
+      }, 3000);
+      return true;
+    };
+
+    const demote = e.target.closest("[data-otag-demote]");
+    if (demote && isTagMode) {
+      const tag = (lcTags.tags || [])[+demote.dataset.otagDemote];
+      if (!tag) return;
+      if (needConfirm(demote)) return;
+      demote.disabled = true;
+      demote.textContent = "…";
+      /* 一次确认覆盖两件事：官方移除 + 本地加入。顺序不能反 ——
+       * 先官方写成功、对账通过，才动本地，否则失败时会出现「两边都不在」。 */
+      const r = await lcOfficialTagCommit(
+        (list) => list.filter((t) => String(t).toLowerCase() !== tag.toLowerCase()),
+        tag,
+        1,
+      );
+      if (!r.ok) {
+        lcOfficialToast("移出官方失败：" + r.reason + "，请重试");
+        return;
+      }
+      const f = ensureFilter();
+      if (!f.tags.some((t) => String(t).toLowerCase() === tag.toLowerCase())) {
+        f.tags.push(tag);
+        save();
+      }
+      renderTagBlockList();
+      lcOfficialToast("已把「" + tag + "」移出官方，转为本地屏蔽（仅此浏览器生效）");
+      return;
+    }
+
+    const unblk = e.target.closest("[data-otag-unblk]");
+    if (unblk && isTagMode) {
+      const tag = (lcTags.tags || [])[+unblk.dataset.otagUnblk];
+      if (!tag) return;
+      if (needConfirm(unblk)) return;
+      unblk.disabled = true;
+      unblk.textContent = "…";
+      const r = await lcOfficialTagCommit(
+        (list) => list.filter((t) => String(t).toLowerCase() !== tag.toLowerCase()),
+        tag,
+        1,
+      );
+      lcOfficialToast(r.ok ? "已移除官方屏蔽「" + tag + "」" : "移除失败：" + r.reason + "，请重试");
+      return;
+    }
+
+    const promote = e.target.closest("[data-tag-promote]");
+    if (promote && isTagMode) {
+      const f = ensureFilter();
+      const tag = (f.tags || [])[+promote.dataset.tagPromote];
+      if (!tag) return;
+      /* 先确认、再读、再写：确认态会停 3 秒，此时读到的名单在用户点确认时
+       * 可能已经变了 ⇒ 读必须紧挨着写（硬规矩「写前现读」的字面含义）。 */
+      if (needConfirm(promote)) return;
+      promote.disabled = true;
+      promote.textContent = "…";
+      /* 现读同时承担三件事：判满员、查重（官方可能已被另一端点加过）、算 param0 */
+      const cur = await LCOfficialTags.fetchList();
+      if (cur.state !== "ok") {
+        lcTags.state = cur.state || "error";
+        lcTags.reason = lcTagsErrText(cur);
+        renderTagBlockList();
+        lcOfficialToast("读取官方名单失败：" + lcTags.reason);
+        return;
+      }
+      lcTags.state = "ok";
+      lcTags.tags = cur.tags;
+      lcTags.at = Date.now();
+      if (cur.tags.some((t) => String(t).toLowerCase() === tag.toLowerCase())) {
+        /* 官方已经有了：本地这条是重复的，直接收掉（方向是"减少"，不用再确认一次） */
+        const k = f.tags.findIndex((t) => String(t).toLowerCase() === tag.toLowerCase());
+        if (k >= 0) f.tags.splice(k, 1);
+        save();
+        renderTagBlockList();
+        lcOfficialToast("官方名单里已有「" + tag + "」，已去掉本地这条");
+        return;
+      }
+      if (cur.tags.length >= LCOfficialTags.LIMIT) {
+        /* 满员不自动补位（方案稿底线）：要让用户自己决定换掉哪一条 */
+        renderTagBlockList();
+        lcOfficialToast("官方名单已满 100 个，请先在官方段移除一条再升格");
+        return;
+      }
+      const r = await lcOfficialTagCommit((list) => list.concat([tag]), tag, 0, cur);
+      if (!r.ok) {
+        renderTagBlockList();
+        lcOfficialToast("升格失败：" + r.reason + "，请重试");
+        return;
+      }
+      const k = f.tags.findIndex((t) => String(t).toLowerCase() === tag.toLowerCase());
+      if (k >= 0) f.tags.splice(k, 1);
+      save();
+      renderTagBlockList();
+      lcOfficialToast("已把「" + tag + "」升到官方（全端生效）");
+      return;
+    }
+
     const b = e.target.closest("[data-official-unblk]");
     if (!b) return;
     if (b.dataset.confirm !== "1") {
