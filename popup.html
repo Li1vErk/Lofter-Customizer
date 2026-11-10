@@ -340,6 +340,40 @@
       transform: translateY(-50%);
     }
 
+    /* 装饰缩略图：它本来就能拖（拖它改图层顺序，见 popup.js 的 dragstart），
+       但长得就是一张预览图，没人会想到能拖 —— 2026-11-05 作者自己都没发现。
+       提示换过两版：常驻白方块六点（图片永远缺个角）→ hover 淡入的六点角标
+       （2026-11-06「还是去掉六个点吧」）。角标是「贴在图上的一枚异物」，
+       再小心也挡画面。现在改成整张缩略图描一圈主色边：不占布局、不遮内容。
+       挂在缩略图自己身上而不是整卡 hover —— 拖动只认缩略图（dragstart 绑在
+       img 上），描边范围比可拖范围大就是在撒谎：作者 2026-11-06
+       「鼠标在卡片其他位置无法拖动卡片」。 */
+    .lc-dec-thumb {
+      position: relative;
+      width: 52px;
+      height: 52px;
+      flex-shrink: 0;
+      border-radius: 8px; /* 略大于 img 的 6px，描边才不会在四角露出直角 */
+      transition: box-shadow 0.15s;
+    }
+    .lc-dec-thumb:hover {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--lc-accent) 72%, transparent);
+    }
+    /* 拖起来的那一张：整条变淡（虚影跟着鼠标走的是整张卡，见 popup.js 的
+       setDragImage）。用 class 而不是内联样式，方便下一帧再加、dragend 一次摘掉。 */
+    .lc-dec-card.lc-dec-src {
+      opacity: 0.4;
+    }
+
+    /* 拖动中：整块列表描一圈虚线，把「这一片都能放」说清楚。
+       卡片之间的缝和下方空白也能接 drop（见 popup.js 的 lcDecOnOver），
+       没有这圈提示的话，用户看到 ghost 到处跑只会以为哪儿都放不下。 */
+    #dec-list.lc-dec-dragging {
+      outline: 1px dashed color-mix(in srgb, var(--lc-accent) 45%, transparent);
+      outline-offset: 4px;
+      border-radius: 10px;
+    }
+
     .grp-title {
       display: flex;
       align-items: center;
@@ -1261,7 +1295,7 @@
         <button class="btn" id="dec-file-btn" type="button" data-page-node-id="xKMGdZmiCbheIEVvNGjyrD">＋ 添加装饰图</button>
         <button type="button" class="help-dot" data-hint="deco-toolbar-help" title="装饰图怎么用？">?</button>
       </div>
-      <p class="hint collapsible plain" id="deco-toolbar-help" style="margin:-2px 0 10px 0;"><b>添加装饰图</b>：选本地图片贴到博客页面；<b>编辑位置</b>：在网页上拖拽摆放、拖角缩放；<b>隐藏装饰图</b>：一键藏起全部（卡片上的「显示」只管单张）。新贴的图默认静止；想让它浮动、可点，打开该卡片右下角的「未开启」开关。</p>
+      <p class="hint collapsible plain" id="deco-toolbar-help" style="margin:-2px 0 10px 0;"><b>添加装饰图</b>：选本地图片贴到博客页面；<b>调整图层顺序</b>：按住卡片左侧的缩略图上下拖动，排在前面的盖住后面的；<b>编辑位置</b>：在网页上拖拽摆放、拖角缩放；<b>隐藏装饰图</b>：一键藏起全部（卡片上的「显示」只管单张）。新贴的图默认静止；想让它浮动、可点，打开该卡片右下角的「未开启」开关。</p>
       <p class="hint" id="dec-edit-hint" style="margin:0 0 10px 0;display:none;" data-page-node-id="Hlsp5d52MBW8Vg5Gld1T8F">已在编辑模式：在网页上直接拖拽移动、拖拽边角缩放，完成后点「退出编辑」</p>
       <div id="dec-list"
         style="display:flex;flex-direction:column;gap:10px;" data-page-node-id="Y80QiDwOkvCd1VjTYaaYjm"></div>

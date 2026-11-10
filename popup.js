@@ -310,14 +310,29 @@
   /* 记住最后停留的栏：切语言等场景 popup 会整页重载，不记就每次弹回第一栏。
      用 localStorage（扩展页同源、FAB iframe 与工具栏弹窗共用），存的是栏 id */
   const PANE_LS = "lc_last_pane";
+  /* 每栏各记一份滚动位置。main#panes 是所有栏共用的唯一滚动容器，切栏时那一份
+     scrollTop 会被新栏直接继承；旧栏一 display:none，浏览器就把滚动位置清零了，
+     于是「滚到装饰第 5 张 → 去卡片栏 → 回来」必然弹回顶部（2026-11-05 作者反馈）。
+     只在内存里记：同一次弹窗打开期间往返要回到原位，但重开弹窗仍从栏顶开始
+     （跨弹窗记住反而会让人一打开就停在半截，说不清自己在哪）。 */
+  const paneScroll = Object.create(null);
+  let curPane = null;
   function activateTab(id) {
     const b = tabsBar.querySelector(`button[data-tab="${id}"]`);
     if (!b) return false;
+    const main = $("panes");
+    /* 顺序要紧：必须先把旧栏的位置存下来，再摘掉它的 .on —— 一旦 display:none，
+       scrollTop 立刻被清零，之后就再也读不回原来的值了 */
+    if (main && curPane && curPane !== id) paneScroll[curPane] = main.scrollTop;
     document.querySelectorAll(".tabs button").forEach((x) => x.classList.remove("on"));
     document.querySelectorAll(".pane").forEach((x) => x.classList.remove("on"));
     b.classList.add("on");
     const pane = document.querySelector(`.pane[data-pane="${id}"]`);
     if (pane) pane.classList.add("on");
+    /* 新栏已经是 display:block，赋 scrollTop 才会被采纳；内容比记忆值短时浏览器
+       自己会夹到最大值，不用额外判断 */
+    if (main) main.scrollTop = paneScroll[id] || 0;
+    curPane = id;
     const btns = [...tabsBar.querySelectorAll("button[data-tab]")];
     tabsBar.style.setProperty("--i", btns.indexOf(b));
     return true;
@@ -452,6 +467,203 @@
     }
   }
 
+  /* 拖拽排序的落点计算 —— 整块装饰栏都接 drop。
+     2026-11-05 作者反馈「只有缩略图那一列能放，拖到别处变 🚫」。实测：卡片内部
+     任意一点都能接（dragover 有 preventDefault），真正拒收的是卡片之间那 10px
+     缝、列表下方空白和工具栏 —— 那些地方没人 preventDefault，Chromium 就画 🚫。
+     所以把 dragover/drop 提到「栏」这一级，落点按 Y 坐标算，缝里也能放。 */
+  let decDragSrc = -1;
+  let decDragTo = -1;
+  /* 让位幅度。8px 太含蓄 —— 作者 2026-11-06「空出的空间再大一点」。
+     这里只做视觉位移、不改布局，向下让一整格会盖住下一张，16px 是
+     「卡间距 10 + 明显多出 6」的观感，且永远不会把自己叠到别人身上。 */
+  const LC_DEC_SHIFT_PX = 16;
+  /* 拖到视口边缘的自动滚动参数。Chromium 对 popup 里这种自定义滚动容器
+     不触发原生 autoscroll —— 作者 2026-11-06：顶部的装饰图想移到下面，
+     只能拖出可视区、手动滚滚动条、再拖回来，非常折磨。
+     边缘按「窗口视口」算，不是按列表 rect —— 探针实测 #dec-list 高 998
+     就等于内容高、底部在视口外 1186px，拿它的边当触发线永远够不着。 */
+  const LC_DEC_EDGE_PX = 36;   // 距视口上/下边多少像素内开始滚
+  const LC_DEC_MIN_SPEED = 2;  // 每 tick 至少 2px，刚进带里也能看出来在动
+  const LC_DEC_MAX_SPEED = 10; // 每 tick（16ms）最多滚 10px ≈ 600px/s 封顶
+  /* 每张卡当前的让位位移。translateY 会污染 getBoundingClientRect，
+     不扣掉的话判定点跟着卡片一起漂，形成「越让越早切」的正反馈。 */
+  let decShiftY = [];
+
+  function lcDecCards() {
+    const list = $("dec-list");
+    return list ? Array.from(list.querySelectorAll(":scope > div")) : [];
+  }
+  /* 越过某张卡的中线就插到它前面；越过最后一张就并到末尾。
+     rect 要减去我们自己加的位移，还原成「没让位时的布局位置」再比较。
+
+     关键在返回值：splice 是「先摘掉源卡、再按这个下标插回去」，
+     所以下标要换成摘掉之后的口径 —— 源卡后面的卡整体减 1。
+     不换算的话，拖回「自己原位和下一张之间」会被当成「插到下一张之后」，
+     下一张平白往下让出一格（作者 2026-11-06：「图1 本来就在图2 上面，
+     图2 还是往下空出一点」）。源卡自己不必特殊处理：它落在 i===src 时
+     `i > src` 不成立，返回的就是 src，正好是原位。 */
+  function lcDecIdxAt(clientY) {
+    const cards = lcDecCards();
+    const src = decDragSrc;
+    for (let i = 0; i < cards.length; i++) {
+      const r = cards[i].getBoundingClientRect();
+      const dy = decShiftY[i] || 0;
+      if (clientY < r.top - dy + r.height / 2) {
+        return src >= 0 && i > src ? i - 1 : i;
+      }
+    }
+    return Math.max(0, cards.length - 1);
+  }
+  /* 让位方向：永远是「插入点及之后的卡整体下移」，空档就出现在 target
+     那张卡的上方 —— 也就是手指落点。旧版按 src/target 大小分了两支、
+     分别上移/下移，结果拖到卡3前时空档长在卡3下面（作者 2026-11-06 实测
+     「移动到 2、3 中间时反而在图3下面空出空间」）。方向只跟 target 有关，
+     跟从哪儿拖来无关，一支就够。
+     target 是「摘掉源卡之后」的下标，所以比较前也要换算过去（pos）。 */
+  function lcDecShift(target) {
+    const cards = lcDecCards();
+    decShiftY = cards.map((_, i) => {
+      if (target === decDragSrc) return 0; // 落回原位：没有空档可让，全部收干净
+      if (i === decDragSrc) return 0;      // 正在拖的那张本体不动
+      const pos = i < decDragSrc ? i : i - 1;
+      return pos >= target ? LC_DEC_SHIFT_PX : 0;
+    });
+    cards.forEach((c, i) => {
+      c.style.transform = decShiftY[i] ? `translateY(${decShiftY[i]}px)` : "";
+    });
+  }
+  function lcDecClearShift() {
+    const cards = lcDecCards();
+    decShiftY = cards.map(() => 0);
+    cards.forEach((c) => {
+      c.style.transition = "";
+      c.style.transform = "";
+    });
+  }
+  /* 找真正在滚的那个元素。装饰栏自己并不滚 —— 探针实测（2026-11-06）：
+     8 张卡时 #dec-list 高度 998 = 内容高、overflow:visible，
+     `list.scrollTop = 120` 读回 0，全是空操作；真正滚的是外层容器，
+     弹窗里就是文档本身。此前直接给 #dec-list 赋 scrollTop，所以
+     「从上往下勉强动一点、从下往上几乎不动」—— 往下那点动是 Chromium
+     自己的窗口级 autoscroll 在兜底，向上它基本不管。
+     从 list 自己开始往上找：将来布局改成列表内滚，这里也不用改。 */
+  function lcDecScroller() {
+    const list = $("dec-list");
+    if (!list) return null;
+    for (let el = list; el; el = el.parentElement) {
+      if (el.scrollHeight > el.clientHeight + 1) {
+        const oy = getComputedStyle(el).overflowY;
+        if (oy === "auto" || oy === "scroll") return el;
+      }
+    }
+    return document.scrollingElement || document.documentElement || null;
+  }
+  /* 统一入口：算出当前落点，变了就让位。dragover 和自动滚动共用，
+     保证滚动把卡片推上来之后空档也跟着重新长位置。 */
+  function lcDecUpdateTarget(clientY) {
+    const t = lcDecIdxAt(clientY);
+    if (t !== decDragTo) {
+      decDragTo = t;
+      lcDecShift(t);
+    }
+  }
+  /* 边缘自动滚动：鼠标停在视口上/下 LC_DEC_EDGE_PX 内就一直滚，
+     速度按「越过边缘的深度」递增（刚碰到 2px/tick，深处封顶 10px/tick）。
+     滚完立刻重算让位 —— 否则卡片都滚上来了，空档还钉在原地。 */
+  let decAutoTimer = 0;
+  let decLastY = 0;
+  let decLastX = 0;
+  /* 指针还在不在装饰栏里。每帧直接问 elementFromPoint，而不是「多久没收到
+     dragover 就认为走了」—— 后者赌的是「鼠标不动时浏览器仍会周期性补发
+     dragover」这个实现细节，一旦不补发，滚半秒就自己停了。 */
+  function lcDecPointerInPane() {
+    const list = $("dec-list");
+    const pane = list && (list.closest(".pane") || list);
+    if (!pane || (!decLastX && !decLastY)) return false;
+    if (typeof document.elementFromPoint !== "function") return true; // 老环境退回「收到过就算在」
+    const el = document.elementFromPoint(decLastX, decLastY);
+    return !!(el && pane.contains(el));
+  }
+  function lcDecAutoTick() {
+    if (decDragSrc === -1) { lcDecAutoStop(); return; }
+    if (!lcDecPointerInPane()) return; // 指针拖出这一栏了，别拿着旧坐标空转
+    const sc = lcDecScroller();
+    if (!sc) return;
+    const de = document.documentElement;
+    const isDoc = !de || sc === de || sc === document.body;
+    const vh = window.innerHeight || (de && de.clientHeight) || 0;
+    /* 触发带要按「容器矩形 ∩ 视口」算：main#panes 高 431、底边可能落到窗口
+       可视范围之外（探针实测 600 vs 视口 504），直接用 rect.bottom 又是够不着。 */
+    let top = 0;
+    let bottom = vh;
+    if (!isDoc) {
+      const rr = sc.getBoundingClientRect();
+      top = Math.max(rr.top, 0);
+      bottom = vh ? Math.min(rr.bottom, vh) : rr.bottom;
+    }
+    let d = 0;
+    if (decLastY < top + LC_DEC_EDGE_PX) {
+      d = -Math.min(LC_DEC_MAX_SPEED,
+                    Math.max(LC_DEC_MIN_SPEED, Math.ceil(top + LC_DEC_EDGE_PX - decLastY)));
+    } else if (decLastY > bottom - LC_DEC_EDGE_PX) {
+      d = Math.min(LC_DEC_MAX_SPEED,
+                   Math.max(LC_DEC_MIN_SPEED, Math.ceil(decLastY - (bottom - LC_DEC_EDGE_PX))));
+    }
+    if (!d) return;
+    const max = sc.scrollHeight - sc.clientHeight;
+    const next = Math.max(0, Math.min(max, sc.scrollTop + d));
+    if (next === sc.scrollTop) return; // 已经滚到头
+    sc.scrollTop = next;
+    if (decDragTo !== -1) lcDecUpdateTarget(decLastY);
+  }
+  function lcDecAutoStart() {
+    if (!decAutoTimer) decAutoTimer = setInterval(lcDecAutoTick, 16);
+  }
+  function lcDecAutoStop() {
+    if (decAutoTimer) { clearInterval(decAutoTimer); decAutoTimer = 0; }
+  }
+  function lcDecOnOver(e) {
+    if (decDragSrc === -1) return; // 不是内部拖动（比如拖文件进来）就别接
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    decLastY = e.clientY;
+    decLastX = e.clientX;
+    lcDecAutoStart();
+    lcDecUpdateTarget(e.clientY);
+  }
+  function lcDecOnLeave(e) {
+    if (decDragSrc === -1) return;
+    /* 在卡片之间移动也会触发 dragleave，真正离开这一栏才把位移收回去。
+       注意这里**不能停表**：滚动会让指针下的元素换手、反复触发 dragleave，
+       一停就再也没人重启 —— 那正是「往上几乎一点也动不了」的直接原因。
+       指针真离开窗口时靠 lcDecAutoTick 里的 900ms 失联判定兜住。 */
+    const pane = e.currentTarget;
+    if (e.relatedTarget && pane.contains(e.relatedTarget)) return;
+    decDragTo = decDragSrc;
+    lcDecShift(decDragSrc);
+  }
+  function lcDecOnDrop(e) {
+    if (decDragSrc === -1) return;
+    e.preventDefault();
+    lcDecAutoStop();
+    const fromIdx = decDragSrc;
+    const toIdx = lcDecIdxAt(e.clientY);
+    decDragSrc = -1;
+    decDragTo = -1;
+    const list = $("dec-list");
+    if (list) list.classList.remove("lc-dec-dragging");
+    lcDecClearShift();
+    if (fromIdx === toIdx) return;
+    const item = state.decorations.splice(fromIdx, 1)[0];
+    state.decorations.splice(toIdx, 0, item);
+    state.decorations.forEach((dec, i) => {
+      dec.zIndex = state.decorations.length - i;
+    });
+    renderDecorations();
+    save();
+  }
+
   /* 渲染装饰物列表 */
   function renderDecorations() {
     const list = $("dec-list");
@@ -537,19 +749,20 @@
 
     arr.forEach((dec, idx) => {
       const card = document.createElement("div");
-      card.style.cssText = "border:1px solid var(--lc-line);border-radius:8px;padding:10px;background:var(--lc-soft);";
+      card.className = "lc-dec-card";
+      card.style.cssText = "border:1px solid var(--lc-line);border-radius:8px;padding:8px;background:var(--lc-soft);";
       const ia = dec.interactive;
       const isOpen = card.dataset.interactiveOpen === "true";
 
       card.innerHTML = `
         <div style="display:flex;gap:10px;align-items:flex-start;">
-          <img data-lc-pv="${lcEscHtml(dec.dataUrl || "")}" src="${lcEscHtml(pvOf(dec.dataUrl))}" style="width:52px;height:52px;object-fit:contain;border-radius:6px;flex-shrink:0;background:repeating-conic-gradient(rgba(128,128,128,.18) 0 25%,transparent 0 50%) 0 0/12px 12px,rgba(128,128,128,.08);" />
+          <span class="lc-dec-thumb"><img data-lc-pv="${lcEscHtml(dec.dataUrl || "")}" src="${lcEscHtml(pvOf(dec.dataUrl))}" style="width:100%;height:100%;object-fit:contain;border-radius:6px;display:block;background:repeating-conic-gradient(rgba(128,128,128,.18) 0 25%,transparent 0 50%) 0 0/12px 12px,rgba(128,128,128,.08);" /></span>
           <div style="flex:1;min-width:0;">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
               <span style="font-size:12px;color:var(--lc-text);font-weight:500;">装饰 #${idx + 1}</span>
-              <button class="btn" data-del="${idx}" style="padding:2px 8px;font-size:11px;flex-shrink:0;">删除</button>
+              <button class="btn" data-del="${idx}" style="padding:1px 8px;font-size:11px;flex-shrink:0;">删除</button>
             </div>
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
               <button type="button" class="lc-pill ${dec.enabled !== false ? 'on' : 'off'}" data-idx="${idx}" data-key="enabled"><i class="lc-dot"></i>显示</button>
               <button type="button" class="lc-pill ${dec.aboveCards ? 'on' : 'off'}" data-idx="${idx}" data-key="aboveCards"><i class="lc-dot"></i>覆盖卡片</button>
             </div>
@@ -561,9 +774,9 @@
           </div>
         </div>
         <!-- 互动效果展开栏：右侧总开关，关着时面板不可展开 -->
-        <div style="margin-top:8px;border-top:1px solid var(--lc-line);padding-top:6px;">
+        <div style="margin-top:7px;border-top:1px solid var(--lc-line);padding-top:5px;">
           <div style="display:flex;align-items:center;gap:6px;">
-            <button class="btn" data-toggle-ia="${idx}" type="button" ${ia.enabled ? '' : 'disabled'} style="padding:4px 0;font-size:12px;color:${ia.enabled ? 'var(--lc-accent)' : 'var(--lc-sub)'};background:transparent;border:none;text-align:left;display:flex;align-items:center;gap:4px;cursor:${ia.enabled ? 'pointer' : 'default'};flex:1;min-width:0;">
+            <button class="btn" data-toggle-ia="${idx}" type="button" ${ia.enabled ? '' : 'disabled'} style="padding:2px 0;font-size:12px;color:${ia.enabled ? 'var(--lc-accent)' : 'var(--lc-sub)'};background:transparent;border:none;text-align:left;display:flex;align-items:center;gap:4px;cursor:${ia.enabled ? 'pointer' : 'default'};flex:1;min-width:0;">
               <span data-arrow="${idx}" style="display:inline-block;transition:transform 0.2s;${isOpen && ia.enabled ? 'transform:rotate(90deg);' : ''}">▶</span>
               <span>互动效果</span>
             </button>
@@ -839,78 +1052,67 @@
       });
     });
 
-    // 拖拽排序：只在缩略图上触发，带视觉反馈
-    let dragSrcIdx = -1;
+    // 拖拽排序：起拖只认缩略图；落点整块装饰栏都接（见 lcDecOnOver）
+    lcDecCards().forEach((card, idx) => {
+      card.dataset.sortIdx = idx;
+      const thumb = card.querySelector("img[src]");
+      if (!thumb) return;
+      thumb.draggable = true;
+      thumb.style.cursor = "grab";
+      thumb.title = "拖拽调整图层顺序";
+      thumb.addEventListener("dragstart", (e) => {
+        decDragSrc = idx;
+        decDragTo = idx;
+        decShiftY = lcDecCards().map(() => 0); // 上一轮若没收干净，先抹平，别把位移带进判定
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", idx);
+        /* 虚影用整张卡片，不是那 52px 缩略图：拖起来得能看出「我要把这一整条
+           挪到那儿」，只飘一张小图不知道自己在搬什么（2026-11-05 作者提出）。
+           抓取点按鼠标在卡片内的相对位置给，虚影不会突然跳到鼠标左上角。 */
+        const cr = card.getBoundingClientRect();
+        try {
+          e.dataTransfer.setDragImage(
+            card,
+            Math.round(e.clientX - cr.left),
+            Math.round(e.clientY - cr.top)
+          );
+        } catch (_) { /* 不支持自定义拖拽图的环境退回默认 */ }
+        /* 源卡变淡要推到下一帧：drag image 是 dragstart 返回之后才截的，
+           当场改 opacity 会把「正在拖的这一张」也一起截成半透明。
+           复核一次 decDragSrc，万一这一帧里拖拽已经被取消，别留下一张永久半透明的卡 */
+        setTimeout(() => {
+          if (decDragSrc === idx) card.classList.add("lc-dec-src");
+        }, 0);
+        thumb.style.cursor = "grabbing";
+        list.classList.add("lc-dec-dragging");
+        lcDecCards().forEach((c) => {
+          if (c !== card) c.style.transition = "transform 0.2s ease";
+        });
+      });
+      thumb.addEventListener("dragend", () => {
+        decDragSrc = -1;
+        decDragTo = -1;
+        lcDecAutoStop(); // 拖出窗口松手只走 dragend 不走 drop，表得在这里停
+        card.classList.remove("lc-dec-src");
+        thumb.style.cursor = "grab";
+        list.classList.remove("lc-dec-dragging");
+        lcDecClearShift();
+      });
+    });
+
+    /* 落点挂在整栏上：卡片之间的缝、列表下方空白、工具栏都接得住，
+       不再拖到卡片外就一路 🚫。renderDecorations 会重跑，所以先摘再挂，
+       保证只有一个监听器（函数是固定引用，重复 add 不会叠加）。 */
+    const decPane = list.closest(".pane") || list;
+    decPane.removeEventListener("dragover", lcDecOnOver);
+    decPane.removeEventListener("dragleave", lcDecOnLeave);
+    decPane.removeEventListener("drop", lcDecOnDrop);
+    decPane.addEventListener("dragover", lcDecOnOver);
+    decPane.addEventListener("dragleave", lcDecOnLeave);
+    decPane.addEventListener("drop", lcDecOnDrop);
+
     list.querySelectorAll(':scope > div').forEach((card, idx) => {
       card.dataset.sortIdx = idx;
-      const thumb = card.querySelector('img[src]');
-      if (thumb) {
-        thumb.draggable = true;
-        thumb.style.cursor = 'grab';
-        thumb.title = '拖拽调整图层顺序';
-        thumb.addEventListener('dragstart', (e) => {
-          dragSrcIdx = idx;
-          e.dataTransfer.effectAllowed = 'move';
-          e.dataTransfer.setData('text/plain', idx);
-          card.style.opacity = '0.4';
-          thumb.style.cursor = 'grabbing';
-          list.querySelectorAll(':scope > div').forEach(c => {
-            if (c !== card) c.style.transition = 'transform 0.2s ease';
-          });
-        });
-        thumb.addEventListener('dragend', () => {
-          dragSrcIdx = -1;
-          card.style.opacity = '';
-          thumb.style.cursor = 'grab';
-          list.querySelectorAll(':scope > div').forEach(c => {
-            c.style.transition = '';
-            c.style.transform = '';
-          });
-        });
-      }
-      card.addEventListener('dragenter', (e) => {
-        e.preventDefault();
-        if (dragSrcIdx === -1 || dragSrcIdx === idx) return;
-        const allCards = Array.from(list.querySelectorAll(':scope > div'));
-        allCards.forEach((c, i) => {
-          if (i === dragSrcIdx) return;
-          if (dragSrcIdx < idx) {
-            if (i > dragSrcIdx && i <= idx) {
-              c.style.transform = 'translateY(-8px)';
-            } else {
-              c.style.transform = '';
-            }
-          } else {
-            if (i >= idx && i < dragSrcIdx) {
-              c.style.transform = 'translateY(8px)';
-            } else {
-              c.style.transform = '';
-            }
-          }
-        });
-      });
-      card.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-      });
-      card.addEventListener('drop', (e) => {
-        e.preventDefault();
-        const fromIdx = dragSrcIdx;
-        const toIdx = idx;
-        dragSrcIdx = -1;
-        list.querySelectorAll(':scope > div').forEach(c => {
-          c.style.transition = '';
-          c.style.transform = '';
-        });
-        if (fromIdx === -1 || fromIdx === toIdx) return;
-        const item = state.decorations.splice(fromIdx, 1)[0];
-        state.decorations.splice(toIdx, 0, item);
-        state.decorations.forEach((dec, i) => {
-          dec.zIndex = state.decorations.length - i;
-        });
-        renderDecorations();
-        save();
-      });
 
       // 呼吸模式下拉框（off = 关闭浮动呼吸，总开关仍开着，点击挤压照旧）
       list.querySelectorAll('select[data-ia-key="breatheMode"]').forEach(select => {
