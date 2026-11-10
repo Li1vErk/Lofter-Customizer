@@ -6384,8 +6384,12 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
             names.push(n);
           }
         });
-        /* 顺手写镜像：评论区过滤在任意帧读 storage，不依赖本帧能否调 DWR */
-        if (names.length) {
+        /* 顺手写镜像：评论区过滤在任意帧读 storage，不依赖本帧能否调 DWR。
+         * 判据是「读到的是数组」而非「读到非空」：换账号时新账号的黑名单可能
+         * 是空的，空数组也得覆盖 —— 否则镜像留着上一个账号的名单，评论照旧
+         * 被隐藏（2026-11-10 多账号反馈）。未登录回的是 null，不是数组，
+         * 那时不写：退出登录后评论过滤仍按上次同步的名单工作。 */
+        if (Array.isArray(raw)) {
           try {
             chrome.storage.local.set(
               {

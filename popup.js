@@ -2252,6 +2252,12 @@
      「0 人」⇒ 用户看到的失败其实是假的 0 人（2026-10-23 真机反馈暴露） */
   let lcOfficialErr = null;
   let lcOfficialRetried = false; /* 首次失败自动重试一次，只一次 */
+  /* 登录态（2026-11-10 未登录真机暴露）：DWR 对**受保护接口**在未登录时
+   * 不报错，而是回 `_remoteHandleCallback('id','0',null)` —— 解析出来是 null。
+   * 以前它落进「0 人（异常）+ 原始回复片段」，把开发态文案端给了用户；
+   * 更糟的是 addBlacklist 未登录时回 `{id:-1000,blogInfo:null,...}` 的空壳，
+   * 被当成加成功 ⇒ 列表里多一条破图、刷新就没了。所以单独记一档 auth。 */
+  let lcOfficialAuth = "unknown"; /* unknown | ok | login */
 
   /* 卡片模式：同一张卡、同一个输入框，在「拉黑用户（官方 DWR）」与
    * 「屏蔽 tag（本地 filter.tags）」间切换——两个名单的日常管理动作
@@ -2307,9 +2313,11 @@
     if (lcOffMode === "tag") return;
     $("official-count").textContent = lcOfficialLoading
       ? "读取中…"
-      : lcOfficialErr
-        ? "读取失败"
-        : lcOfficialList.length + " 人";
+      : lcOfficialAuth === "login"
+        ? "未登录"
+        : lcOfficialErr
+          ? "读取失败"
+          : lcOfficialList.length + " 人";
     const toggleBtn = $("official-toggle");
     if (toggleBtn) toggleBtn.textContent = lcOfficialExpanded ? "收起" : "展开";
     if (!lcOfficialExpanded) {
@@ -2319,6 +2327,12 @@
     }
     box.style.display = "";
     if (lcOfficialLoading) return;
+    if (lcOfficialAuth === "login") {
+      box.innerHTML = `<p class="hint" style="margin:0;">请先登录 LOFTER 再管理黑名单（未登录时官方接口读不到名单，也写不进去）。<br>` +
+        `登录后点<button class="lc-link" data-official-retry type="button" style="font-size:12px;padding:0 2px;">重试</button>` +
+        `即可。</p>`;
+      return;
+    }
     if (lcOfficialErr) {
       /* 给明确出口：真机上首次打开面板常因 DWR 会话未就绪而失败，重开面板就好 ⇒
          自动重试一次（见 lcOfficialRefresh），仍失败再让用户手动点 */
@@ -2715,34 +2729,50 @@
         "number:200",
         "number:0",
       ]);
-      /* 正常应是条目数组；若服务端包了一层对象，取第一个数组型属性兜底 */
-      let arr = raw;
-      if (!Array.isArray(arr) && arr && typeof arr === "object") {
-        const cand = Object.values(arr).find((v) => Array.isArray(v));
-        if (cand) arr = cand;
-      }
-      lcOfficialList = (Array.isArray(arr) ? arr : [])
-        .filter((e) => e && typeof e === "object")
-        .map((e) => ({
-          id: e.id,
-          blogId: e.blacklistBlogId,
-          blogName: (e.blogInfo && e.blogInfo.blogName) || "",
-          nick: (e.blogInfo && e.blogInfo.blogNickName) || "",
-          ava: (e.blogInfo && e.blogInfo.bigAvaImg) || "",
-          home: (e.blogInfo && e.blogInfo.homePageUrl) || "",
-        }));
-      if (!lcOfficialList.length) {
-        /* 官方页明明有成员但这里读到空：多半是回复形态和抓包样本不符，
-         * 把原始回复片段亮出来方便定位（强制展开列表，收起时看不到） */
-        const rawSnap = String(LC_dwrCall.lastRaw || "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 260);
-        $("official-count").textContent = "0 人（异常）";
-        $("official-list").style.display = "";
-        $("official-list").innerHTML =
-          `<p class="hint" style="margin:0;">接口成功但未解析到成员。原始回复片段：<br><code style="word-break:break-all;font-size:10px;">${lcOfficialEsc(rawSnap) || "(空)"}</code></p>`;
-        return;
+      /* 未登录：DWR 不报错，回 `_remoteHandleCallback('batch','0',null)`，
+       * LC_dwrParse 解析出来就是 null（curl 实证，test-dwr 有样本）。
+       * 登录后的空名单回的是 `[],{}` 一串 ⇒ 解析成空对象 {}，不是 null。 */
+      const nullReply = raw === null || raw === undefined;
+      if (nullReply) {
+        lcOfficialAuth = "login";
+        lcOfficialList = [];
+        lcOfficialErr = null;
+      } else {
+        lcOfficialAuth = "ok";
+        /* 正常应是条目数组；若服务端包了一层对象，取第一个数组型属性兜底。
+         * 另一个实测形态（2026-11-10）：**空名单**回的是 `[],{},{}` 这一串，
+         * 解析出来是个**空对象** {} —— 不归一成 [] 的话会被当成「解析失败（异常）」。
+         * 三种回执由此分得清：null = 未登录、{} = 名单为空、数组 = 有成员。 */
+        let arr = raw;
+        if (!Array.isArray(arr) && arr && typeof arr === "object") {
+          const cand = Object.values(arr).find((v) => Array.isArray(v));
+          if (cand) arr = cand;
+          else if (!Object.keys(arr).length) arr = [];
+        }
+        lcOfficialList = (Array.isArray(arr) ? arr : [])
+          .filter((e) => e && typeof e === "object")
+          .map((e) => ({
+            id: e.id,
+            blogId: e.blacklistBlogId,
+            blogName: (e.blogInfo && e.blogInfo.blogName) || "",
+            nick: (e.blogInfo && e.blogInfo.blogNickName) || "",
+            ava: (e.blogInfo && e.blogInfo.bigAvaImg) || "",
+            home: (e.blogInfo && e.blogInfo.homePageUrl) || "",
+          }));
+        if (!lcOfficialList.length && !Array.isArray(arr)) {
+          /* 不是 null、也不是数组：回复形态和抓包样本不符（改版？）。
+           * 把原始回复片段亮出来方便定位（强制展开列表，收起时看不到） */
+          const rawSnap = String(LC_dwrCall.lastRaw || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 260);
+          $("official-count").textContent = "0 人（异常）";
+          $("official-list").style.display = "";
+          $("official-list").innerHTML =
+            `<p class="hint" style="margin:0;">接口成功但未解析到成员。原始回复片段：<br><code style="word-break:break-all;font-size:10px;">${lcOfficialEsc(rawSnap) || "(空)"}</code></p>`;
+          return;
+        }
+        /* 数组（可能为空）⇒ 空名单就是真的空，渲染层会写「黑名单为空。」 */
       }
     } catch (err) {
       lcOfficialErr = (err && err.message) || String(err);
@@ -2763,11 +2793,17 @@
     }
     lcOfficialRetried = false;
     renderOfficialList();
-    lcOfficialPersist();
+    /* 未登录时**不清镜像**：退出登录后没人再刷新它，清了评论过滤就跟着失效了 */
+    if (lcOfficialAuth !== "login") lcOfficialPersist();
   }
 
-  /* 拉黑是对方可感知的强动作：两段式确认（第一次点变成「确认拉黑？」，3 秒内再点才执行）。
-   * tag 屏蔽是本地可逆操作：不确认，一键生效（面板/页面都可随时移除） */
+  /* 两段确认（第一次点变成「确认…？」，3 秒内再点才执行）只给两类动作：
+   *   ①「拿走」服务端名单里的东西 —— 删 / 降级 / 升格。少了一条不像多了一条
+   *     那么显眼，而且手机上会跟着变，撤不回来得再写一次；
+   *   ②「对人」—— 拉黑 / 移出拉黑。对象是真人，成员列表又默认收起，拉错了
+   *     当场看不见。
+   * 只动本机的（本地 tag 增删）和「往里加」一律一键：结果就出现在紧挨着的
+   * 列表里，错了点一下「移除」即可，多一次点击只是仪式。 */
   on("official-add-btn", "click", async (e) => {
     if (lcOffMode === "tag") {
       lcTagAdd();
@@ -2793,9 +2829,27 @@
     btn.textContent = "拉黑中…";
     btn.disabled = true;
     try {
+      /* 写前现读（与 tag 段同一条规矩）：面板打开时读到的登录态可能已经过期
+       * —— 用户可能刚在别处登录/退出，拿旧判断拦人或放行都会错 */
+      await lcOfficialRefresh(true);
+      if (lcOfficialAuth === "login") {
+        lcOfficialToast("拉黑没有生效：请先登录 LOFTER");
+        return;
+      }
       const entry = await lcDwr("addBlacklist", ["string:" + name, "number:0"]);
+      /* 未登录时 addBlacklist **不报错**，而是回一个空壳：
+       *   {blacklistBlogId:0, blogInfo:null, createTime:0, id:-1000, userId:0}
+       * （2026-11-10 curl 实证）。以前 `entry.id` 为 -1000 也算真值 ⇒ 当成拉黑成功，
+       * 列表里多出一条没有头像、昵称退回输入的破图，刷新就没了。
+       * 现在以「真条目」为准：id 是正数且带 blogInfo 才算加上了。 */
+      const realEntry = !!(entry && Number(entry.id) > 0 && entry.blogInfo);
+      if (!realEntry) {
+        renderOfficialList();
+        lcOfficialToast("拉黑没有生效，请重试");
+        return;
+      }
       let toastName = name;
-      if (entry && entry.id) {
+      {
         const bi = entry.blogInfo || {};
         toastName = bi.blogNickName || bi.blogName || name;
         lcOfficialList.push({
@@ -2807,8 +2861,6 @@
           home: bi.homePageUrl || "",
         });
         renderOfficialList();
-      } else {
-        await lcOfficialRefresh();
       }
       /* 绿色「已拉黑 xxx」闪现数秒，方便确认没拉错人；要细看就展开列表 */
       lcOfficialToast("已拉黑 " + toastName);

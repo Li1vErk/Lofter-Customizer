@@ -112,9 +112,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, state: 'error', tags: [], reason: 'HTTP ' + r.status, status: r.status });
         return;
       }
-      /* 跳登录页时 status 仍是 200（服务端 302 后跟到底），靠 classify 的特征词分辨 */
+      /* 跳登录页时 status 仍是 200（服务端 302 后跟到底），靠 classify 分辨；
+         最终 URL 是最可靠的判据（登录页正文是 JS 壳，认不出字） */
       r.text().then((html) => {
-        const c = T.classify(html);
+        const c = T.classify(html, { url: r.url });
         const out = { ok: c.state === 'ok', state: c.state, tags: c.tags, limit: T.LIMIT, status: r.status, url: r.url };
         if (c.reason) out.reason = c.reason;
         sendResponse(out);

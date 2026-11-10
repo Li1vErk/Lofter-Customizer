@@ -149,10 +149,24 @@
     return { ok: false, reason: /forbidTags/.test(s) ? "unclosed" : "no-key" };
   }
 
+  /* 未登录时服务端把受保护页 302 到 https://www.lofter.com/front/login
+   * （2026-11-10 未登录真机 + curl 两路取证）。这个判据必须**排在内容判据前面**：
+   * 登录页是个 JS 壳 —— 正文里没有「登录」二字、没有 password、也没有
+   * textarea[name=js]，任何靠内容特征的判断都会把它归成「页面改版」，
+   * 于是用户看到「官方页面形态可能已变化」这种开发态文案（作者 2026-11-10 报的就是这个）。 */
+  function isLoginUrl(u) {
+    var s = String(u || "");
+    return (
+      /\/front\/login(\/|\?|#|$)/i.test(s) ||
+      /(^|\/\/|\.)login\.lofter\.com(\/|\?|#|$)/i.test(s)
+    );
+  }
+
   /* 三态：「改版了」和「没登录」必须分开报 —— 前者是插件该修，后者是用户该登录，
    * 混成一句话会让两边都往错的方向猜（黑名单卡 2026-10-23 就踩过失败态被盖成 0 人）。 */
-  function classify(html) {
+  function classify(html, opt) {
     var s = String(html || "");
+    if (isLoginUrl(opt && opt.url)) return { state: "login", tags: [] };
     var ex = extractForbidTags(s);
     if (ex.ok) return { state: "ok", tags: ex.tags };
     if (/id="loginForm"|name="password"|请先登录|login\.lofter\.com|passport\./i.test(s)) {
@@ -191,6 +205,7 @@
     toTag: toTag,
     scanArray: scanArray,
     extractForbidTags: extractForbidTags,
+    isLoginUrl: isLoginUrl,
     classify: classify,
     fetchList: fetchList,
   };
