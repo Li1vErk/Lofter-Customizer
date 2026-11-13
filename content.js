@@ -6242,16 +6242,11 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
           e.preventDefault();
           e.stopPropagation();
           if (!name) return;
-          if (!settings.filter) settings.filter = LC_clone(LC_DEFAULTS.filter);
-          if (!Array.isArray(settings.filter.tags)) settings.filter.tags = [];
-          if (
-            settings.filter.tags.some(
-              (t) => String(t).toLowerCase() === name.toLowerCase(),
-            )
-          ) {
+          const tb = lcBucket(settings).tags;
+          if (tb.some((t) => String(t).toLowerCase() === name.toLowerCase())) {
             return;
           }
-          settings.filter.tags.push(name);
+          tb.push(name);
           filterPersist();
           applyFilter();
         },
@@ -6313,14 +6308,13 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         (e) => {
           e.preventDefault();
           e.stopPropagation();
-          if (!settings.filter) settings.filter = LC_clone(LC_DEFAULTS.filter);
-          if (!Array.isArray(settings.filter.tags)) settings.filter.tags = [];
-          const i = settings.filter.tags.findIndex(
+          const tb = lcBucket(settings).tags;
+          const i = tb.findIndex(
             (t) => String(t).toLowerCase() === tagName.toLowerCase(),
           );
           const blocked = i >= 0;
-          if (blocked) settings.filter.tags.splice(i, 1);
-          else settings.filter.tags.push(tagName);
+          if (blocked) tb.splice(i, 1);
+          else tb.push(tagName);
           filterPersist();
           applyFilter();
         },
@@ -6343,7 +6337,7 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       } catch (e2) {}
       lcTagPageBtn = btn;
     }
-    const want = (settings.filter.tags || []).some(
+    const want = lcBucket(settings).tags.some(
       (t) => String(t).toLowerCase() === tagName.toLowerCase(),
     )
       ? "1"
@@ -6423,13 +6417,9 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         (e) => {
           e.preventDefault();
           e.stopPropagation();
-          if (!settings.filter) settings.filter = LC_clone(LC_DEFAULTS.filter);
-          if (!Array.isArray(settings.filter.users)) settings.filter.users = [];
-          if (settings.filter.users.some((u) => u.id === author.id)) return;
-          settings.filter.users.push({
-            id: author.id,
-            name: author.name || author.id,
-          });
+          const ub = lcBucket(settings).users;
+          if (ub.some((u) => u.id === author.id)) return;
+          ub.push({ id: author.id, name: author.name || author.id });
           filterPersist();
           applyFilter();
         },
@@ -6465,13 +6455,9 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
            * 分支里什么都不写，表现为「点了拉黑，帖子与评论照旧可见」
            * （2026-09-21 实测：屏蔽名单为空）。本地先写入后，无论官方
            * 是否成功，帖子与评论都立刻不再显示；官方失败也不回滚。 */
-          if (!settings.filter) settings.filter = LC_clone(LC_DEFAULTS.filter);
-          if (!Array.isArray(settings.filter.users)) settings.filter.users = [];
-          if (!settings.filter.users.some((u) => u.id === author.id)) {
-            settings.filter.users.push({
-              id: author.id,
-              name: author.name || author.id,
-            });
+          const ub = lcBucket(settings).users;
+          if (!ub.some((u) => u.id === author.id)) {
+            ub.push({ id: author.id, name: author.name || author.id });
             filterPersist();
           }
           applyFilter();
@@ -6511,6 +6497,15 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
 
   /* 卡片上点「隐藏」后把 users 写回 storage；走 get→merge→set，
    * 避免覆盖 popup 同时写入的其它字段。onChanged 会再触发 applyAll。 */
+  /* 当前账号的名单容器（按 uid 分桶，见 lc-uid.js）。
+   * 2026-11-13：本地名单从「一份」改成「一个账号一份」—— 同一浏览器上
+   * 轮流登录几个号时，A 号屏蔽的词不该跟着 B 号走。开关仍在 filter 顶层，
+   * 那是「这台机器怎么表现」，不跟账号变。 */
+  function lcBucket(settingsObj) {
+    if (!settingsObj.filter) settingsObj.filter = LC_clone(LC_DEFAULTS.filter);
+    return LCUid.ensureBucket(settingsObj.filter, LCUid.uid());
+  }
+
   function filterPersist() {
     try {
       chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
@@ -6629,12 +6624,15 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       return;
     }
 
-    const kws = (f.keywords || [])
+    /* 三份名单按当前账号取（见 lc-uid.js）：同一浏览器轮流登几个号时，
+     * A 号屏蔽的词不该跟着 B 号走。开关仍取 f.enabled / f.scope。 */
+    const FL = LCUid.flat(f);
+    const kws = (FL.keywords || [])
       .map((k) => String(k).toLowerCase().trim())
       .filter(Boolean);
-    const userIds = new Set((f.users || []).map((u) => u.id));
+    const userIds = new Set((FL.users || []).map((u) => u.id));
     const tagSet = new Set(
-      (f.tags || []).map((t) => String(t).toLowerCase().trim()).filter(Boolean),
+      (FL.tags || []).map((t) => String(t).toLowerCase().trim()).filter(Boolean),
     );
     /* 全量幂等重算，不做签名早退。签名优化（规则+卡片数+标记数做指纹跳过
      * 重扫）连修三轮仍有竞态：标记数落盘时序、React 重渲染洗标记、"移除
@@ -7600,6 +7598,17 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
       window.settings = LC_migrateNav(
         LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {}),
       );
+      /* 身份证解析是异步的（www 页看全局，子域页读缓存）⇒ 拿到之后再
+       * 迁移一次老名单并按新桶重算，否则首帧会按「匿名桶」渲染，
+       * 换号后短时间内看到的是上一个账号的名单。 */
+      LCUid.resolve(() => {
+        if (window.settings && LCUid.migrate(window.settings.filter, LCUid.uid())) {
+          filterPersist();
+        }
+        try {
+          applyFilter();
+        } catch (e) {}
+      });
       // 同步全局隐藏标志
       window.decorationsGloballyHidden =
         window.settings.decorationsVisible === false;
@@ -7664,8 +7673,8 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
         filter: {
           enabled: !!f.enabled,
           scope: f.scope || null,
-          keywords: (f.keywords || []).length,
-          users: (f.users || []).length,
+          keywords: (LCUid.list(f, "keywords") || []).length,
+          users: (LCUid.list(f, "users") || []).length,
         },
         /* 评论区过滤诊断：ran=模块是否跑起来；cmti/bodies=DOM 命中数；
          * links=解析出 lofter 用户 id 的链接数；matched=命中黑名单的

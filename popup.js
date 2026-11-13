@@ -1377,12 +1377,15 @@
 
     // 关键词过滤
     const f = s.filter || LC_clone(LC_DEFAULTS.filter);
+    /* 名单是分账号的，回填前先迁老数据 + 确保当前桶存在 */
+    LCUid.migrate(f, LCUid.uid());
+    LCUid.ensureBucket(f, LCUid.uid());
     $("filter-enabled").checked = !!f.enabled;
     $("filter-scope-home").checked = !!(f.scope && f.scope.home);
     $("filter-scope-tag").checked = !!(f.scope && f.scope.tag);
     $("filter-scope-comment").checked = !!(f.scope && f.scope.comment);
     $("filter-counter").checked = f.showCounter !== false;
-    $("filter-keywords").value = (f.keywords || []).join("\n");
+    $("filter-keywords").value = LCUid.list(f, "keywords").join("\n");
     renderFilterUsers();
 
     // 官方黑名单联动
@@ -2012,17 +2015,24 @@
   function ensureFilter() {
     if (!state.filter) state.filter = LC_clone(LC_DEFAULTS.filter);
     if (!state.filter.scope) state.filter.scope = { home: true, tag: true };
-    if (!Array.isArray(state.filter.keywords)) state.filter.keywords = [];
-    if (!Array.isArray(state.filter.users)) state.filter.users = [];
-    if (!Array.isArray(state.filter.tags)) state.filter.tags = [];
+    /* 名单按账号分桶（lc-uid.js）：先迁老平铺数组，再保证当前桶存在。
+     * 开关（enabled / scope / showCounter）留在顶层 —— 那是「这台机器
+     * 怎么表现」，换号不该跟着变。 */
+    LCUid.migrate(state.filter, LCUid.uid());
+    LCUid.ensureBucket(state.filter, LCUid.uid());
     return state.filter;
+  }
+
+  /* 取当前账号的三份名单之一。写操作直接改返回的数组再 save() 即可：
+   * 它就是 state.filter.buckets[uid] 里的那个数组本体。 */
+  function lcList(kind) {
+    return LCUid.list(ensureFilter(), kind);
   }
 
   function renderFilterUsers() {
     const box = $("filter-users");
     if (!box) return;
-    const f = state.filter || LC_DEFAULTS.filter;
-    const users = f.users || [];
+    const users = lcList("users");
     $("filter-user-count").textContent = users.length + " 人";
     box.innerHTML = users.length
       ? users
@@ -2074,10 +2084,15 @@
     const n = (a) => (Array.isArray(a) ? a.length : 0);
     /* 量词短语单独过 T()：i18n 运行时是「整节点等值」匹配，运行时拼出来的
        「5 个关键词」永远匹配不上字典，所以只能整段短语进字典、数字在外面拼 */
+    /* 按当前账号数（lc-uid.js 分桶）——摘要说「3 个用户」，那 3 个就是
+     * 当前这个号看到的 3 个，不能把别的账号的名单也算进去 */
+    const kw = n(f && LCUid.list(f, "keywords"));
+    const us = n(f && LCUid.list(f, "users"));
+    const tg = n(f && LCUid.list(f, "tags"));
     const parts = [];
-    if (n(f && f.keywords)) parts.push(n(f.keywords) + " " + T("个关键词"));
-    if (n(f && f.users)) parts.push(n(f.users) + " " + T("个用户"));
-    if (n(f && f.tags)) parts.push(n(f.tags) + " " + T("个标签"));
+    if (kw) parts.push(kw + " " + T("个关键词"));
+    if (us) parts.push(us + " " + T("个用户"));
+    if (tg) parts.push(tg + " " + T("个标签"));
     return parts.length ? parts.join(" · ") : "";
   }
 
@@ -2112,8 +2127,7 @@
   on("filter-users", "click", (e) => {
     const b = e.target.closest("[data-filter-unmute]");
     if (!b) return;
-    const f = ensureFilter();
-    f.users.splice(+b.dataset.filterUnmute, 1);
+    lcList("users").splice(+b.dataset.filterUnmute, 1);
     renderFilterUsers();
     save();
   });
@@ -2126,20 +2140,19 @@
       if (area !== "local" || !changes.lc_settings_v1) return;
       const nf = changes.lc_settings_v1.newValue?.filter;
       if (!nf) return;
-      const cur = ensureFilter();
-      if (Array.isArray(nf.users)) {
-        if (JSON.stringify(cur.users) !== JSON.stringify(nf.users)) {
-          cur.users = nf.users;
-          renderFilterUsers();
-        }
+      /* 只比「当前账号那个桶」：别的账号的桶变了跟这个面板无关，
+       * 整份 JSON 比对会在换号后把别人的名单当成自己的 */
+      const nb = LCUid.ensureBucket(nf, LCUid.uid());
+      const cur = LCUid.ensureBucket(ensureFilter(), LCUid.uid());
+      if (JSON.stringify(cur.users) !== JSON.stringify(nb.users)) {
+        cur.users = nb.users;
+        renderFilterUsers();
       }
       /* 页面卡片上点 tag「屏蔽」→ 打开着的面板 tag 列表实时反映 */
-      if (Array.isArray(nf.tags)) {
-        if (JSON.stringify(cur.tags) !== JSON.stringify(nf.tags)) {
-          cur.tags = nf.tags;
-          if (lcOffMode === "tag") renderTagBlockList();
-          renderFilterFold(); /* 摘要里的标签数（两种模式都要刷） */
-        }
+      if (JSON.stringify(cur.tags) !== JSON.stringify(nb.tags)) {
+        cur.tags = nb.tags;
+        if (lcOffMode === "tag") renderTagBlockList();
+        renderFilterFold(); /* 摘要里的标签数（两种模式都要刷） */
       }
     });
   } catch (e) {}
@@ -2228,10 +2241,9 @@
   });
 
   on("filter-keywords", "input", (e) => {
-    const f = ensureFilter();
     const seen = new Set();
     /* 多关键词两种写法都支持：一行一个，或中/英文逗号（分号）分隔 */
-    f.keywords = e.target.value
+    const next = e.target.value
       .split(/[\n，,；;]+/)
       .map((k) => k.trim())
       .filter((k) => {
@@ -2239,6 +2251,11 @@
         seen.add(k);
         return true;
       });
+    /* 就地替换数组内容：lcList 返回的是桶里那个数组本体，
+     * 重新赋值给 f.keywords 会写到顶层（分账号就废了） */
+    const arr = lcList("keywords");
+    arr.length = 0;
+    next.forEach((k) => arr.push(k));
     renderFilterFold(); /* 关闭态下手动展开编辑时，摘要要跟着变 */
     save();
   });
@@ -2595,7 +2612,7 @@
     const box = $("official-list");
     if (!box) return;
     const f = ensureFilter();
-    const tags = f.tags || [];
+    const tags = lcList("tags");
     const off = lcTags.tags || [];
     /* 头部计数：官方那份没读到就显示「…」，绝不用 0 冒充 ——
      * 黑名单卡 2026-10-23 就因为「失败被渲染成 0 人」误导过作者 */
@@ -2633,7 +2650,7 @@
     box.innerHTML =
       lcTagSecHead("官方", lcTags.state === "ok" ? off.length + " / 100" : "", "全端生效（含手机 App）· 不随导出") +
       offBody +
-      lcTagSecHead("本地", tags.length + " 个", "仅此浏览器 · 会随配置导出") +
+      lcTagSecHead("本地", tags.length + " 个", (LCUid.blogName() || "未登录") + " · 仅此浏览器 · 会随导出") +
       localBody;
   }
 
@@ -2648,7 +2665,7 @@
     }
     const low = name.toLowerCase();
     const f = ensureFilter();
-    if (f.tags.some((t) => String(t).toLowerCase() === low)) {
+    if (lcList("tags").some((t) => String(t).toLowerCase() === low)) {
       lcOfficialToast("tag「" + name + "」已在本地屏蔽名单");
       return;
     }
@@ -2679,7 +2696,7 @@
         return;
       }
       if (cur.tags.length >= LCOfficialTags.LIMIT) {
-        f.tags.push(name);
+        lcList("tags").push(name);
         renderTagBlockList();
         save();
         lcOfficialToast("官方名单已满，已存为本地屏蔽（仅此浏览器生效）");
@@ -2884,8 +2901,7 @@
     const tb = e.target.closest("[data-tag-unblock]");
     if (tb) {
       /* 本地名单：可逆、只影响本机 ⇒ 单段确认（现状不变） */
-      const f = ensureFilter();
-      f.tags.splice(+tb.dataset.tagUnblock, 1);
+      lcList("tags").splice(+tb.dataset.tagUnblock, 1);
       renderTagBlockList();
       save();
       return;
@@ -2934,8 +2950,8 @@
         return;
       }
       const f = ensureFilter();
-      if (!f.tags.some((t) => String(t).toLowerCase() === tag.toLowerCase())) {
-        f.tags.push(tag);
+      if (!lcList("tags").some((t) => String(t).toLowerCase() === tag.toLowerCase())) {
+        lcList("tags").push(tag);
         save();
       }
       renderTagBlockList();
@@ -2962,7 +2978,7 @@
     const promote = e.target.closest("[data-tag-promote]");
     if (promote && isTagMode) {
       const f = ensureFilter();
-      const tag = (f.tags || [])[+promote.dataset.tagPromote];
+      const tag = lcList("tags")[+promote.dataset.tagPromote];
       if (!tag) return;
       /* 先确认、再读、再写：确认态会停 3 秒，此时读到的名单在用户点确认时
        * 可能已经变了 ⇒ 读必须紧挨着写（硬规矩「写前现读」的字面含义）。 */
@@ -2983,8 +2999,8 @@
       lcTags.at = Date.now();
       if (cur.tags.some((t) => String(t).toLowerCase() === tag.toLowerCase())) {
         /* 官方已经有了：本地这条是重复的，直接收掉（方向是"减少"，不用再确认一次） */
-        const k = f.tags.findIndex((t) => String(t).toLowerCase() === tag.toLowerCase());
-        if (k >= 0) f.tags.splice(k, 1);
+        const k = lcList("tags").findIndex((t) => String(t).toLowerCase() === tag.toLowerCase());
+        if (k >= 0) lcList("tags").splice(k, 1);
         save();
         renderTagBlockList();
         lcOfficialToast("官方名单里已有「" + tag + "」，已去掉本地这条");
@@ -3002,8 +3018,8 @@
         lcOfficialToast("升格失败：" + r.reason + "，请重试");
         return;
       }
-      const k = f.tags.findIndex((t) => String(t).toLowerCase() === tag.toLowerCase());
-      if (k >= 0) f.tags.splice(k, 1);
+      const k = lcList("tags").findIndex((t) => String(t).toLowerCase() === tag.toLowerCase());
+      if (k >= 0) lcList("tags").splice(k, 1);
       save();
       renderTagBlockList();
       lcOfficialToast("已把「" + tag + "」升到官方（全端生效）");
@@ -3232,28 +3248,94 @@
     if (!hits || !st || !st.filter) return null;
     const f = st.filter;
     const n = (a) => (Array.isArray(a) ? a.length : 0);
-    const kw = n(f.keywords), us = n(f.users), tg = n(f.tags);
-    if (!kw && !us && !tg) return null;
-    return { keywords: kw, users: us, tags: tg };
+    const mine = {
+      keywords: n(LCUid.list(f, "keywords")),
+      users: n(LCUid.list(f, "users")),
+      tags: n(LCUid.list(f, "tags")),
+    };
+    /* 名单是分账号存的 ⇒ 导出得说清「导谁的」。别的账号还有东西时
+     * 才多给一个「所有账号」选项，否则那只是噪音。 */
+    const keep = LCUid.uid() || LCUid.ANON;
+    const all = LCUid.buckets(f);
+    let other = 0;
+    Object.keys(all).forEach((k) => {
+      if (k === keep) return;
+      const b = all[k] || {};
+      other += n(b.keywords) + n(b.users) + n(b.tags);
+    });
+    if (!mine.keywords && !mine.users && !mine.tags && !other) return null;
+    return {
+      keywords: mine.keywords,
+      users: mine.users,
+      tags: mine.tags,
+      other: other,
+      who: LCUid.blogName() || LCUid.uid(),
+    };
   }
-  /* 分享模式：只剔三个名单数组，开关结构保留（导入方设置项完整） */
-  function lcStripFilterLists(data) {
+  /* 按选择剔名单：只动导出副本，绝不碰 state。
+   *   mine  —— 只留当前账号那个桶（自己换机；别的账号的名单不属于这台新机器？其实属于，
+   *            但默认少带 = 少泄露，要全带就选 all）
+   *   all   —— 桶原样带走（整机迁移；文件别外发）
+   *   share —— 桶全清空，开关结构保留（导入方设置项完整，看不到你屏蔽了谁） */
+  function lcStripFilterLists(data, mode) {
     const f = data && data.filter;
     if (!f || typeof f !== "object") return 0;
-    let n = 0;
+    const n = (a) => (Array.isArray(a) ? a.length : 0);
+    let moved = 0;
+    /* 老平铺数组（迁移前的包）：先清掉，免得下游 LC_merge 又把它当名单 */
     ["keywords", "users", "tags"].forEach((k) => {
-      if (Array.isArray(f[k])) { n += f[k].length; f[k] = []; }
+      if (Array.isArray(f[k])) { moved += f[k].length; delete f[k]; }
     });
-    return n;
+    const bs = LCUid.buckets(f);
+    const sizeOf = (b) => n(b && b.keywords) + n(b && b.users) + n(b && b.tags);
+    if (mode === "share") {
+      Object.keys(bs).forEach((k) => { moved += sizeOf(bs[k]); });
+      f.buckets = {};
+      return moved;
+    }
+    if (mode === "mine") {
+      const keep = LCUid.uid() || LCUid.ANON;
+      Object.keys(bs).forEach((k) => {
+        if (k === keep) return;
+        moved += sizeOf(bs[k]);
+        delete bs[k];
+      });
+    }
+    return moved;
+  }
+  /* 导入时把「文件里没提到的账号」的名单留下来。
+   * 为什么需要：整份导入是 LC_merge(LC_DEFAULTS, data) —— 基准是默认值，
+   * 于是 filter.buckets 被文件里那份整体替换；而分享包（不含名单）buckets 是全空，
+   * 收件人自己的名单会被静默清掉。桶按账号键合并：文件里有的账号以文件为准
+   * （那才是迁移/恢复要的效果），文件里没有的账号原样保留。 */
+  function lcMergeBuckets(before, after) {
+    if (!before || !after || typeof before !== "object") return 0;
+    const bs = LCUid.buckets(after);
+    let kept = 0;
+    Object.keys(before).forEach((k) => {
+      if (bs[k]) return;
+      bs[k] = before[k];
+      kept++;
+    });
+    return kept;
   }
   function askExportPrivacy(p) {
     return new Promise((resolve) => {
       const ov = $("lc-export-privacy-overlay");
+      const head = p.who ? `当前账号「${p.who}」` : "当前账号（未登录）";
+      const parts = [];
+      if (p.keywords) parts.push(`关键词 ${p.keywords}`);
+      if (p.users) parts.push(`用户 ${p.users}`);
+      if (p.tags) parts.push(`标签 ${p.tags}`);
       $("lc-export-privacy-desc").textContent =
-        `这份导出包含你的屏蔽关键词（${p.keywords} 个）、屏蔽用户（${p.users} 个）与屏蔽标签（${p.tags} 个）——屏蔽了谁、防什么词属于隐私。` +
-        "自己换机或备份选「包含」；文件要发给别人请选分享模式（只剔除这三份名单，其余设置不受影响）。";
+        `${head}：屏蔽${parts.join("、")} 个。` +
+        (p.other ? `另有别的账号共 ${p.other} 条。` : "") +
+        "自己换机选「当前账号」，发给别人选「不含名单」（只剔名单，其余设置不动）。";
+      const allBtn = $("lc-export-privacy-all");
+      if (allBtn) allBtn.style.display = p.other ? "" : "none";
       const done = (v) => { ov.style.display = "none"; resolve(v); };
-      $("lc-export-privacy-keep").onclick = () => done("keep");
+      $("lc-export-privacy-keep").onclick = () => done("mine");
+      if (allBtn) allBtn.onclick = () => done("all");
       $("lc-export-privacy-share").onclick = () => done("share");
       $("lc-export-privacy-cancel").onclick = () => done(null);
       ov.onclick = (e) => { if (e.target === ov) done(null); };
@@ -3503,7 +3585,7 @@
     if (priv) {
       const v = await askExportPrivacy(priv);
       if (v === null) return;
-      if (v === "share") lcStripFilterLists(picked);
+      if (v !== "all") lcStripFilterLists(picked, v);
     }
     /* _format:2：lcidb: 引用对应的本体读出来内嵌进顶层 _assets */
     let assets = null, broken = 0;
@@ -3833,6 +3915,7 @@
     }
 
     const hasSettings = Object.keys(data).length > 0;
+    const bucketsBefore = state && state.filter ? LC_clone(LCUid.buckets(state.filter)) : null;
     if (mods) {
       const patch = {};
       mods.forEach((id) => {
@@ -3847,6 +3930,18 @@
     } else if (hasSettings) {
       state = LC_migrateNav(LC_merge(LC_DEFAULTS, data));
     }
+
+    /* 整份导入的基准是默认值 ⇒ 文件里的 buckets 会把现有名单整体顶掉，
+       而分享包的 buckets 通常是空的（收件人名单就这么被清了）。
+       桶按账号合并：文件里提到的账号以文件为准，没提到的原样留着 */
+    if (bucketsBefore && state && state.filter) lcMergeBuckets(bucketsBefore, state.filter);
+
+    /* 老备份（1.12 及更早）里的名单是平铺数组 ⇒ 导入语义是「覆盖」，
+       得直接盖进当前账号的桶；只塞匿名桶等认领的话，桶里已有内容就认领不到，
+       名单看起来"没导进来"（详见 LCUid.adoptFlat 的注释） */
+    if (state && state.filter) LCUid.adoptFlat(state.filter);
+
+    /* 追加模式：保留现有装饰图，导入的重新编 id 加在后面（防 id 撞车） */
 
     /* 追加模式：保留现有装饰图，导入的重新编 id 加在后面（防 id 撞车） */
     if (decoMode === "append") {
@@ -3870,9 +3965,21 @@
   });
 
   buildFontOptions();
-  chrome.storage.local.get([LC_STORAGE_KEY, LC_PREIMPORT_KEY].concat(LC_RAW_KEYS), (res) => {
+  chrome.storage.local.get(
+    [LC_STORAGE_KEY, LC_PREIMPORT_KEY, LCUid.CACHE_KEY].concat(LC_RAW_KEYS),
+    (res) => {
     /* LC_migrateNav：老配置「导航栏透明」迁移为毛玻璃（本批两档化） */
     state = LC_migrateNav(LC_merge(LC_DEFAULTS, res[LC_STORAGE_KEY] || {}));
+    /* 身份证：popup 里没有页面全局，只能读「上次 www 页面写下的缓存」。
+     * 和配置一次读回来 —— 分成两次异步读会先按匿名桶渲染一帧，
+     * 看上去就像「我的名单突然空了」。 */
+    LCUid.adopt(res[LCUid.CACHE_KEY]);
+    /* 老配置的平铺名单搬进当前账号的桶：一次性静默落盘（不走 save()，
+     * 开个面板不该弹「已保存」） */
+    if (LCUid.migrate(state.filter, LCUid.uid())) {
+      LCUid.ensureBucket(state.filter, LCUid.uid());
+      chrome.storage.local.set({ [LC_STORAGE_KEY]: state }, () => {});
+    }
     /* 导入前快照：有才显示那一行（新装用户看不到多余的东西） */
     lcRenderPreImportRow(res[LC_PREIMPORT_KEY]);
     /* 原始键（自定义表情）本地缓存：导出取它、导入回写它 */

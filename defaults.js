@@ -190,6 +190,11 @@ const LC_DEFAULTS = {
   filter: {
     enabled: false,
     scope: { home: true, tag: true, comment: false },
+    /* 2026-11-13：三份名单改成按账号分桶（lc-uid.js）——
+     * buckets["<userId>"] = { tags, users, keywords }。
+     * 下面三个平铺数组只作老数据迁移的入口，迁移后会被删掉。
+     * 开关留在这里是对的：那是「这台机器怎么表现」，不跟账号变。 */
+    buckets: {},
     keywords: [],
     users: [],
     tags: [],

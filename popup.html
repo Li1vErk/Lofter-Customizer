@@ -1411,6 +1411,8 @@
           <span class="lc-fold-sum" id="filter-summary"></span>
         </div>
         <div class="lc-fold-body closed" id="filter-body"><div class="lc-fold-inner">
+        <!-- 2026-11-13：三份名单改成按账号分开存（lc-uid.js）—— 换号后看到的是那个号自己的名单 -->
+        <p class="hint plain" style="margin:10px 0 0 0;">这三份名单按账号分开保存——换一个号登录，看到的是那个号自己的名单（当前账号见下方「本地」段）。</p>
         <div class="row" style="flex-wrap:wrap;row-gap:12px;margin-top:12px;"><label style="flex:0 0 100%;">生效范围</label>
           <div class="lc-mods" id="filter-scope">
             <label><input type="checkbox" id="filter-scope-home" checked />首页</label>
@@ -1568,7 +1570,7 @@
           <label><input type="checkbox" data-mod="emoji" checked data-page-node-id="lcMod7" />表情</label>
           <label><input type="checkbox" data-mod="misc" checked data-page-node-id="lcMod5" />其他</label>
         </div>
-        <p class="hint plain" style="margin-bottom:12px;" data-page-node-id="lcExpHint">勾选要导出的栏目，与面板标签一一对应，方便只恢复某一栏。「功能」板块含屏蔽名单（关键词 / 屏蔽用户 / 屏蔽标签），名单非空时导出前会问你要不要带上它们。</p>
+        <p class="hint plain" style="margin-bottom:12px;" data-page-node-id="lcExpHint">勾选要导出的栏目，与面板标签一一对应，方便只恢复某一栏。「功能」板块含屏蔽名单（关键词 / 屏蔽用户 / 屏蔽标签），名单按账号分开存，导出前会问你带当前账号的、带全部账号的，还是不带。</p>
         <div class="lc-export-row" data-page-node-id="lcExpPartRow">
           <button class="btn btn-primary" id="cfg-export-part" type="button" data-page-node-id="lcExpPart">导出全部</button>
           <span id="cfg-export-tip" style="display:inline-flex;align-items:center;gap:4px;" data-page-node-id="lcExpTip"></span>
@@ -1853,8 +1855,9 @@
       </div>
       <div style="padding:0 16px 14px;display:flex;flex-direction:column;gap:8px;">
         <button id="lc-export-privacy-keep" type="button" class="btn"
-          style="padding:8px 12px;font-size:13px;background:var(--lc-accent);color:#fff;border:none;">包含名单，导出（自己换机 / 备份）</button>
-        <button id="lc-export-privacy-share" type="button" class="btn" style="padding:8px 12px;font-size:13px;">分享模式导出（不含屏蔽名单）</button>
+          style="padding:8px 12px;font-size:13px;background:var(--lc-accent);color:#fff;border:none;">包含当前账号的名单</button>
+        <button id="lc-export-privacy-all" type="button" class="btn" style="padding:8px 12px;font-size:13px;display:none;">包含所有账号的名单</button>
+        <button id="lc-export-privacy-share" type="button" class="btn" style="padding:8px 12px;font-size:13px;">不含名单（分享用）</button>
         <button id="lc-export-privacy-cancel" type="button" class="btn" style="padding:6px 12px;font-size:12px;border:none;background:none;">取消</button>
       </div>
     </div>
@@ -1864,6 +1867,7 @@
   <script src="lc-i18n-dict.js"></script>
   <script src="lc-i18n.js"></script>
   <script src="lc-assets.js"></script>
+  <script src="lc-uid.js"></script>
   <script src="lc-official-tags.js"></script>
   <script src="lc-dwr.js"></script>
   <script src="popup.js"></script>

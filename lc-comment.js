@@ -611,7 +611,8 @@ function cmtApply() {
   );
   const blocked = new Set(
     on
-      ? (f.users || [])
+      ? /* 本地隐藏名单按账号分桶（lc-uid.js）：换号后不沿用上个号的名单 */
+        (LCUid.list(f, 'users') || [])
           .map((u) => String(u.id || '').toLowerCase())
           .filter(Boolean)
       : [],
@@ -1936,12 +1937,12 @@ function onCmtHideClick(e) {
         cur = {};
       }
       if (!cur.filter) cur.filter = LC_clone(LC_DEFAULTS.filter);
-      if (!Array.isArray(cur.filter.users)) cur.filter.users = [];
-      if (cur.filter.users.some((u) => u.id === author.id)) {
+      const cb2 = LCUid.ensureBucket(cur.filter, LCUid.uid());
+      if (cb2.users.some((u) => u.id === author.id)) {
         cmtPageToast('「' + author.name + '」已在隐藏名单');
         return;
       }
-      cur.filter.users.push({ id: author.id, name: author.name });
+      cb2.users.push({ id: author.id, name: author.name });
       chrome.storage.local.set({ [LC_STORAGE_KEY]: cur }, () => {
         const err = chrome.runtime.lastError;
         if (err) {
@@ -1963,10 +1964,11 @@ function cmtFilterUsersRemove(id) {
   try {
     chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
       const cur = res[LC_STORAGE_KEY] || {};
-      if (cur.filter && Array.isArray(cur.filter.users)) {
-        const next = cur.filter.users.filter((u) => u.id !== id);
-        if (next.length !== cur.filter.users.length) {
-          cur.filter.users = next;
+      if (cur.filter) {
+        const cb2 = LCUid.ensureBucket(cur.filter, LCUid.uid());
+        const next = cb2.users.filter((u) => u.id !== id);
+        if (next.length !== cb2.users.length) {
+          cb2.users = next;
           chrome.storage.local.set({ [LC_STORAGE_KEY]: cur }, () => {});
         }
       }
@@ -3838,6 +3840,19 @@ if (epRemote) lcEpRemoteSend('bye', {});
 
 function lcSetupCommentFilter() {
   cmtDiag.ran = true;
+  /* 本地隐藏名单按账号分桶（lc-uid.js）：身份证解析是异步的（评论帧读缓存），
+   * 解析完 / 换号时都要重算一次 —— 否则首帧按「匿名桶」渲染，看起来像
+   * 「我明明屏蔽过他，评论区却还在」 */
+  LCUid.resolve(() => {
+    try {
+      cmtTick();
+    } catch (e) {}
+  });
+  LCUid.onChange(() => {
+    try {
+      cmtTick();
+    } catch (e) {}
+  });
   /* 可重入：旧观察者可能挂在已被 document.write 重建掉的旧 <html> 上，
    * 样式表也可能随文档一起被抹掉 —— 一律先拆再建。 */
   if (cmtObserver) {
