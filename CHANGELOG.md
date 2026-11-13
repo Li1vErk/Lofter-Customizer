@@ -3,7 +3,7 @@
 本文件记录 Lofter Customizer 的重要变更。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [1.12.0] - 未发布
+## [1.12.0] - 2026-11-13
 
 > 主题：**素材库对账**。真机体检发现面板报的数字不全是「用户拥有的素材」——
 > 库里躺着 20 条没人引用的死记录（7.85 MB），却被算进了「素材 9.10 MB · 23 件」。
@@ -15,9 +15,9 @@
 > 手机 App 也生效）此前只能在官网设置页里一条条加，插件读不到也写不进；
 > 这一版接上了官方的读写接口，同一个 tab 里分成「官方 / 本地」两段管理，
 > 添加时自动分流，满员不越界。
-> 回归：`tools/test-*.js` 55 套件按退出码全量通过（`test-idb-storage` 189 → **236** 项、
+> 回归：`tools/test-*.js` 56 套件按退出码全量通过（`test-idb-storage` 189 → **236** 项、
 > 新增 `test-popup-deco-cards` **84** 项 / `test-tag-block` **56** 项 /
-> `test-official-tags` 43 项 / `test-probe-official-tags` 40 项）。
+> `test-official-tags` 43 项 / `test-probe-official-tags` 40 项 / `test-probe-current-user` 42 项）。
 
 ### 修复
 

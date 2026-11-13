@@ -3,7 +3,7 @@
  * 生成：<venv>/python.exe tools/i18n-build.py
  *   ← tools/_i18n/candidates.json（i18n-collect.js 扫源码得到）
  *   ← i18n/vocab.json（人工词汇覆盖表）
- * 生成日期：2026-11-10
+ * 生成日期：2026-11-13
  *
  * 结构：LC_I18N_DICT[locale] = { 简体原文: 繁体译文 }
  *   · 键含 \u0000 的是「骨架」（模板串被 ${} 切开后拼回，\u0000 为插值占位），
