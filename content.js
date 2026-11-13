@@ -6510,6 +6510,8 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
     try {
       chrome.storage.local.get(LC_STORAGE_KEY, (res) => {
         const cur = res[LC_STORAGE_KEY] || {};
+        /* 剪掉非当前账号的空桶：读路径会建桶（见 lc-uid.js 的 prune） */
+        try { LCUid.prune(settings.filter); } catch (e0) {}
         cur.filter = LC_clone(settings.filter);
         chrome.storage.local.set({ [LC_STORAGE_KEY]: cur }, () => {});
       });

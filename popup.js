@@ -54,6 +54,10 @@
       }
       /* ---------- 安检结束 ---------- */
 
+      /* 名单桶剪枝：读路径（ensureBucket）会给「打开过面板的账号」留下空壳桶，
+       * 写盘前剪掉非当前账号的空桶（见 lc-uid.js 的 prune 注释） */
+      try { LCUid.prune(state.filter); } catch (e) {}
+
       chrome.storage.local.set({ [LC_STORAGE_KEY]: state }, () => {
         /* 写盘失败（最常见 = 10MB 配额满）此前被静默吞掉：界面照样弹
            「已保存 ✓」，但设置其实没落盘，刷新就回去了。这里明确报错，
@@ -3978,6 +3982,7 @@
      * 开个面板不该弹「已保存」） */
     if (LCUid.migrate(state.filter, LCUid.uid())) {
       LCUid.ensureBucket(state.filter, LCUid.uid());
+      LCUid.prune(state.filter);
       chrome.storage.local.set({ [LC_STORAGE_KEY]: state }, () => {});
     }
     /* 导入前快照：有才显示那一行（新装用户看不到多余的东西） */

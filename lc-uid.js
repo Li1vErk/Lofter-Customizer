@@ -125,6 +125,37 @@
     return changed;
   }
 
+  /* 空桶裁剪：`ensureBucket` 在**读路径**上也会建桶（打开面板、判断 tag 页按钮
+   * 状态），所以「从没设过屏蔽的账号」也会留下 {tags:[],users:[],keywords:[]}
+   * 的空壳。攒几个号就会让「本机几份名单」虚高、管理界面一排 0 条。
+   * 保存前剪掉它们 —— 但**当前账号的桶保留**：读路径随时会再建，删了只会让每次
+   * 读都重建一遍，没有收益。返回删掉的桶数（自检用）。 */
+  function prune(filter) {
+    if (!filter || typeof filter !== "object") return 0;
+    var all = buckets(filter);
+    var keep = bucketKey(cur.uid);
+    var n = 0;
+    for (var k in all) {
+      if (!Object.prototype.hasOwnProperty.call(all, k)) continue;
+      if (k === keep) continue;
+      var b = all[k];
+      var empty = true;
+      if (b && typeof b === "object" && !Array.isArray(b)) {
+        for (var i = 0; i < KINDS.length; i++) {
+          if (Array.isArray(b[KINDS[i]]) && b[KINDS[i]].length) {
+            empty = false;
+            break;
+          }
+        }
+      }
+      if (empty) {
+        delete all[k];
+        n++;
+      }
+    }
+    return n;
+  }
+
   /* 导入老备份专用：把平铺名单**覆盖**进当前账号的桶。
    * 和 migrate 的区别：migrate 只补空桶（升级场景，宁可不动用户的现状），
    * 导入的语义却是「按这一份覆盖」，所以这里直接盖。
@@ -261,6 +292,7 @@
     pick: pick,
     migrate: migrate,
     adoptFlat: adoptFlat,
+    prune: prune,
     buckets: buckets,
     ensureBucket: ensureBucket,
     list: list,
