@@ -13,12 +13,26 @@
  *
  * 所以本模块干两件事：
  *   ① 采集：从 www 页面的全局对象里读 uid，写进 lc_uid_v1 缓存；
- *      子域页 / popup 读不到全局就读缓存。**未登录不清缓存** —— 退出登录后
- *      还在首页逛，之前设的屏蔽得继续生效。
+ *      子域页 / popup 读不到全局就读缓存。
+ *      **但 content script 读不到页面全局**（isolated world，2026-11-14 真机
+ *      暴露）：`lc-uid-main.js` 以 world:MAIN 注入，把身份写到
+ *      `<html data-lc-uid data-lc-blog>` 上，这里再从 DOM 读 —— 见 pickAny()。
  *   ② 分桶：filter.buckets[<userId>] = { tags, users, keywords }。
  *      按 userId（数字主键）分，不按 blogName（子域名可以改，改了名单就"丢"）。
  *      开关（enabled / scope / showCounter）留在 filter 顶层 —— 那是
  *      「这台机器怎么表现」，不该跟着账号变。
+ *
+ * 「未登录」是第二个身份（2026-11-14 作者拍板 A 方案）：
+ *   退出登录后不能继续沿用上一个账号的桶 —— 那样面板上摊着别人的关键词，
+ *   共用电脑时就是隐私问题。未登录＝匿名桶（`_anonymous`）。
+ *   代价是退出登录后过滤暂停；作者实测「未登录时 LOFTER 任何页面都跳登录页，
+ *   看不了任何内容」，所以这个代价实际为零。
+ *   **缓存不删**：它还记着「上次是谁」，重新登录立刻切回去，1.14 的名单管理
+ *   也要靠它显示「上次是哪个号」。
+ *
+ * 判定「未登录」只能靠**强证据**（URL 落在登录页）。光看 pick() 失败不行：
+ * LOFTER 哪天改了全局变量名，所有登录用户都会 pick 失败，那时降级成匿名桶
+ * 等于把所有人的名单清空 —— 一次改版就能造成「设置全丢」的灾难性回归。
  *
  * 老数据迁移：filter.tags / users / keywords 这三份平铺数组先搬进「匿名桶」，
  * 等第一次拿到 uid 且该账号的桶还是空的，再把匿名桶认领过来。先搬后认领
@@ -35,15 +49,56 @@
 
   /* 采集结果（本帧内存态） */
   var cur = { uid: "", blogName: "", done: false, from: "" };
+  /* 缓存里那位（= 上次登录的账号）。**不是当前身份**，只在未登录时用于
+     认领归属与「上次是哪个号」的显示 */
+  var lastRec = null;
   var listeners = [];
   var polling = false;
 
   /* ---------------- 纯函数 ---------------- */
 
+  /* 取 location。沙箱（自检）里 `window` 是普通对象、没有 location，
+   * 所以两条路都试一遍，拿不到就返回 null 由调用方兜底 */
+  function loc() {
+    try {
+      if (typeof location !== "undefined" && location) return location;
+    } catch (e) {}
+    try {
+      if (window && window.location) return window.location;
+    } catch (e2) {}
+    return null;
+  }
+
+  function hostOf(s) {
+    s = String(s || "");
+    var m = /^[a-z]+:\/\/([^\/?#]+)/i.exec(s);
+    return (m ? m[1] : s).replace(/:\d+$/, "").toLowerCase();
+  }
+
+  /* 过滤只在 www 域跑（home / tag / comment），子域页没有身份来源 */
+  function isWww(x) {
+    var h = hostOf(x == null ? (loc() && loc().hostname) || "" : x);
+    return h === "www.lofter.com" || h === "lofter.com";
+  }
+
+  /* 登录页判定 —— 「确实没登录」的唯一强证据。
+   * 作者 2026-11-14 实测：未登录时 LOFTER 任何页面（首页、tag、帖子、从历史
+   * 记录点进去）都 302 到 /front/login，看不了任何内容。所以 URL 落在登录页
+   * ＝ 没登录，可以放心降级；反过来说，**不在登录页就不要降级**（见文件头）。 */
+  function isLoginPage(u) {
+    var s;
+    if (u == null) {
+      var L = loc();
+      s = L ? String(L.pathname || "") + String(L.search || "") : "";
+    } else {
+      s = String(u).replace(/^[a-z]+:\/\/[^\/?#]+/i, "");
+    }
+    return /(^|\/)(front\/)?log-?in(\/|$|\?|\.)/i.test(s.split("#")[0]);
+  }
+
   /* 从「像 window 的对象」里取身份。只认数字 userId ——
    * `__userIdCrossDomain` 在子域页上等于 "NaN"，不是数字，天然被挡掉。 */
-  function pick(w) {
-    w = w || window;
+  function pick(w) {    w = w || window;
     var cands = [];
     try {
       if (w.lofterGlobalSignInUser) cands.push(w.lofterGlobalSignInUser);
@@ -67,8 +122,55 @@
     return null;
   }
 
+  /* 从 DOM 上读身份（由 world:MAIN 的 lc-uid-main.js 写入）。
+   * 这是 content script **唯一**能拿到真实身份的通道 —— 隔离世界的
+   * `window` 上没有 LOFTER 的全局变量。DOM 是两个世界共享的。 */
+  function pickFromDom() {
+    var h = null;
+    try {
+      h = document.documentElement;
+    } catch (e) {}
+    if (!h || !h.getAttribute) return null;
+    var uid = "";
+    var name = "";
+    try {
+      uid = String(h.getAttribute("data-lc-uid") || "").trim();
+      name = String(h.getAttribute("data-lc-blog") || "").trim();
+    } catch (e2) {
+      return null;
+    }
+    if (!/^\d{3,20}$/.test(uid)) return null;
+    return { uid: uid, blogName: name };
+  }
+
+  /* 统一的身份读取：先看全局（主世界 / 测试环境），再看 DOM 桥。
+   * - content script：全局那条永远落空，走 DOM
+   * - popup：`document` 是自己的页面，属性不存在；它另走 lcWhoAmI 问当前帧
+   * - 自检：两条都能喂 */
+  function pickAny() {
+    var p = pick(window);
+    if (p) {
+      p.from = "window";
+      return p;
+    }
+    var d = pickFromDom();
+    if (d) {
+      d.from = "dom";
+      return d;
+    }
+    return null;
+  }
+
   function bucketKey(uid) {
     return uid ? String(uid) : ANON;
+  }
+
+  /* 去重键：用户名单里存的是 {id, name}，tag / 关键词是字符串 */
+  function keyOf(x) {
+    if (x && typeof x === "object") {
+      return "id:" + String(x.id == null ? "" : x.id) + "|" + String(x.name == null ? "" : x.name);
+    }
+    return "s:" + String(x == null ? "" : x);
   }
 
   function buckets(filter) {
@@ -115,11 +217,28 @@
       var mine = ensureBucket(filter, uid);
       for (var j = 0; j < KINDS.length; j++) {
         var kk = KINDS[j];
-        if (!mine[kk].length && anon[kk].length) {
-          mine[kk] = anon[kk].slice();
-          anon[kk] = [];
-          changed = true;
+        var a = anon[kk];
+        if (!a.length) continue;
+        /* **并集去重**，不是「空桶才认领」：匿名桶在登录态下理论上是空的，
+         * 还留着内容只有一种可能 —— 上次登出期间（走匿名桶）加的条目。
+         * 那时该账号的桶往往已经有内容，按「空桶才认领」会把这些条目静默
+         * 丢掉，用户看到的是「我明明加过，怎么没了」。
+         * 反向代价（共用电脑时别人在未登录态加的也被认领）远小于静默丢数据。 */
+        if (!mine[kk].length) {
+          mine[kk] = a.slice();
+        } else {
+          var seen = Object.create(null);
+          for (var s1 = 0; s1 < mine[kk].length; s1++) seen[keyOf(mine[kk][s1])] = 1;
+          for (var s2 = 0; s2 < a.length; s2++) {
+            var kb = keyOf(a[s2]);
+            if (!seen[kb]) {
+              seen[kb] = 1;
+              mine[kk].push(a[s2]);
+            }
+          }
         }
+        anon[kk] = [];
+        changed = true;
       }
     }
     return changed;
@@ -226,6 +345,32 @@
     }
   }
 
+  /* 认一个身份（登录态）。notify 在里面统一发，调用方不用再发一次 */
+  function setWho(rec, from) {
+    if (!rec || !/^\d{3,20}$/.test(String(rec.uid || ""))) return false;
+    var uid = String(rec.uid);
+    var name = String(rec.blogName || "");
+    var same = cur.uid === uid && cur.blogName === name && cur.done;
+    cur.uid = uid;
+    cur.blogName = name;
+    cur.from = from || "window";
+    cur.done = true;
+    remember(uid, name);
+    if (!same) notify();
+    return true;
+  }
+
+  /* 降级成匿名身份（未登录）。缓存**不动** —— 它还记着上次是谁 */
+  function setAnon(from) {
+    var same = cur.uid === "" && cur.done && cur.from === (from || "anon");
+    cur.uid = "";
+    cur.blogName = "";
+    cur.from = from || "anon";
+    cur.done = true;
+    if (!same) notify();
+    return cur;
+  }
+
   /* 全局对象通常晚于 document_start 才定义 ⇒ 轮询一会儿。
    * 一旦读到就和缓存比：不同就写缓存并通知监听者重算（换号场景）。 */
   function watchGlobals(times) {
@@ -233,16 +378,16 @@
     polling = true;
     var left = times == null ? 20 : times;
     (function tick() {
-      var p = pick(window);
+      var p = pickAny();
       if (p) {
         polling = false;
+        /* 从「匿名（登录页）」回到「有身份」也走第一条：登录页有可能不刷新
+         * 就跳进站内（SPA），那时得自己恢复，否则一直是匿名桶 */
         if (p.uid !== cur.uid) {
-          cur.uid = p.uid;
-          cur.blogName = p.blogName;
-          cur.from = "window";
-          remember(p.uid, p.blogName);
-          notify();
+          setWho(p, p.from || "page");
         } else if (p.blogName && p.blogName !== cur.blogName) {
+          /* 只补名字，不用空值把已记下的名字擦掉（LOFTER 有些页面上
+           * blogName 是空的，uid 还在） */
           cur.blogName = p.blogName;
           remember(p.uid, p.blogName);
         }
@@ -256,27 +401,33 @@
     })();
   }
 
-  /* 解析身份证：先同步看全局（www 页首屏就有），没有就读缓存，同时后台轮询全局 */
+  /* 解析身份证：先同步看全局（www 页首屏就有），没有再看是不是登录页，
+   * 都不是才退回缓存，同时后台轮询全局 */
   function resolve(cb) {
     if (cur.done) {
       if (cb) cb(cur);
       return;
     }
-    var p = pick(window);
+    var p = pickAny();
     if (p) {
-      cur.uid = p.uid;
-      cur.blogName = p.blogName;
-      cur.from = "window";
-      cur.done = true;
+      setWho(p, p.from || "page");
       remember(p.uid, p.blogName);
       watchGlobals(4); /* 还有可能后续被改（同一页内换号） */
       if (cb) cb(cur);
       return;
     }
+    /* 强证据：URL 在登录页 ⇒ 未登录。绝不看「pick 失败」就下结论（见文件头） */
+    if (isLoginPage()) {
+      setAnon("login");
+      watchGlobals(20); /* 登录页不刷新就跳进站内时，自己恢复 */
+      if (cb) cb(cur);
+      return;
+    }
     cacheGet(function (c) {
       if (c && c.uid && /^\d{3,20}$/.test(String(c.uid))) {
-        cur.uid = String(c.uid);
-        cur.blogName = String(c.blogName || "");
+        lastRec = { uid: String(c.uid), blogName: String(c.blogName || "") };
+        cur.uid = lastRec.uid;
+        cur.blogName = lastRec.blogName;
         cur.from = "cache";
       }
       cur.done = true;
@@ -290,6 +441,10 @@
     ANON: ANON,
     KINDS: KINDS,
     pick: pick,
+    /* 真实的身份读取（全局 + DOM 桥）。content script 只能用这个 ——
+     * `pick(window)` 在隔离世界里永远是 null */
+    who: pickAny,
+    pickFromDom: pickFromDom,
     migrate: migrate,
     adoptFlat: adoptFlat,
     prune: prune,
@@ -299,12 +454,23 @@
     flat: flat,
     remember: remember,
     resolve: resolve,
+    isWww: isWww,
+    isLoginPage: isLoginPage,
+    setWho: setWho,
+    setAnon: setAnon,
+    /* 缓存里那位（上次登录的账号）——不是当前身份 */
+    last: function () {
+      return lastRec ? { uid: lastRec.uid, blogName: lastRec.blogName || "" } : null;
+    },
     /* 调用方已经把缓存读出来了（popup 的首次 storage.get 一并读的），
-     * 直接喂进来，省一次异步读 + 一次重渲染 */
+     * 直接喂进来，省一次异步读 + 一次重渲染。
+     * 注意这只是「上次登录的账号」，popup 随后会向页面要一次实时身份
+     * （lcWhoAmI）来确认现在还登着 —— 那份缓存可能在登出后仍然存在。 */
     adopt: function (rec) {
       if (!rec || !/^\d{3,20}$/.test(String(rec.uid || ""))) return false;
-      cur.uid = String(rec.uid);
-      cur.blogName = String(rec.blogName || "");
+      lastRec = { uid: String(rec.uid), blogName: String(rec.blogName || "") };
+      cur.uid = lastRec.uid;
+      cur.blogName = lastRec.blogName;
       cur.from = "cache";
       cur.done = true;
       return true;
@@ -321,13 +487,16 @@
     onChange: function (fn) {
       if (typeof fn === "function") listeners.push(fn);
     },
-    /* popup 用：缓存里那位的账号名（本地段头显示用） */
+    /* 当前身份的显示名：登录态给账号名（没名字给 uid），匿名给「未登录」。
+     * 别再用 `blogName() || "未登录"` 自己拼 —— 那会把「登出但缓存还在」
+     * 显示成未登录的同时又读着上个账号的名单，状态与数据源对不上 */
     label: function () {
       return cur.blogName || (cur.uid ? cur.uid : "未登录");
     },
     /* 测试用：重置本帧状态，别在业务代码里调 */
     _reset: function () {
       cur = { uid: "", blogName: "", done: false, from: "" };
+      lastRec = null;
       listeners = [];
       polling = false;
     },

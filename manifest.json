@@ -72,6 +72,16 @@
   },
   {
     "matches": [
+      "https://*.lofter.com/*",
+      "https://lofter.com/*"
+    ],
+    "js": ["lc-uid-main.js"],
+    "run_at": "document_start",
+    "all_frames": true,
+    "world": "MAIN"
+  },
+  {
+    "matches": [
       "https://*.lf127.net/*",
       "https://lf127.net/*"
     ],

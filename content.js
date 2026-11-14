@@ -7611,6 +7611,20 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
           applyFilter();
         } catch (e) {}
       });
+      /* 身份可能是「后到」的：DOM 桥（world:MAIN 的 lc-uid-main.js）要等
+       * 页面脚本就绪才把 uid 写到 <html> 上，content 首帧读不到 ⇒ 那一次
+       * applyFilter() 是按匿名桶跑的。身份一到必须重算，否则整页都在用
+       * 错误的名单（表现为「我明明屏蔽了，还是看得见」）。 */
+      LCUid.onChange(() => {
+        try {
+          if (window.settings && LCUid.migrate(window.settings.filter, LCUid.uid())) {
+            filterPersist();
+          }
+        } catch (e) {}
+        try {
+          applyFilter();
+        } catch (e2) {}
+      });
       // 同步全局隐藏标志
       window.decorationsGloballyHidden =
         window.settings.decorationsVisible === false;
@@ -8597,6 +8611,29 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
 
   /* ---------- 接收 popup 消息 ---------- */
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    /* popup 打开时问「现在还登着吗」。popup 是 chrome-extension:// 域，
+     * 看不见页面全局，只能问当前帧。三态：
+     *   ok:true  —— 这个帧上有登录身份（用它，可能和缓存的不是同一个号）
+     *   ok:false —— 这个帧在登录页，= 未登录的强证据 ⇒ popup 降级匿名桶
+     *   ok:null  —— 问不出来（子域页 / 页面还没解析完）⇒ 沿用缓存，别乱清 */
+    if (msg.action === "lcWhoAmI") {
+      let p = null;
+      try {
+        /* 必须用 who()（全局 + DOM 桥）：content script 在隔离世界里，
+         * `pick(window)` 读不到 LOFTER 的页面全局，永远返回 null */
+        p = LCUid.who();
+      } catch (e) {}
+      let st = null;
+      if (p) st = true;
+      else if (LCUid.isLoginPage()) st = false;
+      sendResponse({
+        ok: st,
+        uid: p ? p.uid : "",
+        blogName: p ? p.blogName : "",
+        href: location.href,
+      });
+      return true;
+    }
     if (msg.action === "editDecoration") {
       toggleDecEditMode(true);
       sendResponse({ ok: true });

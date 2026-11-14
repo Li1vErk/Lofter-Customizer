@@ -1411,8 +1411,9 @@
           <span class="lc-fold-sum" id="filter-summary"></span>
         </div>
         <div class="lc-fold-body closed" id="filter-body"><div class="lc-fold-inner">
-        <!-- 2026-11-13：三份名单改成按账号分开存（lc-uid.js）—— 换号后看到的是那个号自己的名单 -->
-        <p class="hint plain" style="margin:10px 0 0 0;">这三份名单按账号分开保存——换一个号登录，看到的是那个号自己的名单（当前账号见下方「本地」段）。</p>
+        <!-- 2026-11-13：三份名单改成按账号分开存（lc-uid.js）—— 换号后看到的是那个号自己的名单。
+             2026-11-14：未登录也走自己的一份（匿名桶），不再沿用上个账号的 -->
+        <p class="hint plain" style="margin:10px 0 0 0;">这三份名单按账号分开保存——换一个号登录，看到的是那个号自己的；未登录时用本机的一份（当前账号见下方「本地」段）。</p>
         <div class="row" style="flex-wrap:wrap;row-gap:12px;margin-top:12px;"><label style="flex:0 0 100%;">生效范围</label>
           <div class="lc-mods" id="filter-scope">
             <label><input type="checkbox" id="filter-scope-home" checked />首页</label>
@@ -1424,6 +1425,8 @@
         <textarea id="filter-keywords" rows="4"
           style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--lc-line);border-radius:6px;font-size:12px;background:var(--lc-card);color:var(--lc-text);resize:vertical;"
           placeholder="一行一个关键词，也可以用逗号分隔"></textarea>
+        <!-- 2026-11-14：未登录时锁住输入（见 popup.js 的 lcSetListLock）—— 这时站内页面本身都打不开，改了也没有作用 -->
+        <p class="hint plain" id="filter-lock-note" style="margin:6px 0 12px 0;display:none;">未登录 LOFTER 时不能修改名单 —— 这时站内页面本身也打不开。登录后会自动切回该账号自己的名单。</p>
         <p class="hint collapsible plain" id="filter-keywords-help" style="margin:4px 0 12px 0;">多个关键词写法：一行一个，或用中/英文逗号分隔，命中任一个即隐藏。匹配标题、正文与标签，不区分大小写。关键词只作用于帖子卡片；评论区只按「已隐藏用户」隐藏，不做关键词匹配。</p>
         <div class="row" style="margin-bottom:8px;"><label style="flex:0 0 auto;">已隐藏用户<button type="button" class="help-dot" data-hint="filter-users-help" title="怎么隐藏用户？">?</button></label><span class="hint" id="filter-user-count" style="margin:0;">0</span></div>
         <p class="hint collapsible plain" id="filter-users-help" style="margin:4px 0 12px 0;">在首页/标签页帖子的作者名旁或用户评论旁点「隐藏」即可隐藏该用户；被隐藏的用户在这里移除。</p>

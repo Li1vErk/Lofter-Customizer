@@ -2033,6 +2033,94 @@
     return LCUid.list(ensureFilter(), kind);
   }
 
+  /* 用户在关键词框里打过字吗 —— 异步的身份确认回来时会重填输入框，
+   * 不能把人家正在敲的内容盖掉 */
+  var lcKwTouched = false;
+
+  /* 未登录时锁住「能改名单」的两个入口（2026-11-14 作者拍板）。
+   * 不是为了藏隐私 —— 这两个输入在未登录时**没有任何作用**：LOFTER 未登录
+   * 访问任何页面都会跳到登录页，站内没有可过滤的内容；而写进匿名桶的条目
+   * 会在下一次登录时被并集认领进那个账号的名单 ⇒ 共用电脑时等于替别人投票。
+   * 只在**明确**未登录（content 确认当前页停在登录页）时锁，问不出来一律不锁。 */
+  var lcListLocked = false;
+  var LC_LOCK_PH = "未登录，登录后才能添加";
+
+  function lcSetListLock(onFlag) {
+    lcListLocked = !!onFlag;
+    const kw = $("filter-keywords");
+    if (kw) {
+      kw.disabled = lcListLocked;
+      kw.style.opacity = lcListLocked ? "0.55" : "";
+      kw.style.cursor = lcListLocked ? "not-allowed" : "";
+    }
+    const ti = $("official-add-input");
+    if (ti) {
+      ti.disabled = lcListLocked;
+      ti.placeholder = lcListLocked
+        ? LC_LOCK_PH
+        : lcOffMode === "tag"
+          ? "输入 tag 名称，或粘贴 tag 页链接"
+          : "粘贴对方主页链接或 ID";
+    }
+    const tb = $("official-add-btn");
+    if (tb) tb.disabled = lcListLocked;
+    const note = $("filter-lock-note");
+    if (note) note.style.display = lcListLocked ? "" : "none";
+  }
+
+  /* 名单级重渲染：换身份（登录 ⇄ 未登录）时用。
+   * 只重画「按账号走」的那几块，其余 UI 不动。 */
+  function lcRenderLists() {
+    const f = ensureFilter();
+    const kb = $("filter-keywords");
+    if (kb && !lcKwTouched) kb.value = LCUid.list(f, "keywords").join("\n");
+    renderFilterUsers();
+    try {
+      renderTagBlockList(); /* 本地段的账号名在段头里，换身份要重画 */
+    } catch (e) {}
+    renderFilterFold();
+  }
+
+  /* 打开面板时确认「现在还登着吗」（2026-11-14 作者拍板 A 方案）。
+   * popup 是 chrome-extension:// 域，看不见页面全局，只能问当前标签页的
+   * content script。只有拿到**明确**的未登录（那个页面在登录页）才降级成
+   * 匿名桶；问不到（非 LOFTER 页 / 消息没响应 / 子域页）一律沿用缓存 ——
+   * 否则在任意标签页开面板都会把名单显示成空的。 */
+  function lcVerifyWhoAmI() {
+    try {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const t = tabs && tabs[0];
+        if (!t || t.id == null) return;
+        if (!/^https?:\/\/([a-z0-9-]+\.)?lofter\.com\//i.test(String(t.url || ""))) return;
+        chrome.tabs.sendMessage(t.id, { action: "lcWhoAmI" }, (r) => {
+          if (chrome.runtime.lastError || !r) return; /* 问不到 ⇒ 沿用缓存 */
+          if (r.ok === true) {
+            lcSetListLock(false); /* 确认在登录态：名单可改 */
+            const changed = r.uid && r.uid !== LCUid.uid();
+            if (changed) LCUid.setWho(r);
+            /* 每次都试一次认领：登出期间（走匿名桶）加的条目，重新登录后
+               要收回当前账号。migrate 幂等，没有真变更就不写盘。
+               不做这步的话，那些条目要等页面那边（content）自己迁完才出现，
+               面板刚打开时会显示得像"我加的词没了" */
+            if (state && state.filter && LCUid.migrate(state.filter, LCUid.uid())) {
+              LCUid.prune(state.filter);
+              chrome.storage.local.set({ [LC_STORAGE_KEY]: state }, () => {});
+            }
+            if (changed) lcRenderLists();
+            return;
+          }
+          if (r.ok === false) {
+            LCUid.setAnon("login");
+            /* 先上锁再重画：本地段的空态文案要按锁定态出（否则写着
+               「或在这里输入」，而框已经灰了），重画会连着这段一起刷 */
+            lcSetListLock(true); /* 明确未登录：锁住输入（页面全跳登录页，改了也无用） */
+            lcRenderLists();
+          }
+        });
+      });
+    } catch (e) {}
+  }
+
   function renderFilterUsers() {
     const box = $("filter-users");
     if (!box) return;
@@ -2245,6 +2333,7 @@
   });
 
   on("filter-keywords", "input", (e) => {
+    lcKwTouched = true; /* 见 lcRenderLists：异步身份确认回来时别盖掉正在敲的字 */
     const seen = new Set();
     /* 多关键词两种写法都支持：一行一个，或中/英文逗号（分号）分隔 */
     const next = e.target.value
@@ -2404,9 +2493,11 @@
     const tag = lcOffMode === "tag";
     const input = $("official-add-input");
     const btn = $("official-add-btn");
-    if (input) input.placeholder = tag
-      ? "输入 tag 名称，或粘贴 tag 页链接"
-      : "粘贴对方主页链接或 ID";
+    if (input) input.placeholder = lcListLocked
+      ? LC_LOCK_PH
+      : tag
+        ? "输入 tag 名称，或粘贴 tag 页链接"
+        : "粘贴对方主页链接或 ID";
     if (btn) btn.textContent = tag ? "屏蔽" : "拉黑";
     const lbl = $("official-list-label");
     if (lbl) lbl.textContent = tag ? "已屏蔽 tag" : "黑名单成员";
@@ -2647,18 +2738,21 @@
 
     const localBody = tags.length
       ? tags.map((t, i) => lcTagRowHtml(t, i, false)).join("")
-      : `<p class="hint" style="margin:0;">暂无。悬停帖子卡片上的 tag 点「屏蔽」，或在这里输入。</p>`;
+      : `<p class="hint" style="margin:0;">${lcListLocked
+          ? "暂无。登录后可在这里添加。"
+          : "暂无。悬停帖子卡片上的 tag 点「屏蔽」，或在这里输入。"}</p>`;
 
     /* 两段的差异写在各自的段头上（贴着对象解释，比在顶部写一段话更好读）：
      * 官方「全端生效 · 不随导出」 ↔ 本地「仅此浏览器 · 会随配置导出」 */
     box.innerHTML =
       lcTagSecHead("官方", lcTags.state === "ok" ? off.length + " / 100" : "", "全端生效（含手机 App）· 不随导出") +
       offBody +
-      lcTagSecHead("本地", tags.length + " 个", (LCUid.blogName() || "未登录") + " · 仅此浏览器 · 会随导出") +
+      lcTagSecHead("本地", tags.length + " 个", LCUid.label() + " · 仅此浏览器 · 会随导出") +
       localBody;
   }
 
   async function lcTagAdd() {
+    if (lcListLocked) return; /* 未登录时入口已禁用，这里兜住程序化调用 */
     const input = $("official-add-input");
     const btn = $("official-add-btn");
     const name = lcTagNormalize(input.value);
@@ -4008,6 +4102,9 @@
     initRanges();
     syncCfgMods(); // 装饰图计数/按张入口依赖加载后的 state.decorations，初渲染时还没到手
     if (i18n) i18n.watch(document.body);
+    /* 首渲染完再验身份：缓存里那位可能已经登出了（面板是扩展域，看不见
+     * 页面全局），确认后要按新身份重画名单 */
+    lcVerifyWhoAmI();
     lcStateLoaded = true; // 真值已到手，可以撤首开防白闪的预判标记了
     applyDarkFollow(state); // 面板暗色跟随（函数声明提升，定义在 IIFE 尾部）
 
