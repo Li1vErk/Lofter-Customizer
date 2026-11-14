@@ -3,7 +3,7 @@
 本文件记录 Lofter Customizer 的重要变更。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [1.13.0] - 未发布
+## [1.13.0] - 2026-11-14
 
 > 主题：**名单按账号分开存**。此前「屏蔽的用户 / 关键词 / tag」这三份名单是整机一份——
 > 一台电脑上轮着登几个号，A 号设的屏蔽在 B 号身上照样生效，换个号像换了个人的浏览器。
