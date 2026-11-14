@@ -6129,11 +6129,19 @@ html #rside .m-menu:has(.participate-user-title-w) .menum ul li {
   /* 生效范围：Phase 1 只认 www.lofter.com 的首页时间线与标签页。
    * 帖子永久页/发现页/个人主页一律不生效——个人主页模板各异且
    * 用户点进去本来就是要看 TA 的博文（产品决策，见 todo）。 */
+  /* 过滤在哪类页面上生效：首页 feed、tag 页 feed。其余页面（文章详情、个人
+   * 主页、设置页）没有 feed 卡片，不跑。
+   *
+   * `/dashboard` 也是首页 —— 登录后 LOFTER 直接落在这里。只认 "/" 的话整套
+   * 过滤会**静默失效**：面板一切正常、规则读得到、一张卡也不藏（2026-11-14
+   * 真机实测：22 张卡、keyswords 1 条、标记 0 个）。这条判定从过滤功能上线
+   * 起就漏了，只是以前多数人从 "/" 进来。 */
   function filterScope() {
     const h = location.hostname;
     if (h !== "www.lofter.com" && h !== "lofter.com") return null;
     const p = location.pathname;
     if (p === "/" || p === "") return "home";
+    if (p === "/dashboard" || p.startsWith("/dashboard/")) return "home";
     if (p.startsWith("/tag/")) return "tag";
     return null;
   }
