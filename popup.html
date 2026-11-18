@@ -1538,12 +1538,18 @@
       </div>
 
       <div class="grp-card"><div class="grp-title">快捷键</div>
-      <label class="toggle" style="margin-bottom:14px;" data-page-node-id="ATESbGG0VvLW5bMXcBXCtv">
+      <label class="toggle" style="margin-bottom:0;" data-page-node-id="ATESbGG0VvLW5bMXcBXCtv">
         <span data-page-node-id="bpGqU1HU1LAOCFIuG4ueIL">启用快捷键</span>
         <input type="checkbox" id="shortcuts-enabled" data-page-node-id="oXVFjhW2JcuNJbbhpDgcNA" />
       </label>
+      <!-- 关闭态：整块列表不出现（快捷键不生效时看它没有意义），只留一行引导。
+           这行不是"描述功能"，是告诉用户想看就得先开 -->
+      <p class="hint plain" id="sc-off-hint" style="margin:6px 0 0 0;" data-page-node-id="lcScOffHint">开启后可查看与修改快捷键</p>
+      <!-- 展开键：位置固定在列表上方，开与不开都不跳动 -->
+      <button class="lc-link" id="sc-fold" type="button" style="margin-top:10px;" data-page-node-id="lcScFold">查看快捷键</button>
 
-      <div id="shortcuts-list" style="margin-top:12px;opacity:0.5;pointer-events:none;transition:opacity 0.2s;" data-page-node-id="8Bxaie2Pm2dCU4VSsvSQts">
+      <div class="lc-fold-body closed" id="sc-fold-body" data-page-node-id="lcScFoldBody"><div class="lc-fold-inner">
+      <div id="shortcuts-list" style="margin-top:12px;" data-page-node-id="8Bxaie2Pm2dCU4VSsvSQts">
         <div class="row sc-row" data-page-node-id="FO1l5LorUDPmE1S40IawjZ">
           <span class="sc-label" data-page-node-id="0VN9C6uicxSnTbkhis90uM">显示/隐藏装饰图</span>
           <span class="kbd" id="shortcut-dec-toggle" data-page-node-id="1IIsWj8DToill58VV5nKZJ">Ctrl+Shift+H</span>
@@ -1561,6 +1567,7 @@
             style="font-size:12px;padding:4px 12px;" data-page-node-id="lZqOw8lr12MsohOciyJrVU">在浏览器中修改快捷键</button>
         </div>
       </div>
+      </div></div>
       </div>
 
       <div class="grp-card"><div class="grp-title">数据<span class="lc-mod-count" id="cfg-mod-count" data-page-node-id="lcModCount">已选 7/7</span></div>
@@ -1573,7 +1580,7 @@
           <label><input type="checkbox" data-mod="emoji" checked data-page-node-id="lcMod7" />表情</label>
           <label><input type="checkbox" data-mod="misc" checked data-page-node-id="lcMod5" />其他</label>
         </div>
-        <p class="hint plain" style="margin-bottom:12px;" data-page-node-id="lcExpHint">勾选要导出的栏目，与面板标签一一对应，方便只恢复某一栏。「功能」板块含屏蔽名单（关键词 / 屏蔽用户 / 屏蔽标签），名单按账号分开存，导出前会问你带当前账号的、带全部账号的，还是不带。</p>
+        <p class="hint plain" style="margin-bottom:12px;" data-page-node-id="lcExpHint">勾选要导出的栏目（与面板标签一一对应）；「功能」板块含屏蔽名单，导出时会问你带哪份。</p>
         <div class="lc-export-row" data-page-node-id="lcExpPartRow">
           <button class="btn btn-primary" id="cfg-export-part" type="button" data-page-node-id="lcExpPart">导出全部</button>
           <span id="cfg-export-tip" style="display:inline-flex;align-items:center;gap:4px;" data-page-node-id="lcExpTip"></span>
@@ -1628,9 +1635,24 @@
           <!-- 明细只拆「设置与草稿」，所以留出间距，别看着像在展开上面那行素材 -->
           <button class="lc-link" id="lc-usage-more" type="button" style="margin-top:10px;" data-page-node-id="lcUsageMore">展开明细</button>
         </div>
+
+        <!-- #41 本机名单：分账号之后本机会留多份名单，得看得见、删得掉。
+             整块按需出现 —— 只有当前账号一份时连标题都不占（与「导入前备份」胶囊同理：
+             没有可管的东西就不出现，而不是出现一个点不动的按钮）。
+             位置在存储占用之后：名单只有几十 KB，跟容量无关，混在进度条下面会被误解成"它很占地方" -->
+        <div id="lc-lists" style="display:none;margin-top:12px;padding-top:10px;border-top:1px dashed var(--lc-line);">
+          <div style="display:flex;align-items:baseline;gap:8px;">
+            <span style="font-size:12px;color:var(--lc-sub);white-space:nowrap;" data-page-node-id="lcListsLabel">本机名单</span>
+            <span id="lc-lists-sum" style="font-size:12px;color:var(--lc-text);flex:1 1 auto;min-width:0;" data-page-node-id="lcListsSum"></span>
+            <button class="lc-link" id="lc-lists-more" type="button" style="white-space:nowrap;" data-page-node-id="lcListsMore">管理</button>
+          </div>
+          <div class="lc-fold-body closed" id="lc-lists-body" data-page-node-id="lcListsBody"><div class="lc-fold-inner">
+            <div id="lc-lists-rows" style="margin-top:10px;display:grid;grid-template-columns:1fr auto;column-gap:10px;row-gap:10px;align-items:center;" data-page-node-id="lcListsRows"></div>
+          </div></div>
+        </div>
       </div>
 
-      <div class="grp-card"><div class="grp-title">界面语言</div>
+      <div class="grp-card"><div class="grp-title">界面语言<button type="button" class="help-dot" data-hint="lang-help" title="语言说明">?</button></div>
         <div class="row"><label>语言</label>
           <select id="lang-select">
             <option value="zh-Hans">简体中文</option>
@@ -1638,7 +1660,7 @@
             <option value="zh-Hant-HK">繁體中文（香港）</option>
           </select>
         </div>
-        <p class="hint" style="margin-left:90px;">只换插件自己的按钮与面板文字；LOFTER 页面本身、导出的 .md 与分享图内容保持原样。</p>
+        <p class="hint collapsible plain" id="lang-help">只换插件自己的按钮与面板文字；LOFTER 页面本身、导出的 .md 与分享图内容保持原样。</p>
       </div>
 
       <div class="grp-card"><div class="grp-title">关于</div>

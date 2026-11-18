@@ -304,6 +304,83 @@
     return b[kind] || [];
   }
 
+  /* ---------------- #41 本机名单管理 ---------------- */
+
+  /* 桶里额外记两个下划线字段（都不参与「空桶」判断，prune 只看三个数组）：
+   *   `_blog` 账号名 —— 桶按 uid 分，但名字只有**登录那一刻**知道。
+   *           不记下来，切到别的号就再也认不出「1790671747」是谁，
+   *           管理界面只能显示一串数字。
+   *   `_ts`   最后使用时间 —— 只在切号 / 打开面板时写，且与旧值差不到
+   *           1 小时就不写：写 storage.local 会触发每个内容帧重算设置，
+   *           纯展示字段不该有写放大。 */
+  var TOUCH_MS = 3600 * 1000;
+
+  function touch(filter, uid, blogName, now) {
+    if (!filter || typeof filter !== "object") return false;
+    var who = uid === undefined ? cur.uid : uid;
+    var name = blogName === undefined ? cur.blogName : blogName;
+    var b = ensureBucket(filter, who);
+    var changed = false;
+    if (name && b._blog !== name) {
+      b._blog = String(name);
+      changed = true;
+    }
+    var t = now || Date.now();
+    if (t - (Number(b._ts) || 0) >= TOUCH_MS) {
+      b._ts = t;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /* 本机有哪些名单（管理界面用）。只列**有内容**的桶，加一个例外：
+   * 已登录时的当前账号 —— 哪怕 0 条也列（「我的名单去哪了」比「一排 0 条」更让人慌）。
+   * **未登录时的匿名桶不享受这个例外**（2026-11-16 作者拍板）：用户眼里
+   * 「没登录 ＝ 没账号」，列一行「未登录时 0 条」纯属噪音（它是个内部概念）。
+   * 但匿名桶真有条目时必须列：那些词此刻正在过滤，不给入口就没地方清。
+   * 顺序：当前账号 → 其余按最后使用倒序 → 匿名桶固定最后
+   * （它不是"某个账号"，是"未登录那段时间"）。 */
+  function entries(filter) {
+    var all = buckets(filter);
+    var keep = bucketKey(cur.uid);
+    var out = [];
+    for (var k in all) {
+      if (!Object.prototype.hasOwnProperty.call(all, k)) continue;
+      var b = all[k];
+      if (!b || typeof b !== "object" || Array.isArray(b)) continue;
+      var n = 0;
+      for (var i = 0; i < KINDS.length; i++) {
+        n += Array.isArray(b[KINDS[i]]) ? b[KINDS[i]].length : 0;
+      }
+      /* 空桶不列。例外只给「已登录时的当前账号」（cur.uid 非空）——
+       * 未登录时 keep 是匿名桶，它的空壳不该露脸 */
+      if (!n && !(k === keep && cur.uid)) continue;
+      out.push({
+        key: k,
+        uid: k === ANON ? "" : k,
+        anon: k === ANON,
+        current: k === keep,
+        blog: typeof b._blog === "string" ? b._blog : "",
+        ts: Number(b._ts) || 0,
+        n: n,
+      });
+    }
+    out.sort(function (x, y) {
+      if (x.current !== y.current) return x.current ? -1 : 1;
+      if (x.anon !== y.anon) return x.anon ? 1 : -1;
+      return (y.ts || 0) - (x.ts || 0);
+    });
+    return out;
+  }
+
+  /* 删掉一个桶。调用方负责确认框与落盘 —— 这里只管数据结构 */
+  function drop(filter, key) {
+    var all = buckets(filter);
+    if (!Object.prototype.hasOwnProperty.call(all, key)) return false;
+    delete all[key];
+    return true;
+  }
+
   /* 一次性取三份，过滤主循环用 */
   function flat(filter) {
     var b = ensureBucket(filter, cur.uid);
@@ -452,6 +529,11 @@
     ensureBucket: ensureBucket,
     list: list,
     flat: flat,
+    /* #41：本机名单管理 */
+    touch: touch,
+    entries: entries,
+    drop: drop,
+    TOUCH_MS: TOUCH_MS,
     remember: remember,
     resolve: resolve,
     isWww: isWww,

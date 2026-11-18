@@ -346,7 +346,12 @@
     activateTab(b.dataset.tab);
     try { localStorage.setItem(PANE_LS, b.dataset.tab); } catch (err) {}
     /* 进「其他」栏时刷新一次存储占用（统计有成本，不常驻轮询） */
-    if (b.dataset.tab === "misc") lcRenderUsage();
+    if (b.dataset.tab === "misc") {
+      lcRenderUsage();
+      /* 本机名单：打开面板等于"这个账号今天用过了"，顺手记一笔 */
+      lcTouchBuckets();
+      lcRenderBuckets();
+    }
   });
   /* 载入时恢复上次停留的栏（失败/首次打开则维持 HTML 里的「显示」） */
   try {
@@ -1565,30 +1570,59 @@
         save();
       }
     });
-    // 快捷键开关
-    const shortcutsEnabled = $('shortcuts-enabled');
-    const shortcutsList = $('shortcuts-list');
+    // 快捷键开关 + 列表折叠（2026-11-16 作者拍板形态）
+    // 规则：关闭 ⇒ 列表与展开键都不出现（快捷键不生效时看它没有意义）；
+    //      开启 ⇒ 按存下的展开状态渲染，**没存过就是展开**。
+    // 「初次开启自动展开」用默认值表达，不引入一次性标记 —— 多一个状态
+    // 就多一条永远测不到的分支。
+    // 展开状态存 localStorage 而不是 settings：它是面板视图状态；写
+    // storage.local 会让每个内容帧重算一次设置，也不该跟着导出包走。
+    const SC_OPEN_KEY = "lc_sc_open_v1";
+    const shortcutsEnabled = $("shortcuts-enabled");
+    const scFoldBody = $("sc-fold-body");
+    const scFold = $("sc-fold");
+    const scOffHint = $("sc-off-hint");
+    let scOpen = true;
+    try {
+      scOpen = localStorage.getItem(SC_OPEN_KEY) !== "0"; /* 缺省 = 展开 */
+    } catch (e) {}
 
-    shortcutsEnabled.addEventListener('change', (e) => {
-      const enabled = e.target.checked;
-      state.shortcutsEnabled = enabled;
-      save();
-
-      if (enabled) {
-        shortcutsList.style.opacity = '1';
-        shortcutsList.style.pointerEvents = 'auto';
-      } else {
-        shortcutsList.style.opacity = '0.5';
-        shortcutsList.style.pointerEvents = 'none';
+    function lcScRender() {
+      const on = !!state.shortcutsEnabled;
+      const open = on && scOpen;
+      if (scOffHint) scOffHint.style.display = on ? "none" : "";
+      if (scFold) {
+        scFold.style.display = on ? "" : "none";
+        scFold.textContent = T(open ? "收起" : "查看快捷键");
       }
-    });
+      if (scFoldBody) {
+        scFoldBody.classList.toggle("closed", !open);
+        /* 折起来时里面的按钮不能被 Tab 聚焦（同 lcBindFold 的理由） */
+        try {
+          scFoldBody.inert = !open;
+        } catch (e) {}
+      }
+    }
 
-    // 初始化状态（两向都要写：关掉后重开面板，开关与列表禁用态都得对。
+    shortcutsEnabled.addEventListener("change", (e) => {
+      state.shortcutsEnabled = e.target.checked;
+      save();
+      lcScRender();
+    });
+    if (scFold) {
+      scFold.addEventListener("click", () => {
+        scOpen = !scOpen;
+        try {
+          localStorage.setItem(SC_OPEN_KEY, scOpen ? "1" : "0");
+        } catch (e) {}
+        lcScRender();
+      });
+    }
+
+    // 初始化（两向都要写：关掉后重开面板，开关回填与列表显隐都得对。
     // 旧代码只在 true 方向回填，关掉后重开面板会显示成"开着但列表禁用"的矛盾态）
-    const scOn = !!state.shortcutsEnabled;
-    shortcutsEnabled.checked = scOn;
-    shortcutsList.style.opacity = scOn ? '1' : '0.5';
-    shortcutsList.style.pointerEvents = scOn ? 'auto' : 'none';
+    shortcutsEnabled.checked = !!state.shortcutsEnabled;
+    lcScRender();
 
     // 打开浏览器快捷键设置
     $('shortcuts-settings-btn').addEventListener('click', () => {
@@ -2079,6 +2113,10 @@
       renderTagBlockList(); /* 本地段的账号名在段头里，换身份要重画 */
     } catch (e) {}
     renderFilterFold();
+    /* 换身份 = 换了一个账号在用这台机器：记一笔使用时间与账号名，
+       否则管理界面里那个桶永远是「账号 ·0853 · 未知」 */
+    lcTouchBuckets();
+    lcRenderBuckets();
   }
 
   /* 打开面板时确认「现在还登着吗」（2026-11-14 作者拍板 A 方案）。
@@ -4106,6 +4144,16 @@
      * 页面全局），确认后要按新身份重画名单 */
     lcVerifyWhoAmI();
     lcStateLoaded = true; // 真值已到手，可以撤首开防白闪的预判标记了
+    /* 「其他」栏的常显块必须在这里补一次。脚本末尾那段 sync 的补渲染跑在
+       本回调**之前**（那时 state 还是默认值），占用数字与名单都是空的；
+       而 lcVerifyWhoAmI 只在**身份变了**时才重画，缓存与当前一致就不重画
+       ⇒「上次停在其他栏 + 登录状态没变」会让名单块一直是 display:none
+       （2026-11-16 真机：登录另一个号后本机名单整块消失）。 */
+    if (document.querySelector('.pane[data-pane="misc"].on')) {
+      lcRenderUsage();
+      lcTouchBuckets();
+      lcRenderBuckets();
+    }
     applyDarkFollow(state); // 面板暗色跟随（函数声明提升，定义在 IIFE 尾部）
 
     // 向当前网页查询是否在装饰图编辑模式
@@ -4723,6 +4771,118 @@
     });
   }
 
+  /* ------------------------------------------------------------
+   * #41 本机名单（数据卡底部，2026-11-16 作者拍板 A 位置）
+   * 分账号之后本机可能压着几个号的名单，"看不见、删不掉"是唯一缺口。
+   * 出现规则：**≥2 份才出现** —— 只有当前账号一份时，「本机名单 1 份」
+   * 只是把过滤卡的数字重说一遍，是噪音；出现了就一定删得动，才配占版面。
+   * 动词分两档：当前账号「清空」（清掉正在生效的名单）、其他「删除」（存档）。
+   * 展开键与快捷键卡同一个套路：位置固定、0fr↔1fr、收起时 inert。
+   * ============================================================ */
+  var lcBucketsOpen = false;
+
+  function lcTimeAgo(ts) {
+    if (!ts) return T("未知");
+    const d = Math.max(0, Date.now() - ts);
+    if (d < 60e3) return T("刚刚");
+    if (d < 3600e3) return Math.floor(d / 60e3) + " " + T("分钟前");
+    if (d < 864e5) return Math.floor(d / 3600e3) + " " + T("小时前");
+    if (d < 30 * 864e5) return Math.floor(d / 864e5) + " " + T("天前");
+    if (d < 365 * 864e5) return Math.floor(d / (30 * 864e5)) + " " + T("个月前");
+    return Math.floor(d / (365 * 864e5)) + " " + T("年前");
+  }
+
+  /* 账号显示名：桶里记的 `_blog`（切号那刻写下来的）优先，没有就退成 uid 尾 4 位。
+   * 1.13 及更早的老桶没有 `_blog` —— 那时根本不知道该存名字，只能这样认。
+   * 匿名桶不叫 `_anonymous`，叫「未登录时」。 */
+  function lcBucketName(e) {
+    if (e.anon) return T("未登录时");
+    if (e.blog) return e.blog;
+    return T("账号") + " ·" + String(e.uid).slice(-4);
+  }
+
+  function lcRenderBuckets() {
+    const box = $("lc-lists"), sum = $("lc-lists-sum"), rows = $("lc-lists-rows");
+    if (!box || !sum || !rows) return;
+    const ens = LCUid.entries(ensureFilter());
+    let total = 0;
+    ens.forEach((e) => { total += e.n; });
+    /* 出现条件：本机还压着**别的身份**的名单 —— 不是「至少 2 份」。
+       `length >= 2` 把「当前账号那一行」也算进份数了，可它未必存在
+       （读路径还没走到 / 刚换号还没建桶 / 未登录时匿名空桶按新规则不列），
+       于是只剩 1 行时整块消失，用户再也删不掉上个账号的数据 ——
+       而这正是做这块的理由（2026-11-16 真机：登录另一个号后整块不见了）。 */
+    if (!ens.some((e) => !e.current)) { box.style.display = "none"; return; }
+    box.style.display = "";
+    sum.textContent = ens.length + " " + T("份") + " · " + total + " " + T("条");
+    rows.innerHTML = ens.map((e) => {
+      const meta = e.n + " " + T("条") + " · " + lcTimeAgo(e.ts);
+      return (
+        '<div style="min-width:0;">' +
+        '<div style="font-size:13px;color:var(--lc-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+        lcEscHtml(lcBucketName(e)) +
+        (e.current
+          ? '<span style="font-size:11px;color:var(--lc-sub);margin-left:4px;">' + T("当前") + "</span>"
+          : "") +
+        "</div>" +
+        '<div style="font-size:11px;color:var(--lc-sub);margin-top:2px;white-space:nowrap;">' +
+        lcEscHtml(meta) +
+        "</div></div>" +
+        '<button class="lc-link" type="button" data-lc-bucket="' +
+        lcEscHtml(e.key) +
+        '" style="white-space:nowrap;">' +
+        (e.current ? T("清空") : T("删除")) +
+        "</button>"
+      );
+    }).join("");
+    const body = $("lc-lists-body"), more = $("lc-lists-more");
+    if (body) {
+      body.classList.toggle("closed", !lcBucketsOpen);
+      try { body.inert = !lcBucketsOpen; } catch (e) {}
+    }
+    if (more) more.textContent = T(lcBucketsOpen ? "收起" : "管理");
+  }
+
+  /* 打一次「最后使用」+ 记住账号名。差不到 1 小时不写盘（见 LCUid.touch）。
+   * **不走 save()**：save 是"你改了什么"的反馈通道（会闪「已保存 ✓」），
+   * 而使用时间是系统自己记的账 —— 用户没动任何设置，不该看到保存提示。
+   * 也不在首屏数据到手前写：那时 state 还是默认值，写下去等于拿默认值盖掉真配置。 */
+  function lcTouchBuckets() {
+    try {
+      if (!lcStateLoaded || !LCUid.touch(ensureFilter())) return;
+      chrome.storage.local.set({ [LC_STORAGE_KEY]: state }, () => {});
+    } catch (e) {}
+  }
+
+  on("lc-lists-more", "click", () => {
+    lcBucketsOpen = !lcBucketsOpen;
+    lcRenderBuckets();
+  });
+
+  on("lc-lists-rows", "click", (e) => {
+    const btn = e.target.closest("[data-lc-bucket]");
+    if (!btn) return;
+    const key = btn.getAttribute("data-lc-bucket");
+    const f = ensureFilter();
+    const row = LCUid.entries(f).find((x) => x.key === key);
+    if (!row) { lcRenderBuckets(); return; }
+    const name = lcBucketName(row);
+    const ok = confirm(
+      row.current
+        ? T("清空") + "「" + name + "」" + T("的三份屏蔽名单？") + "\n\n" +
+          T("这些名单正在生效，清空后这个账号的过滤立刻失效（当前页面刷新后，被隐藏的帖子会重新出现）。此操作不可撤销。")
+        : T("删除") + "「" + name + "」" + T("的屏蔽名单？") + "\n\n" +
+          T("这份名单属于一个当前没在用的账号，删除后不再占用本机存储，以后用那个账号登录看到的也是空白名单。")
+    );
+    if (!ok) return;
+    /* 当前账号再确认一次：它是"正在生效的设置"，不是"一份存档" */
+    if (row.current && !confirm(T("再确认一次：清空后当前账号的三份名单会全部删除，无法恢复。"))) return;
+    LCUid.drop(f, key);
+    save();
+    lcRenderLists();
+    lcRenderBuckets();
+  });
+
   on("lc-usage-refresh", "click", lcRenderUsage);
   /* 「清理未使用」：删掉没有任何设置引用的素材记录（孤儿）。
      事件委托挂在整块 #lc-usage 上 —— 素材行会从常显区重建，绑在旧容器（明细列表）上会收不到。
@@ -4757,8 +4917,8 @@
     d.style.display = open ? "" : "none";
     b.textContent = T(open ? "收起明细" : "展开明细");
   });
-  /* 首屏若就停在「其他」栏（上次记住的栏），补一次统计 */
-  if (document.querySelector('.pane[data-pane="misc"].on')) lcRenderUsage();
+  /* 首屏「其他」栏的补渲染已挪进 storage 回调（见 lcStateLoaded = true 处）：
+     放在这里会跑在配置到手之前，用默认值算一遍白算。 */
 
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== "local" || !ch[LC_STORAGE_KEY]) return;
