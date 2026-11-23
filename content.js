@@ -8881,14 +8881,88 @@ function bindGlobalDecListener() {
   let resultHint = null;
   let loadedCountHint = null;
   let indexHint = null;
+  let noteRow = null;
+  let origInputBg = "";
   let uiReady = false;
   let lastSearchKw = "";
 
-  // 标题缓存：fpost -> title
+  // 标题缓存：slug -> title（空串 = 已知没标题，别重复抓）
   let titleCache = {};
   let indexTotal = 0;
   let indexDone = 0;
   let indexing = false;
+  let indexBlocked = false;
+
+  /* 官方搜索页代理的状态。remoteSlugs = 本次关键词的官方命中集合，用来把「本地
+   * 文字没命中、但官方说命中」的卡也放出来（图片帖就是靠这个才搜得到）。 */
+  let remoteSlugs = null;
+  let remoteKw = "";
+  let remoteItems = [];
+  let remotePage = 0;
+  /* 真正发出去的那个写法（可能被 swapCase 换过大小写）。翻页必须沿用同一个，
+   * 否则第 2 页又用小写去查、又零结果，翻页凭空「到底」。 */
+  let remoteQuery = "";
+  let remoteHasMore = false;
+  /* 「翻到底」和「这一次翻页失败」要分开记：两者都会让 hasMore 变 false，
+   * 但前者该说「就这些了」，后者该让按钮留在原地可重试。
+   * 2026-11-22 作者反馈：点「继续加载官方结果」后按钮直接消失、也没内容 ——
+   * 旧代码把这两种情况都当成「没有更多」，界面上只剩静默。 */
+  let remoteExhausted = false;
+  let remoteFailed = false;
+  let remoteBusy = false;
+  /* 官方结果缓存：key = `kw|page`。除了省请求，它还是「切回旧关键词能立刻复原
+   * 官方命中」的唯一依据（见 reuseRemote）。 */
+  const remoteCache = Object.create(null);
+  const REMOTE_CACHE_MAX = 16;
+  let lastProxyAt = 0;
+
+  /* LOFTER 对「短时间连续抓文章页」有风控：状态码仍是 200，正文却换成
+   * 「当前页面无法预览 / 扫码下载 LOFTER APP」。2026-11-18 作者真机连抓
+   * 150 个图片帖后撞上，连手动点帖子都被引到那个提示页。命中一次就停止
+   * 整轮并冷却 10 分钟，别把剩下的请求全砸上去。 */
+  const BLOCK_RE = /当前页面无法预览|扫码下载\s*LOFTER/i;
+  const BLOCK_KEY = "lc_arch_block_until_" + location.hostname;
+  const BLOCK_MS = 10 * 60 * 1000;
+  const IDX_BATCH = 25; // 单轮最多抓这么多
+  const IDX_GAP_MIN = 700;
+  const IDX_GAP_MAX = 1100;
+  const IDX_REST_MS = 25000; // 批与批之间歇
+
+  /* ===== 2026-11-18 第二轮真机实证：这是「打开文章页」的频率风控，不是产品限制 =====
+   * 作者反馈：图片帖能正常打开，紧接着点第 2–4 篇（含插件后台还在跑的 fetchTitle）
+   * 就被引到「当前页面无法预览」。手动点几篇都能中，150 个自动请求必然踩线 ⇒
+   * 「抓文章页建标题索引」这条路整体停用（IDX_ENABLED=false，代码保留备查）。
+   *
+   * 搜索改走**官方搜索页代理**，一次文章页都不开：
+   *   GET https://<blog>.lofter.com/search?q=<kw>&page=N
+   * 实测（2026-11-18）：带 cookie 200 / 每页 10 条 / `&page=N` 是唯一有效翻页参数 /
+   * 1..6 页累计 62 条；HTML 里直接有 `/post/<slug>` 与标题文本（链接 textContent）。
+   * 顺带解决另外两个痛点：图片帖能搜到（官方索引本来就含）、能搜到未加载的作品。 */
+  const IDX_ENABLED = false;
+  const PROXY_MAX_PAGE = 6;
+  /* 官方搜索页每页 10 条（2026-11-18 实证：47 个链接去重后 10 条）。
+   * 首页不足 10 条就意味着「只有这一页」—— 别给一个点了也没东西的按钮。 */
+  const PROXY_PAGE_SIZE = 10;
+  const PROXY_MIN_GAP = 1200; // 两次代理请求的最小间隔，别把搜索页也打急
+  const REMOTE_ID = "lc-arch-remote";
+
+  /* 洗掉旧版本写进来的脏标题（纯函数，便于自检）：v1.14 之前 fetchTitle
+   * 不判状态码，404 页面的 <title>「404 Not Found」也被当成标题缓存了 ⇒
+   * 那批图片帖的索引内容全是 404，搜任何词都命中不了（2026-11-18 真机）。
+   * 返回被删掉的条数。 */
+  function sanitizeTitles(obj) {
+    let dirty = 0;
+    /* 只认「整个标题就是 404」的形态。写 `^404` 会把一篇标题真叫
+     * 「404 时代」的文章也误删，所以要求尾部也收干净。 */
+    const DIRTY = /^(404(\s*not\s*found)?|not\s*found)$/i;
+    Object.keys(obj).forEach((k) => {
+      if (DIRTY.test(String(obj[k] || "").trim())) {
+        delete obj[k];
+        dirty++;
+      }
+    });
+    return dirty;
+  }
 
   function loadTitleCache() {
     try {
@@ -8896,6 +8970,7 @@ function bindGlobalDecListener() {
       if (raw) {
         const stored = JSON.parse(raw);
         titleCache = { ...stored, ...titleCache }; // 内存优先，合并不覆盖
+        if (sanitizeTitles(titleCache)) saveTitleCache();
       }
     } catch (e) {}
   }
@@ -8933,16 +9008,475 @@ function bindGlobalDecListener() {
     }
   }
 
-  // 从 li 元素提取 fpost 参数
-  function getFpost(item) {
+  /* 作品 slug（`<blogId>_<postId>`）。归档卡有两种形态：
+   *   li.text / 多数 li.img → <a href="/post/749935d7_34faf00a4">（slug 在 path 里）
+   *   少数转载卡            → <a href="//www.lofter.com/shareblog/<blog>?fpost=ae140f60_34f816ee9">
+   * 2026-11-18 真机实证：150 张图片卡里只有 1 张走 shareblog。旧实现只读
+   * `?fpost=` ⇒ 99% 的图片卡返回 null ⇒ startIndexing 的 toFetch 恒空 ⇒
+   * 图片标题索引从未建立（这才是「图片作品搜不到」的根因）。 */
+  const SLUG_RE = /^[a-z0-9]+_[a-z0-9]+$/i;
+  const SLUG_PATH_RE = /\/post\/([a-z0-9]+_[a-z0-9]+)/i;
+  function slugOf(item) {
     const a = item.querySelector("a[href]");
     if (!a) return null;
     try {
       const url = new URL(a.href);
-      return url.searchParams.get("fpost");
+      const fpost = url.searchParams.get("fpost");
+      if (fpost && SLUG_RE.test(fpost)) return fpost;
+      const m = url.pathname.match(SLUG_PATH_RE);
+      return m ? m[1] : null;
     } catch (e) {
       return null;
     }
+  }
+
+  /* ================= 官方搜索页代理（不碰文章页） ================= */
+
+  /* 带登录态的后台中继。content script 直连别的 lofter 子域会撞 CORS，
+   * SW 有 host_permissions；白名单在 background.js 的 LC_FETCH_ALLOW
+   * （只放行 *.lofter.com / *.lf127.net），这里不重复判。 */
+  function relayFetch(url) {
+    return new Promise((resolve) => {
+      try {
+        if (
+          typeof chrome === "undefined" ||
+          !chrome.runtime ||
+          typeof chrome.runtime.sendMessage !== "function"
+        ) {
+          resolve({ ok: false, error: "no-runtime" });
+          return;
+        }
+        chrome.runtime.sendMessage({ action: "lcExportFetch", url: url }, (res) => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: String(chrome.runtime.lastError.message || "") });
+            return;
+          }
+          resolve(res || { ok: false, error: "empty" });
+        });
+      } catch (e) {
+        resolve({ ok: false, error: String(e) });
+      }
+    });
+  }
+
+  /* 纯函数（自检直接跑）：从搜索页 HTML 抽作品。
+   * 真机形状：单页 47 个 `/post/` 链接、去重后 10 条；同一张卡有 4–5 个链接指向
+   * 同一个 slug，其中图片卡的那几个链接文本是空的 ⇒ 同一 slug 取「第一个非空
+   * 文本」当标题，不能见到空串就覆盖。 */
+  function parseSearchHtml(html) {
+    const out = [];
+    const bySlug = new Map();
+    if (!html || typeof html !== "string") return out;
+    let doc = null;
+    try {
+      doc = new DOMParser().parseFromString(html, "text/html");
+    } catch (e) {
+      return out;
+    }
+    if (!doc || typeof doc.querySelectorAll !== "function") return out;
+    Array.prototype.forEach.call(doc.querySelectorAll("a[href]"), (a) => {
+      const href = a.getAttribute("href") || "";
+      const m = href.match(SLUG_PATH_RE);
+      if (!m) return;
+      const slug = m[1];
+      const title = (a.textContent || "").replace(/\s+/g, " ").trim();
+      const rec = bySlug.get(slug);
+      if (!rec) {
+        const item = { slug: slug, title: title, href: href };
+        bySlug.set(slug, item);
+        out.push(item);
+      } else if (!rec.title && title) {
+        rec.title = title;
+      }
+    });
+    return out;
+  }
+
+  /* 远端 HTML 同样不可信：只放行 lofter.com 家族的 /post/<slug>，其余用 origin 自拼，
+   * 避免把 javascript: / 他域链接直接塞进 a.href。 */
+  function safePostUrl(href, slug, origin) {
+    const base = origin || (typeof location !== "undefined" ? location.origin : "");
+    try {
+      const u = new URL(href, base);
+      if (/(^|\.)lofter\.com$/i.test(u.hostname) && SLUG_PATH_RE.test(u.pathname)) {
+        return u.href;
+      }
+    } catch (e) {}
+    return String(base || "").replace(/\/+$/, "") + "/post/" + slug;
+  }
+
+  function searchUrl(kw, page) {
+    return location.origin + "/search?q=" + encodeURIComponent(kw) + "&page=" + page;
+  }
+
+  function rememberCache(key, out) {
+    remoteCache[key] = out;
+    const keys = Object.keys(remoteCache);
+    /* 插入顺序即淘汰顺序：超上限就丢最早那条，避免逛一下午攒出几百条 HTML 解析结果 */
+    if (keys.length > REMOTE_CACHE_MAX) delete remoteCache[keys[0]];
+  }
+
+  /* 一次搜索页取数：限速 + 中继 + 三态分流 + 解析。抽出来是为了让
+   * proxySearch 能在「零结果」时换个大小写再问一次（见下）。 */
+  async function fetchSearchPage(q, page) {
+    /* 连打会把这个接口也打急：两次代理请求之间强制 ≥ PROXY_MIN_GAP */
+    const gap = Date.now() - lastProxyAt;
+    if (gap < PROXY_MIN_GAP) {
+      await new Promise((r) => setTimeout(r, PROXY_MIN_GAP - gap));
+    }
+    lastProxyAt = Date.now();
+    const res = await relayFetch(searchUrl(q, page));
+    if (!res || !res.ok) {
+      return {
+        ok: false,
+        status: (res && res.status) || 0,
+        items: [],
+        login: /\/login/i.test(String((res && res.finalUrl) || "")),
+      };
+    }
+    /* 服务端两种「200 但零结果」必须靠最终 URL 区分，否则一律说成「整站都搜不到」：
+     *   1) /front/blog/home-page-search-empty —— 这个博客的官方搜索没开放（真机实测
+     *      pp030pp 新版 /view 主页直接 302 到这里）；
+     *   2) /front/login —— 未登录被踢回登录页。
+     * 两者的 HTML 里都找不到 /post/<slug>，解析出来一定是 0 条。 */
+    const finalUrl = String((res && res.finalUrl) || "");
+    if (/home-page-search-empty/i.test(finalUrl)) {
+      return { ok: true, status: res.status || 200, items: [], off: true };
+    }
+    if (/\/login/i.test(finalUrl)) {
+      return { ok: false, status: res.status || 0, items: [], login: true };
+    }
+    const items = parseSearchHtml(res.text || "");
+    return { ok: true, status: res.status, items: items, query: q };
+  }
+
+  /* 只有「大小写确实会变」的纯 ASCII 关键词才换写法：中文、数字、含空格的
+   * 都原样返回 null，不浪费请求。 */
+  function swapCase(s) {
+    const v = String(s || "");
+    if (!/^[\x20-\x7e]+$/.test(v)) return null;
+    const alt = v === v.toLowerCase() ? v.toUpperCase() : v.toLowerCase();
+    return alt !== v ? alt : null;
+  }
+
+  async function proxySearch(kw, page, q) {
+    const key = kw + "|" + page;
+    if (remoteCache[key]) return remoteCache[key];
+    const text = q || kw;
+    let out = await fetchSearchPage(text, page);
+    /* 2026-11-23 作者真机：搜「mbti」（小写）官方一条额外作品都没回，把归档页
+     * 拉到 414 篇后本地却能搜到 18 篇标题写着「[言文版]MBTI大逃杀」的作品 ——
+     * 本地过滤是 toLowerCase 不敏感的，官方搜索页不是。零结果时换一种写法再
+     * 问一次（只在零结果时发生，代价是一次请求），拿到的结果照旧按小写词缓存，
+     * 翻页/复用都走同一个 key。 */
+    if (out.ok && !out.off && !out.items.length) {
+      const alt = swapCase(text);
+      if (alt) {
+        const r2 = await fetchSearchPage(alt, page);
+        if (r2.ok && !r2.off && r2.items.length) out = r2;
+      }
+    }
+    /* 「没开放搜索」是博客属性，重试也没用 —— 缓存住，切回这个词不用再打一次 */
+    if (out.ok) rememberCache(key, out);
+    return out;
+  }
+
+  /* ---------- 结果区：官方命中但归档页没加载出来的那些 ---------- */
+
+  function remoteNode() {
+    let n = document.getElementById(REMOTE_ID);
+    if (n) return n;
+    n = document.createElement("div");
+    n.id = REMOTE_ID;
+    n.style.cssText =
+      "display:none;margin:0 0 14px;padding:10px 14px;border:1px solid rgba(102,126,234,.22);" +
+      "border-radius:10px;background:rgba(102,126,234,.05);" +
+      "font:13px/1.7 -apple-system,'Segoe UI','PingFang SC',sans-serif;color:#4a5160;";
+    const first = document.querySelector(".m-filecnt");
+    if (first && first.parentNode) first.parentNode.insertBefore(n, first);
+    else (document.querySelector(".g-bdc") || document.body).appendChild(n);
+    return n;
+  }
+
+  function renderRemote(state, data) {
+    const n = remoteNode();
+    n.textContent = ""; // 远端标题不可信：一律 createElement/textContent，不拼 HTML
+    if (state === "hide") {
+      n.style.display = "none";
+      return;
+    }
+    n.style.display = "block";
+
+    if (state === "loading") {
+      const p = document.createElement("div");
+      p.textContent = "正在查询官方索引…";
+      n.appendChild(p);
+      return;
+    }
+    if (state === "error") {
+      const p = document.createElement("div");
+      p.textContent = data && data.login
+        ? "官方索引需要登录 LOFTER 才能查，当前只能搜索归档页已加载的作品。"
+        : "官方索引暂时不可用" +
+          (data && data.status ? "（HTTP " + data.status + "）" : "") +
+          "，只能搜索已加载的作品。";
+      n.appendChild(p);
+      return;
+    }
+    if (state === "off") {
+      /* 官方搜索页被服务端直接判空（302 到 home-page-search-empty）。这不是网络
+       * 故障，重试也没用；说清楚「这个博客没开搜索」，别让用户以为插件坏了。 */
+      const p = document.createElement("div");
+      p.textContent =
+        "这个博客没有开放官方搜索（官方搜索页直接返回空），只能搜索归档页已加载的作品。";
+      n.appendChild(p);
+      return;
+    }
+
+    const items = (data && data.items) || [];
+    const total = data && typeof data.total === "number" ? data.total : items.length;
+    /* 官方命中的每一篇都已经在归档页里被放出来了 ⇒ 这块没有新内容。
+     * 2026-11-22 作者截图：「共找到 3 篇」下面又写「官方索引命中 2 篇，都已
+     * 在上面」+「官方索引就这些了（共 2 篇）」，三句话在说同一件事，还让人
+     * 以为 3 篇里有 1 篇丢了。改成整块收起，来源拆分写在提示行（见 doSearch）。 */
+    if (total > 0 && !items.length && !(data && (data.hasMore || data.loadFailed))) {
+      n.style.display = "none";
+      return;
+    }
+
+    const head = document.createElement("div");
+    head.style.cssText = "font-weight:600;color:#667eea;margin-bottom:6px;";
+    if (total === 0) {
+      head.style.color = "#8b94a3";
+      head.style.fontWeight = "400";
+      head.textContent = "官方索引也没有命中：这个词在整个博客里都搜不到。";
+    } else if (!items.length) {
+      head.style.color = "#52c41a";
+      head.textContent = "官方索引命中 " + total + " 篇，都已在上面的归档页里 ✓";
+    } else {
+      head.textContent = "官方索引另有 " + items.length + " 篇（归档页还没加载到）";
+    }
+    n.appendChild(head);
+    if (!items.length) {
+      /* 「已全部命中」和「已翻到底」想说清楚：只靠 head 那句
+       * 「都在归档页里」不够，用户仍不知道还能不能再翻。 */
+      if (data && data.exhausted) appendRemoteEnd(n, data);
+      return;
+    }
+
+    items.forEach((it) => {
+      const row = document.createElement("div");
+      row.style.cssText = "padding:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+      const a = document.createElement("a");
+      a.textContent = it.title || it.slug;
+      a.href = safePostUrl(it.href, it.slug);
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.style.cssText = "color:#4a5160;text-decoration:none;";
+      a.addEventListener("mouseenter", () => (a.style.color = "#667eea"));
+      a.addEventListener("mouseleave", () => (a.style.color = "#4a5160"));
+      row.appendChild(a);
+      n.appendChild(row);
+    });
+
+    if (data && data.hasMore) {
+      const more = document.createElement("button");
+      /* 上一次翻页失败：按钮留在原地，改成「重试」，而不是把整块换成错误页
+       * （那看起来就像「点了就消失，什么都没加载」） */
+      more.textContent = data.loadFailed ? "加载失败，点此重试" : "继续加载官方结果 →";
+      more.style.cssText =
+        "margin-top:8px;padding:4px 12px;border:1px solid rgba(102,126,234,.35);border-radius:20px;" +
+        "background:#fff;color:#667eea;font-size:12px;cursor:pointer;";
+      if (data.loadFailed) more.style.color = "#e6a23c";
+      more.addEventListener("click", () => {
+        more.disabled = true;
+        more.textContent = "加载中…";
+        remoteFailed = false;
+        loadMoreRemote();
+      });
+      n.appendChild(more);
+    } else if (data && data.exhausted) {
+      appendRemoteEnd(n, data);
+    }
+  }
+
+  /* 翻到底的结束语。单独抽出来是因为「列表里还有几条」和「一条不剩」
+   * 这两种情况都要能显示它。 */
+  function appendRemoteEnd(n, data) {
+    const end = document.createElement("div");
+    end.style.cssText = "margin-top:8px;font-size:12px;color:#9aa3b2;";
+    const total = data && typeof data.total === "number" ? data.total : 0;
+    end.textContent = "官方索引就这些了（共 " + total + " 篇）";
+    n.appendChild(end);
+  }
+
+  function remoteDomSlugs() {
+    const set = new Set();
+    getAllItems().forEach((li) => {
+      const s = slugOf(li);
+      if (s) set.add(s);
+    });
+    return set;
+  }
+
+  function mergeRemote(list) {
+    const seen = new Set(remoteItems.map((x) => x.slug));
+    let dirty = false;
+    list.forEach((x) => {
+      if (!x || !SLUG_RE.test(String(x.slug || ""))) return;
+      if (!seen.has(x.slug)) {
+        seen.add(x.slug);
+        remoteItems.push(x);
+      }
+      /* 官方搜索页的链接文本就是作品标题 —— 这是图片帖唯一稳定的文字来源。
+       * 图片卡的 alt/title 在图片加载完、卡片重排后会被 LOFTER 改写（2026-11-22
+       * 真机：同一张卡「刚加载时能搜到、全部加载完搜不到」），官方给的标题不会变。
+       * 写进 titleCache 后本地过滤也能命中它，且按 hostname 长期留存。 */
+      const t = String(x.title || "").replace(/\s+/g, " ").trim();
+      if (t && t !== x.slug && titleCache[x.slug] !== t) {
+        titleCache[x.slug] = t;
+        dirty = true;
+      }
+    });
+    if (dirty) saveTitleCache();
+    remoteSlugs = new Set(remoteItems.map((x) => x.slug));
+  }
+
+  function renderRemoteList() {
+    const inDom = remoteDomSlugs();
+    const rest = remoteItems.filter((x) => !inDom.has(x.slug));
+    renderRemote("list", {
+      items: rest,
+      total: remoteItems.length,
+      hasMore: remoteHasMore || remoteFailed,
+      loadFailed: remoteFailed,
+      exhausted: remoteExhausted,
+      inDom: remoteItems.length > 0 && rest.length === 0,
+    });
+  }
+
+  /* 把某个关键词「已查过的官方结果」重新装回状态机，不发任何请求。
+   * 2026-11-22 真机：搜「女仆」→ 蓝块列出官方另有 5 篇 → 搜别的词 → 再搜回
+   * 「女仆」，蓝块整块消失（remoteKw 不匹配就 hide），用户以为结果被吞掉。
+   * 返回 true 表示状态已复原。 */
+  function reuseRemote(kw) {
+    if (remoteBusy) return false;
+    const first = remoteCache[kw + "|1"];
+    if (!first || !first.ok || first.off || !first.items) return false;
+    remoteKw = kw;
+    remoteItems = [];
+    remoteSlugs = null;
+    remotePage = 0;
+    remoteQuery = "";
+    remoteHasMore = false;
+    remoteExhausted = false;
+    remoteFailed = false;
+    for (let p = 1; p <= PROXY_MAX_PAGE; p++) {
+      const r = remoteCache[kw + "|" + p];
+      if (!r || !r.ok || r.off) break;
+      if (r.query) remoteQuery = r.query;
+      mergeRemote(r.items);
+      remotePage = p;
+      if (!r.items.length) {
+        remoteExhausted = true;
+        break;
+      }
+      /* 缓存里最后一页不满 10 条 = 就这一页了 */
+      if (r.items.length < PROXY_PAGE_SIZE) remoteExhausted = true;
+    }
+    if (!remotePage) return false;
+    remoteHasMore = !remoteExhausted && remoteItems.length > 0 && remotePage < PROXY_MAX_PAGE;
+    return true;
+  }
+
+  function startRemote(kw, q) {
+    if (remoteBusy) return;
+    /* 这个词刚查过（请求缓存还在）：直接把结果装回来，不再打搜索页 */
+    if (reuseRemote(kw)) {
+      renderRemoteList();
+      doSearch(kw);
+      return;
+    }
+    remoteKw = kw;
+    remoteSlugs = null;
+    remoteItems = [];
+    remotePage = 0;
+    remoteQuery = "";
+    remoteHasMore = false;
+    remoteExhausted = false;
+    remoteFailed = false;
+    remoteBusy = true;
+    renderRemote("loading");
+    proxySearch(kw, 1, q || kw).then((r) => {
+      /* remoteBusy 必须先复位、再判词。旧写法把它写在「词还对得上」的分支里：
+       * 查询还在飞的时候换词或清空输入框，这个 flag 就永久卡在 true ⇒ 之后每次
+       * 回车都在 startRemote 第一行静默 return，官方索引一次都不再查，界面上
+       * 连「正在查询」都不会出现（作者 2026-11-23 真机搜「mbti」就是这样）。 */
+      remoteBusy = false;
+      if (remoteKw !== kw) return; // 换词了，这批结果作废
+      if (!r.ok) {
+        renderRemote("error", r);
+        /* 自动触发时 resultHint 会停在「正在查询官方索引…」不再变，必须
+         * 重算一遍本地结果把它换掉（remoteKw 已是当前词，不会重发请求）。 */
+        doSearch(kw);
+        return;
+      }
+      if (r.off) {
+        renderRemote("off");
+        doSearch(kw); // 同上：把「正在查询官方索引…」换掉
+        return;
+      }
+      remotePage = 1;
+      remoteQuery = r.query || q || kw;
+      mergeRemote(r.items);
+      /* 官方搜索页每页 10 条（见 PROXY_PAGE_SIZE）。首页就不满 10 条 ⇒ 就这一页，
+       * 直接把「就这些了」告诉用户，不给一个点了也没东西的按钮。
+       * 2026-11-22 作者真机：点「继续加载官方结果」按钮就消失了、也没加载出东西，
+       * 就是因为这个博客总共只有 7 条官方命中。 */
+      remoteExhausted = r.items.length < PROXY_PAGE_SIZE;
+      remoteHasMore = !remoteExhausted && remotePage < PROXY_MAX_PAGE;
+      doSearch(kw); // 带上 remoteSlugs 重新过滤
+      renderRemoteList();
+    });
+  }
+
+  function loadMoreRemote() {
+    /* failed 时 remoteHasMore 已经落回 false，但按钮还在（「点此重试」），
+     * 所以这里必须放行 —— 否则点重试毫无反应。 */
+    if (remoteBusy || !remoteKw || (!remoteHasMore && !remoteFailed)) return;
+    const kw = remoteKw;
+    const next = remotePage + 1;
+    remoteBusy = true;
+    proxySearch(kw, next, remoteQuery || kw).then((r) => {
+      /* 同 startRemote：先复位再判词，否则换词时 busy 卡死 */
+      remoteBusy = false;
+      if (remoteKw !== kw) return;
+      if (!r.ok) {
+        /* 保留已经列出来的那几条，只把按钮换成「重试」。
+         * 旧实现整块换成 error 页，看起来就是「点了就消失、什么都没加载」。 */
+        remoteFailed = true;
+        remoteHasMore = false;
+        renderRemoteList();
+        return;
+      }
+      if (r.off) {
+        /* 翻页被 302 到空搜索页：这个博客的翻页到此为止（不是网络故障） */
+        remoteFailed = false;
+        remoteHasMore = false;
+        remoteExhausted = true;
+        renderRemoteList();
+        return;
+      }
+      remotePage = next;
+      mergeRemote(r.items);
+      remoteFailed = false;
+      /* 这一页一条都没解析到 = 真的没有下一页了。以前这里静默把按钮抹掉，
+       * 作者真机看到的就是「点了就消失」。 */
+      if (!r.items.length) remoteExhausted = true;
+      remoteHasMore = r.items.length > 0 && next < PROXY_MAX_PAGE && !remoteExhausted;
+      doSearch(kw);
+      renderRemoteList();
+    });
   }
 
   function getItemText(item) {
@@ -8951,9 +9485,9 @@ function bindGlobalDecListener() {
       text += " " + (el.alt || "") + " " + (el.title || "");
     });
     // 补入缓存的标题
-    const fpost = getFpost(item);
-    if (fpost && titleCache[fpost]) {
-      text += " " + titleCache[fpost];
+    const slug = slugOf(item);
+    if (slug && titleCache[slug]) {
+      text += " " + titleCache[slug];
     }
     return text.toLowerCase();
   }
@@ -8964,14 +9498,18 @@ function bindGlobalDecListener() {
 
   function updateLoadedHint() {
     if (loadedCountHint) {
-      loadedCountHint.textContent = "已加载 " + countLoadedItems() + " 篇";
+      /* 「已加载 N 篇」只在搜索时有意义 —— 平常也显示的话，提示行永远有内容，
+       * 搜索框就白白多占一行（2026-11-22 作者明确要求不要常驻行）。 */
+      loadedCountHint.textContent = lastSearchKw ? "已加载 " + countLoadedItems() + " 篇" : "";
     }
+    syncNote();
   }
 
   function updateIndexHint() {
     if (!indexHint) return;
     if (indexTotal === 0) {
       indexHint.textContent = "";
+      syncNote();
       return;
     }
     if (indexDone >= indexTotal) {
@@ -8982,73 +9520,141 @@ function bindGlobalDecListener() {
         "索引图片/视频标题 " + indexDone + "/" + indexTotal + "…";
       indexHint.style.color = "#999";
     }
+    syncNote();
   }
 
-  // 限速 fetch 标题
-  async function fetchTitle(blogName, fpost) {
-    if (titleCache[fpost]) return titleCache[fpost];
+  // 限速 fetch 标题（slug 形如 `<blogId>_<postId>`）
+  async function fetchTitle(blogName, slug) {
+    if (slug in titleCache) return titleCache[slug];
     try {
-      /* 安全：blogName / fpost 都来自页面 DOM，直接拼进 URL 可能被引导到他域
+      /* 安全：blogName / slug 都来自页面 DOM，直接拼进 URL 可能被引导到他域
        * （`a@evil` 这类 userinfo、或带 `/` 的路径穿越）。这里只放行博客子域
-       * 与 post id 的合法字符集，不合法就当没标题 —— 只取 <title>，丢了不影响功能。 */
-      if (!/^[a-z0-9-]{1,64}$/i.test(String(blogName)) || !/^[a-z0-9_]{1,64}$/i.test(String(fpost))) return "";
-      const url = "https://" + blogName + ".lofter.com/post/" + fpost;
+       * 与 `<blogId>_<postId>` 的合法字符集，不合法就当没标题 —— 只取 <title>，
+       * 丢了不影响功能。 */
+      if (!/^[a-z0-9-]{1,64}$/i.test(String(blogName)) || !SLUG_RE.test(String(slug))) return "";
+      const url = "https://" + blogName + ".lofter.com/post/" + slug;
       const res = await fetch(url);
-      const html = await res.text();
-      const match = html.match(/<title>([\s\S]*?)<\/title>/i);
-      if (match) {
-        const raw = match[1];
-        // 格式："标题 - 博客名 - LOFTER"
-        const title = raw.split(" - ")[0].trim();
-        return title;
+      /* 404 页面同样带 <title>，内容是「404 Not Found」——旧实现照单全收，
+       * 于是那批图片帖的「标题」全变成 404。非 200 一律当没有标题，并写空串
+       * 占位，避免每次进页面都重打一遍同一个 404。 */
+      if (res.status !== 200) {
+        titleCache[slug] = "";
+        saveTitleCache();
+        return "";
       }
+      const html = await res.text();
+      /* 200 不代表拿到文章 —— 风控页也是 200。命中就不写缓存（这篇还有
+       * 救），只打标记让 startIndexing 收手。 */
+      if (BLOCK_RE.test(html)) {
+        indexBlocked = true;
+        try {
+          sessionStorage.setItem(BLOCK_KEY, String(Date.now() + BLOCK_MS));
+        } catch (e) {}
+        return "";
+      }
+      const match = html.match(/<title>([\s\S]*?)<\/title>/i);
+      /* 成功与「页面确实没标题」都落缓存（空串 = 已知无标题，下次别再抓）；
+       * 只有网络异常不占位（见外层 catch）——那种下次还要再试。 */
+      const title = match ? match[1].split(" - ")[0].trim() : "";
+      titleCache[slug] = title;
+      saveTitleCache();
+      return title;
     } catch (e) {}
     return "";
   }
 
   async function startIndexing() {
-    loadTitleCache(); // 无论如何先合并缓存
+    /* 2026-11-18 起停用：这条路要逐篇打开文章页，LOFTER 对「短时间连续打开
+     * 文章页」的风控阈值极低（手动连点 3–4 篇就中），150 个自动请求必然踩线。
+     * 标题改由官方搜索页代理提供（parseSearchHtml），一次文章页都不开。 */
+    if (!IDX_ENABLED) return;
     if (indexing) return;
-    indexing = true;
     loadTitleCache();
+
+    /* 冷却期内不出手，把剩余时间直接告诉用户 */
+    let until = 0;
+    try {
+      until = Number(sessionStorage.getItem(BLOCK_KEY) || 0);
+    } catch (e) {}
+    if (until > Date.now()) {
+      if (indexHint) {
+        indexHint.textContent =
+          "LOFTER 限制了访问，约 " + Math.ceil((until - Date.now()) / 60000) + " 分钟后自动继续";
+        indexHint.style.color = "#e6a23c";
+      }
+      return;
+    }
+
+    indexing = true;
+    indexBlocked = false;
 
     const blogName = location.hostname.split(".")[0];
     const mediaItems = Array.from(
       document.querySelectorAll(".m-filecnt li.img, .m-filecnt li.movie"),
     );
-    const toFetch = mediaItems.filter((li) => {
-      const fpost = getFpost(li);
-      return fpost && !titleCache[fpost];
+    /* `slug in titleCache` 而不是 `!titleCache[slug]`：抓失败的作品存的是
+     * 空串，用 in 判断才不会每轮重试一遍。 */
+    const pending = mediaItems.filter((li) => {
+      const slug = slugOf(li);
+      return slug && !(slug in titleCache);
     });
 
-    indexTotal = toFetch.length;
-    indexDone = 0;
+    indexTotal = mediaItems.length;
+    indexDone = mediaItems.length - pending.length;
     updateIndexHint();
 
-    for (const li of toFetch) {
-      const fpost = getFpost(li);
-      if (!fpost) {
+    /* 一次只抓一批。150 张图连抓会被风控，分批 + 批间长歇才过得去 */
+    const batch = pending.slice(0, IDX_BATCH);
+    for (const li of batch) {
+      if (indexBlocked) break;
+      const slug = slugOf(li);
+      if (!slug) {
         indexDone++;
         continue;
       }
-      const title = await fetchTitle(blogName, fpost);
-      if (title) {
-        titleCache[fpost] = title;
-        saveTitleCache();
-      }
+      // fetchTitle 内部负责落缓存（含失败占位），这里只等结果
+      await fetchTitle(blogName, slug);
       indexDone++;
       updateIndexHint();
       // 如果正在搜索，实时更新结果
       if (lastSearchKw && pluginMode) doSearch(lastSearchKw);
-      // 限速：每个请求间隔 350ms
-      await new Promise((r) => setTimeout(r, 350));
+      // 抓慢一点 + 随机抖动：固定 350ms 比抖动更像爬虫
+      await new Promise((r) =>
+        setTimeout(r, IDX_GAP_MIN + Math.random() * (IDX_GAP_MAX - IDX_GAP_MIN)),
+      );
     }
 
-    // 已缓存的不算进 total，显示全部完成
-    indexTotal = mediaItems.length;
-    indexDone = mediaItems.length;
-    updateIndexHint();
     indexing = false;
+
+    if (indexBlocked) {
+      if (indexHint) {
+        indexHint.textContent = "LOFTER 限制了访问，已暂停（10 分钟后自动继续）";
+        indexHint.style.color = "#e6a23c";
+      }
+      // 冷却结束后如果还开着插件搜索，自动续上
+      setTimeout(() => {
+        if (pluginMode) startIndexing();
+      }, BLOCK_MS + 1000);
+      return;
+    }
+
+    /* 还有没索引的 ⇒ 歇一会儿再来一批（避免一次性打爆） */
+    const rest = mediaItems.filter((li) => {
+      const slug = slugOf(li);
+      return slug && !(slug in titleCache);
+    });
+    if (rest.length) {
+      indexTotal = mediaItems.length;
+      indexDone = mediaItems.length - rest.length;
+      updateIndexHint();
+      setTimeout(() => {
+        if (pluginMode) startIndexing();
+      }, IDX_REST_MS);
+    } else {
+      indexTotal = mediaItems.length;
+      indexDone = mediaItems.length;
+      updateIndexHint();
+    }
   }
 
   function buildUI() {
@@ -9072,106 +9678,255 @@ function bindGlobalDecListener() {
 
     const toggleBtn = document.createElement("button");
     toggleBtn.id = "lc-arch-toggle";
-    toggleBtn.textContent = "🔍 插件搜索";
+    toggleBtn.type = "button";
+    /* 外观照着旁边的「文章 / 日期 / 标签」胶囊长（同高 39、同圆角、同白底、
+     * 同字号），再 float:left 跟进它们的排列 —— 2026-11-22 作者反馈：之前是
+     * 一个 12px 蓝字小钮，跟三个胶囊「高高低低」，一眼就是外挂。 */
     toggleBtn.style.cssText =
-      "margin-left:8px;padding:4px 12px;border:1px solid rgba(0,0,0,0.08);border-radius:20px;background:rgba(255,255,255,0.7);font-size:12px;color:#555;cursor:pointer;transition:all .2s;white-space:nowrap;";
+      "margin-left:10px;padding:0 20px;height:39px;box-sizing:border-box;float:left;" +
+      "border:0;border-radius:20px;background:rgba(255,255,255,0.9);" +
+      "font-family:inherit;font-size:14px;color:#666;cursor:pointer;" +
+      "transition:background .2s,box-shadow .2s;white-space:nowrap;";
     toggleBtn.addEventListener("mouseenter", () => {
-      toggleBtn.style.background = "rgba(255,255,255,0.95)";
-      toggleBtn.style.boxShadow = "0 2px 8px rgba(0,0,0,0.1)";
+      toggleBtn.style.background = "#fff";
+      toggleBtn.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)";
     });
     toggleBtn.addEventListener("mouseleave", () => {
-      toggleBtn.style.background = "rgba(255,255,255,0.7)";
       toggleBtn.style.boxShadow = "none";
+      paintToggle(); // 回到当前模式该有的底色/字色
     });
     const schbtn = fbar.querySelector(".schbtn");
     schbtn.appendChild(toggleBtn);
 
+    /* 2026-11-22 作者定稿的形态：搜索框就活在官方那一行里，不再有「收起 / 展开」
+     * 两态。官方 .schbtn 第二行只有「↩ 原版搜索」87px，右侧 308px 全空
+     * （真机 vw824 / 内容区 433 实测），把输入框右对齐贴进那段空白就够用，
+     * 一个像素的额外高度都不占。这也是对两个抱怨的正面回答：
+     *   ① 「切过来先出现一个『搜归档』，还得再点一下才能打字」→ 切过去就 focus；
+     *   ② 「空着的时候往下一滚就缩回去」→ blur 只退高亮，永不缩尺寸。
+     * 提示（共找到 / 已加载 / 官方索引状态）落到下面单独一行，没内容时整行不占位。
+     * box 自身透明无边框，看起来就是官方行右侧长出来的一个控件，而不是插件浮层。
+     * 仍然不搬 DOM：placeBox 依赖 box 是 .m-filecnt 的前一个兄弟，搬进 .m-fbar
+     * 会把 sticky 的作用域一起丢掉，所以只用负 margin 上提。 */
+    /* 2026-11-22 定案：改用 position:fixed，位置完全由 layoutArchBox 按「原版
+     * 搜索框 .m-fsch 的 rect」写入。
+     * 为什么不再用 sticky + 负 margin：真机/离线实测下来，负 margin 会被相邻
+     * 布局卡在「筛选行内容底边」上，无论给多大值都只能挪到那里，压根到不了
+     * 原版搜索框所在的那一行 —— 这就是作者反复说「位置还是偏了」的根因。
+     * fixed 脱离文档流，`top` 就是纯粹的视口坐标，同时天然具备吸顶能力
+     * （scroll 时把 top clamp 到官方固定头下沿）。 */
     const box = document.createElement("div");
     box.id = "lc-arch-box";
-    box.style.cssText = "display:none;float:right;align-items:center;gap:8px;";
+    box.style.cssText =
+      "display:none;position:fixed;left:0;top:0;z-index:900;flex-direction:column;" +
+      "align-items:flex-end;pointer-events:none;margin:0;padding:0;" +
+      "background:transparent;border:0;box-shadow:none;";
 
     const row1 = document.createElement("div");
-    row1.style.cssText = "display:flex;align-items:center;gap:8px;";
+    row1.id = "lc-arch-row";
+    row1.style.cssText =
+      "display:flex;align-items:center;justify-content:flex-end;gap:6px;width:100%;flex-wrap:nowrap;pointer-events:none;";
 
     searchInput = document.createElement("input");
     searchInput.type = "text";
-    searchInput.placeholder = "搜索标题、正文、标签…";
+    searchInput.placeholder = ARCH_PH;
+    searchInput.title = "搜索归档页的标题、正文、标签；回车同时查官方索引";
+    /* max-width 卡在 calc(100% - 136px)：左边要留够「↩ 原版搜索」（87px + 左边距
+     * 38px ≈ 125px），否则聚焦变宽时会盖住那个按钮。 */
     searchInput.style.cssText =
-      "flex:1;min-width:180px;max-width:320px;padding:6px 14px;border:1px solid rgba(0,0,0,0.1);border-radius:20px;background:rgba(255,255,255,0.85);font-size:13px;outline:none;";
+      "width:100%;height:30px;box-sizing:border-box;padding:0 26px 0 14px;pointer-events:auto;" +
+      "border:1px solid rgba(0,0,0,0.08);border-radius:20px;background:rgba(255,255,255,0.92);" +
+      "font-size:12px;color:#333;outline:none;box-shadow:0 1px 4px rgba(20,40,80,0.06);" +
+      "transition:border-color .16s ease,box-shadow .16s ease,background .16s ease;";
     searchInput.addEventListener("focus", () => {
+      /* 聚焦只高亮，不改尺寸、不改底色 —— 底色可能是从官方框抄来的主题色，
+       * 一改就露出「这是另一个控件」的马脚 */
       searchInput.style.borderColor = "#667eea";
       searchInput.style.boxShadow = "0 0 0 3px rgba(102,126,234,0.12)";
     });
+    /* 失焦只退高亮，绝不缩回去。旧版 blur 400ms 后收回窄框，于是「空着往下一滚
+     * 就变小」——其实多半是滚动时点到了别处触发 blur。要收起来只能再点一次开关。 */
     searchInput.addEventListener("blur", () => {
-      searchInput.style.borderColor = "rgba(0,0,0,0.1)";
-      searchInput.style.boxShadow = "none";
+      searchInput.style.borderColor = "rgba(0,0,0,0.08)";
+      searchInput.style.boxShadow = "0 1px 4px rgba(20,40,80,0.06)";
     });
 
     const clearBtn = document.createElement("button");
-    clearBtn.textContent = "清空";
+    clearBtn.id = "lc-arch-clear";
+    clearBtn.type = "button";
+    clearBtn.title = "清空搜索";
+    clearBtn.setAttribute("aria-label", "清空搜索");
+    /* 叉号用 SVG 画，不用字符「×」：字符的墨迹中线取决于字体度量（真机
+     * Microsoft YaHei / Segoe UI 下本来就比盒子中心低 0.5–1px，作者 2026-11-23
+     * 反馈「× 有点偏下」），换主题字体还会再变。SVG 两根线按 viewBox 几何居中，
+     * 与字体、字号、行高彻底解耦。 */
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 12 12");
+    svg.setAttribute("width", "12");
+    svg.setAttribute("height", "12");
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.display = "block";
+    [
+      [2.6, 2.6, 9.4, 9.4],
+      [9.4, 2.6, 2.6, 9.4],
+    ].forEach((p) => {
+      const ln = document.createElementNS(NS, "line");
+      ln.setAttribute("x1", String(p[0]));
+      ln.setAttribute("y1", String(p[1]));
+      ln.setAttribute("x2", String(p[2]));
+      ln.setAttribute("y2", String(p[3]));
+      ln.setAttribute("stroke", "currentColor");
+      ln.setAttribute("stroke-width", "1.4");
+      ln.setAttribute("stroke-linecap", "round");
+      svg.appendChild(ln);
+    });
+    clearBtn.appendChild(svg);
+    /* × 的垂直位置不用 `top:50% + translateY(-50%)`：那套写法的基准是「壳的实际
+     * 高度」，壳一旦比输入框高一点（行盒基线、主题 CSS、行内元素对齐都会），
+     * 叉号就跟着往下掉 —— 作者 2026-11-23 真机：初次出现是准的，点一下叉号再
+     * 输入，叉号就滑到框底去了。默认值只写「撑满壳 + 自动外边距居中」，
+     * 真正的坐标由 placeClear() 按输入框的真实矩形显式写成像素，容器怎么变都不影响。 */
     clearBtn.style.cssText =
-      "padding:4px 12px;border:1px solid rgba(0,0,0,0.08);border-radius:20px;background:rgba(255,255,255,0.7);font-size:12px;color:#666;cursor:pointer;white-space:nowrap;";
+      "display:none;position:absolute;right:5px;top:0;bottom:0;margin:auto 0;" +
+      "align-items:center;justify-content:center;line-height:1;" +
+      "width:16px;height:16px;padding:0;pointer-events:auto;" +
+      "border:0;border-radius:50%;background:rgba(0,0,0,0.07);" +
+      "font-size:12px;color:#8b94a3;cursor:pointer;";
 
     resultHint = document.createElement("span");
     resultHint.style.cssText =
-      "font-size:12px;color:#667eea;font-weight:500;white-space:nowrap;";
+      "font-size:12px;color:#667eea;font-weight:500;white-space:nowrap;" +
+      "background:rgba(255,255,255,0.9);border:1px solid rgba(102,126,234,0.18);border-radius:12px;padding:1px 10px;";
 
-    row1.appendChild(searchInput);
-    row1.appendChild(clearBtn);
-    row1.appendChild(resultHint);
-    box.appendChild(row1);
-
-    const row2 = document.createElement("div");
-    row2.style.cssText =
-      "display:flex;align-items:center;gap:8px;margin-top:2px;";
+    /* 提示行：作者允许「官方索引命中提示单独多一行」，但不允许常驻空行，
+     * 所以整行由 syncNote() 按「有没有话说」显示 / 隐藏。 */
+    noteRow = document.createElement("div");
+    noteRow.id = "lc-arch-note";
 
     loadedCountHint = document.createElement("span");
-    loadedCountHint.style.cssText = "font-size:11px;color:#999;";
+    loadedCountHint.style.cssText =
+      "font-size:11px;color:#9aa3b2;white-space:nowrap;background:rgba(255,255,255,0.9);border:1px solid rgba(0,0,0,0.06);border-radius:12px;padding:1px 10px;";
 
     indexHint = document.createElement("span");
-    indexHint.style.cssText = "font-size:11px;color:#999;";
+    indexHint.style.cssText = "font-size:11px;color:#999;white-space:nowrap;";
 
-    row2.appendChild(loadedCountHint);
-    row2.appendChild(indexHint);
-    box.appendChild(row2);
+    /* 输入框外面套一层「定位壳」：宽度跟着官方搜索框走，× 绝对定位在框内右端，
+     * 这样输入框能和官方框同宽同高（2026-11-22 作者要「和原版搜索框一致」），
+     * × 也不再额外吃掉输入框的宽度。 */
+    const field = document.createElement("div");
+    field.id = "lc-arch-field";
+    /* display:flex + align-items:center 是「× 不再偏下」的一半（另一半在
+     * clearBtn 上）：块级壳里塞 inline 输入框会多出一条基线间隙，壳高就不等于
+     * 输入框高了。 */
+    field.style.cssText =
+      "position:relative;flex:0 0 auto;display:flex;align-items:center;pointer-events:none;";
+    field.appendChild(searchInput);
+    field.appendChild(clearBtn);
+    row1.appendChild(field);
+    noteRow.appendChild(resultHint);
+    noteRow.appendChild(loadedCountHint);
+    noteRow.appendChild(indexHint);
+    box.appendChild(row1);
 
-    originalBox.parentNode.insertBefore(box, originalBox.nextSibling);
+    /* 提示行不放进 fixed 的 box 里：box 已脱离文档流，提示行跟进去就会浮在
+     * 缩略图上面。它需要留在流里占位，所以单独挂在列表前面（placeBox 摆位）。 */
+    noteRow.style.cssText =
+      "display:none;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap;" +
+      "margin:0 0 10px;pointer-events:auto;";
+
+    /* 先落进文档，再由 placeBox 定位 —— getElementById 才找得到。
+     * box 直接挂 body：它是 fixed，坐标是视口坐标；挂在 .g-bdc 里万一哪天
+     * 官方给祖先加了 transform/filter，fixed 的包含块就会被换掉，位置全乱。
+     * 提示行留在内容容器里（它要靠正常流占位）。 */
+    const host = document.querySelector(".g-bdc") || document.body;
+    document.body.appendChild(box);
+    host.appendChild(noteRow);
+    placeBox();
+    /* 官方固定头常晚于面板挂载才就位（首测可能拿到 0），补两次重测 */
+    setTimeout(layoutArchBox, 800);
+    setTimeout(layoutArchBox, 2500);
+
+    /* 吸顶是 scroll 驱动的：原版搜索框随文档滚走，把 top clamp 在固定头下沿。
+     * capture 是为了连内部滚动容器一起监听（页面不一定在 window 上滚）。 */
+    window.addEventListener("scroll", onArchScroll, { passive: true, capture: true });
+    window.addEventListener("resize", onArchScroll, { passive: true });
 
     let timer;
+    searchInput.addEventListener("compositionstart", () => {
+      archComposing = true;
+    });
+    searchInput.addEventListener("compositionend", () => {
+      archComposing = false;
+      clearTimeout(timer);
+      timer = setTimeout(() => doSearch(searchInput.value), 0);
+      armRemote();
+    });
     searchInput.addEventListener("input", () => {
+      syncClear();
+      if (archComposing) return; // 拼音阶段一个字都不查
       clearTimeout(timer);
       timer = setTimeout(() => doSearch(searchInput.value), 180);
+      armRemote();
     });
     searchInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         clearTimeout(timer);
-        doSearch(searchInput.value);
+        clearTimeout(archRemoteTimer);
+        /* 回车立刻问一次，不等 520ms */
+        doSearch(searchInput.value, { remote: true });
+      } else if (e.key === "Escape") {
+        searchInput.value = "";
+        clearTimeout(timer);
+        clearTimeout(archRemoteTimer);
+        doSearch("");
+        syncClear();
+        searchInput.blur();
       }
     });
     clearBtn.addEventListener("click", () => {
       searchInput.value = "";
-      searchInput.focus();
-      restoreAll();
-      resultHint.textContent = "";
-      lastSearchKw = "";
+      syncClear();
+      searchInput.focus({ preventScroll: true });
+      doSearch(""); // 统一走 doSearch 的复位分支（含官方结果收起来）
     });
+
+    /* 输入框尺寸一旦变化（主题 CSS 后加载、layoutArchBox 重设高度、窗口缩放），
+     * × 必须重新对中：ResizeObserver 盯输入框本身，比「再排一次布局」更准 ——
+     * 它连「不是我们改的尺寸」也管得住。 */
+    if (typeof ResizeObserver === "function") {
+      try {
+        new ResizeObserver(() => placeClear()).observe(searchInput);
+      } catch (err) {
+        /* 老浏览器没有就算了，syncClear / layoutArchBox 里还有两次兜底 */
+      }
+    }
 
     toggleBtn.addEventListener("click", () => {
       pluginMode = !pluginMode;
       saveMode(pluginMode);
       updateView();
-      // 切换到插件搜索时开始建索引
-      if (pluginMode) startIndexing();
+      if (pluginMode) {
+        /* 一步到位：切过来就能直接打字，不用再点一下输入框（作者 2026-11-22 反馈） */
+        try {
+          searchInput.focus({ preventScroll: true });
+        } catch (err) {
+          searchInput.focus();
+        }
+        startIndexing();
+      }
     });
 
     const origInput = originalBox.querySelector("input");
+    /* 必须在 updateView 之前调：那时官方框还看得见，样式最可信 */
+    adoptOriginalLook(origInput);
     if (origInput) {
       origInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && pluginMode) {
           e.preventDefault();
           e.stopPropagation();
           searchInput.value = origInput.value;
-          doSearch(origInput.value);
+          doSearch(origInput.value, { remote: true });
         }
       });
     }
@@ -9183,6 +9938,76 @@ function bindGlobalDecListener() {
 
     watchForLazyLoad();
     return true;
+  }
+
+  /* 吸顶要让开官方那条固定头部。
+   * 2026-11-18 真机实测（pp030pp /view 归档页）：滚动 700px 后我们的条
+   * `boxTop` 已经是 0（sticky 生效），但 `elementFromPoint` 命中的是
+   * `div.g-hd.g-hd-auto`，而 `div.g-hdfull` 是 `position:fixed; top:0; height:46;
+   * z-index:1000` —— 也就是说吸附位置是对的，只是整条钻进了官方头部下面
+   * （我们 z-index 只有 40）。所以不能靠提 z-index 去盖官方头，而要测量贴顶
+   * 固定条的高度，把 top 让开那一段。
+   * 规则：只认「fixed + 贴顶 + 横贯页面 + 高度合理」的条，插件自己的层
+   * （#lc-bg / lc-* / control_frame）排除。测不到就退 0（老行为，不影响功能）。 */
+  let dockTopPx = -1;
+  let dockTopTries = 0;
+  function measureDockTop() {
+    let nodes;
+    try {
+      nodes = document.querySelectorAll("body *");
+    } catch (e) {
+      return 0;
+    }
+    const vw = window.innerWidth || 0;
+    let h = 0;
+    for (let i = 0; i < nodes.length; i++) {
+      const e = nodes[i];
+      const id = e.id || "";
+      if (id === "control_frame" || id.indexOf("lc-") === 0) continue;
+      let cs;
+      try {
+        cs = getComputedStyle(e);
+      } catch (err) {
+        continue;
+      }
+      if (cs.position !== "fixed") continue;
+      const r = e.getBoundingClientRect();
+      if (r.top > 1 || r.height < 10 || r.height > 160) continue;
+      if (vw && r.width < vw * 0.6) continue; // 只要横贯页面的条，避开小浮窗
+      if (r.height > h) h = r.height;
+    }
+    return h;
+  }
+  /* 官方固定头的高度。首次调可能早于它渲染（测到 0）；0 不缓存，最多重试 4 次，
+   * 之后就一直用测到的值（滚动时也复用，不再反复扫 body）。 */
+  function ensureDockTop() {
+    if (dockTopPx < 0 && dockTopTries < 4) {
+      dockTopTries++;
+      const h = measureDockTop();
+      if (h > 0 || dockTopTries >= 4) dockTopPx = h;
+    }
+    return dockTopPx > 0 ? dockTopPx : 0;
+  }
+
+  /* 搜索框本身是 fixed，不参与文档流，所以不需要「插到列表前」那套。
+   * 需要摆位的是「提示行」和「官方索引结果块」—— 它们必须在第一个
+   * .m-filecnt 之前、且顺序固定为 提示行 → 结果块 → 列表，否则每次搜索
+   * 两块都会互换位置（横跳）。 */
+  function placeBox() {
+    const first = document.querySelector(".m-filecnt");
+    if (first && first.parentNode) {
+      const host = first.parentNode;
+      const order = [document.getElementById("lc-arch-note"), document.getElementById(REMOTE_ID)]
+        .filter(Boolean);
+      /* 从后往前插：先保证 remote 紧贴列表，再让 note 落在 remote 之前 */
+      let ref = first;
+      for (let i = order.length - 1; i >= 0; i--) {
+        const el = order[i];
+        if (el.parentNode !== host || el.nextElementSibling !== ref) host.insertBefore(el, ref);
+        ref = el;
+      }
+    }
+    layoutArchBox();
   }
 
   function watchForLazyLoad() {
@@ -9205,12 +10030,203 @@ function bindGlobalDecListener() {
       });
       if (hasNewItems) {
         updateLoadedHint();
+        placeBox(); // 列表补上去之后把搜索条重新定位到它前面
         if (lastSearchKw && pluginMode) doSearch(lastSearchKw);
         // 新加载的图片/视频也加入索引
         if (pluginMode && !indexing) startIndexing();
       }
     });
     obs.observe(container, { childList: true, subtree: true });
+  }
+
+  /* 搜索框的落位：把它上提到官方筛选行的第二行，与「↩ 原版搜索」齐平、右端贴
+   * 内容区右边界 —— 视觉上就是官方那一行右侧长出来的控件，不多占一行。
+   * 2026-11-22 真机（vw 824 / 内容宽 433）量到的结构：
+   *   .m-fbar (433×108, position:relative，**不吸顶**)
+   *   └ .schbtn (433×65) 第一行三个 .btnitm 胶囊，第二行只有我们的 toggle（87px）
+   *                              右侧 308px 全空 —— 一个 240~320px 输入框刚好
+   * 用负 margin 上提而不是搬 DOM：placeBox 依赖 box 是 .m-filecnt 的前一个兄弟，
+   * 搬进 .m-fbar 会同时丢掉 sticky 的作用域。
+   * 上提量按 row1（输入框那一行）的高度算，不含下面的提示行 —— 否则有提示时
+   * 整块会被顶得过高，压到官方筛选区上去。 */
+  const ARCH_PH = "搜归档…";
+  /* 把官方搜索框的外观（字号、圆角、边框、底色）搬到我们的输入框上。
+   * 博客主题千差万别，硬编码一套样式永远「一看就是插件」；直接读官方框的
+   * computed style 才可能真的融进去。读不到合理值就保持默认。 */
+  function adoptOriginalLook(oi) {
+    if (!oi || !searchInput) return;
+    let cs;
+    try {
+      cs = getComputedStyle(oi);
+    } catch (e) {
+      return;
+    }
+    const num = (v) => {
+      const n = parseFloat(v);
+      return isFinite(n) ? n : 0;
+    };
+    const fs = num(cs.fontSize);
+    if (fs >= 10 && fs <= 20) searchInput.style.fontSize = cs.fontSize;
+    const rad = num(cs.borderTopLeftRadius);
+    if (rad >= 4) searchInput.style.borderRadius = cs.borderTopLeftRadius;
+    const bw = num(cs.borderTopWidth);
+    if (bw > 0 && cs.borderTopStyle && cs.borderTopStyle !== "none") {
+      searchInput.style.border = bw + "px " + cs.borderTopStyle + " " + cs.borderTopColor;
+    }
+    const bg = String(cs.backgroundColor || "");
+    if (bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent") {
+      searchInput.style.backgroundColor = bg;
+      origInputBg = bg;
+    }
+  }
+
+  /* 把「原版搜索框 .m-fsch 的 rect」直接写成 fixed 坐标 —— 它多大、在哪，
+   * 我们的框就多大、在哪。滚动时 ar.top 会变负，`Math.max(dockTop, ...)` 把
+   * 它 clamp 在官方固定头下沿，吸顶行为与 sticky 等价但完全可控。 */
+  function archTopFor(ar, rowH, dockTop) {
+    return Math.max(dockTop, Math.round(ar.top + (ar.height - rowH) / 2));
+  }
+
+  function layoutArchBox() {
+    const box = document.getElementById("lc-arch-box");
+    if (!box || box.style.display === "none") return;
+    const row = document.getElementById("lc-arch-row");
+    const field = document.getElementById("lc-arch-field");
+    const mf = getFbar();
+    if (!mf) return;
+    const mr = mf.getBoundingClientRect();
+    if (!mr.width) return;
+
+    const dockTop = ensureDockTop();
+    const rowH = (row && row.offsetHeight) || 30;
+
+    box.style.left = Math.round(mr.left) + "px";
+    box.style.width = Math.max(160, Math.round(mr.width)) + "px";
+
+    const anchor = getOriginalBox();
+    const ar = anchor ? anchor.getBoundingClientRect() : null;
+    if (ar && ar.width >= 60 && ar.height >= 14) {
+      if (field) {
+        field.style.width = Math.round(ar.width) + "px";
+        field.style.marginRight = Math.max(0, Math.round(mr.right - ar.right)) + "px";
+      }
+      if (searchInput) searchInput.style.height = Math.round(ar.height) + "px";
+      box.style.top = archTopFor(ar, rowH, dockTop) + "px";
+      placeClear(); // 输入框高度刚变过，× 必须按新矩形重算
+      return;
+    }
+
+    /* 兜底：量不到官方搜索框（窄屏下官方可能自己把它收起来）。退回旧口径 ——
+     * 贴筛选行底部，右端收在最后一个胶囊的右缘。 */
+    const sch = mf.querySelector(".schbtn");
+    const schR = sch ? sch.getBoundingClientRect() : mr;
+    const caps = sch ? sch.querySelectorAll(".btnitm") : [];
+    const lastCap = caps.length ? caps[caps.length - 1] : null;
+    const cr = lastCap ? lastCap.getBoundingClientRect() : null;
+    const rightEdge = cr && cr.right > mr.left + 80 ? cr.right : mr.right;
+    if (field) {
+      field.style.width = "220px";
+      field.style.marginRight = Math.max(0, Math.round(mr.right - rightEdge)) + "px";
+    }
+    if (searchInput) searchInput.style.height = "26px";
+    box.style.top = Math.max(dockTop, Math.round(schR.bottom - rowH)) + "px";
+    placeClear();
+  }
+
+  /* 滚动时只需要重算 top（横向/尺寸不随滚动变）。rAF 节流，避免每帧多次读 rect。 */
+  let archScrollTick = false;
+  function onArchScroll() {
+    if (archScrollTick) return;
+    archScrollTick = true;
+    const run = () => {
+      archScrollTick = false;
+      const box = document.getElementById("lc-arch-box");
+      if (!box || box.style.display === "none") return;
+      const anchor = getOriginalBox();
+      const ar = anchor ? anchor.getBoundingClientRect() : null;
+      if (!ar || ar.width < 60 || ar.height < 14) return;
+      const row = document.getElementById("lc-arch-row");
+      const rowH = (row && row.offsetHeight) || 30;
+      const next = archTopFor(ar, rowH, ensureDockTop());
+      const cur = String(box.style.top || "");
+      if (cur !== next + "px") box.style.top = next + "px";
+    };
+    if (window.requestAnimationFrame) window.requestAnimationFrame(run);
+    else setTimeout(run, 16);
+  }
+
+  /* 提示行只在有话说的时候占一行。常驻空行 = 搜索框凭空多占一行高度，
+   * 正是作者这次要消掉的东西。 */
+  function syncNote() {
+    const note = document.getElementById("lc-arch-note");
+    if (!note) return;
+    const has = [resultHint, loadedCountHint, indexHint].some(
+      (el) => el && String(el.textContent || "").trim(),
+    );
+    note.style.display = has ? "flex" : "none";
+  }
+
+  /* 中文输入法：拼音阶段也会触发 input，此时 value 是「ta」这种拼音串。
+   * 停手就会去问官方索引，不挡住就会拿拼音去查、还连着发几个
+   * （正好打在那个也在被风控盯着的搜索页上）。 */
+  let archComposing = false;
+  let archRemoteTimer;
+
+  /* 停手 520ms 就补查一次官方索引 —— 不再只在「本地 0 命中 / 按回车」时才查。
+   * 作者 2026-11-23 真机：搜 mbti 时本地命中 1 篇（标题里带 MBTI），但归档页
+   * 只加载了几十篇，官方索引里还有一堆；他看到「共找到 1 篇」就以为搜不到。
+   * 本地命中数根本不能代表官方索引有没有东西（图片帖本地永远 0 命中），
+   * 所以只要打字停下来就问一次；同一关键词只问一次（remoteKw 即时占位 +
+   * PROXY_MIN_GAP 限速 + 按词缓存）。 */
+  function armRemote() {
+    clearTimeout(archRemoteTimer);
+    archRemoteTimer = setTimeout(() => {
+      if (!searchInput) return;
+      const v = searchInput.value.trim();
+      if (!v || archComposing) return;
+      doSearch(v, { remote: true });
+    }, 520);
+  }
+
+  /* 清空按钮只在真输了字的时候出现，否则白白挤掉输入框宽度 */
+  function syncClear() {
+    const btn = document.getElementById("lc-arch-clear");
+    if (!btn) return;
+    /* 必须是 flex：按钮靠 flex 居中字形，写成 block 会回到「字在盒子偏下」 */
+    btn.style.display = searchInput && searchInput.value ? "flex" : "none";
+    if (btn.style.display !== "none") placeClear();
+  }
+
+  /* × 的圆心 = 输入框的圆心，坐标每次现算，不用百分比 / transform。
+   * 为什么不用 `top:50%;transform:translateY(-50%)`：那个 -50% 是「按钮自己的
+   * 高度」，而 50% 是「壳的 padding 高度」—— 只要壳比输入框高一点点，叉号就整体
+   * 下移一点点；壳的高度取决于行盒、字体、主题 CSS，随时会变（真机表现：初次
+   * 出现正常，点一下叉号再输入就往下滑）。改成读两个 rect 相减取中点，写死 px，
+   * 与任何容器高度、任何 transform 无关。 */
+  function placeClear() {
+    const btn = document.getElementById("lc-arch-clear");
+    const field = document.getElementById("lc-arch-field");
+    if (!btn || !field || !searchInput) return;
+    const ir = searchInput.getBoundingClientRect();
+    const fr = field.getBoundingClientRect();
+    /* 0 = 还没布局（box 隐藏中）；等下次 syncClear / layoutArchBox 再来 */
+    if (!ir.height || !fr.height) return;
+    btn.style.position = "absolute";
+    btn.style.right = "5px";
+    btn.style.left = "auto";
+    btn.style.bottom = "auto";
+    btn.style.transform = "none";
+    btn.style.top = Math.round(ir.top - fr.top + (ir.height - 16) / 2) + "px";
+  }
+
+  /* 切换钮的文字与配色只在模式变化、或鼠标移出时统一刷一遍 —— 分散写会被
+   * hover 的恢复逻辑覆盖掉。 */
+  function paintToggle() {
+    const btn = document.getElementById("lc-arch-toggle");
+    if (!btn) return;
+    btn.textContent = pluginMode ? "↩ 原版搜索" : "🔍 插件搜索";
+    btn.style.color = pluginMode ? "#667eea" : "#666";
+    btn.style.background = pluginMode ? "rgba(102,126,234,0.12)" : "rgba(255,255,255,0.9)";
   }
 
   function updateView() {
@@ -9220,48 +10236,88 @@ function bindGlobalDecListener() {
     if (!toggleBtn || !box || !originalBox) return;
 
     if (pluginMode) {
-      toggleBtn.textContent = "↩ 原版搜索";
-      toggleBtn.style.color = "#667eea";
-      toggleBtn.style.borderColor = "rgba(102,126,234,0.3)";
+      paintToggle();
       box.style.display = "flex";
-      originalBox.style.display = "none";
+      /* 用 visibility 而不是 display：官方框的几何（位置/宽/高）必须还能量到，
+       * 我们的输入框正是照着它长出来的（见 layoutArchBox）。display:none 会让
+       * rect 全 0，只能靠猜，而猜出来的位置作者一眼就看出「偏了」。
+       * visibility:hidden 不占事件、不可聚焦，视觉与隐藏无异。 */
+      originalBox.style.visibility = "hidden";
+      originalBox.style.pointerEvents = "none";
+      /* 形态恒定（一行输入框照官方搜索框长），这里只需要按它当前的 rect 重算坐标 */
+      layoutArchBox();
+      syncClear();
       updateLoadedHint();
       updateIndexHint();
+      syncNote();
     } else {
-      toggleBtn.textContent = "🔍 插件搜索";
-      toggleBtn.style.color = "#555";
-      toggleBtn.style.borderColor = "rgba(0,0,0,0.08)";
+      paintToggle();
       box.style.display = "none";
-      originalBox.style.display = "";
+      originalBox.style.visibility = "";
+      originalBox.style.pointerEvents = "";
       restoreAll();
+      renderRemote("hide");
       if (resultHint) resultHint.textContent = "";
       lastSearchKw = "";
+      syncNote();
     }
   }
 
-  function doSearch(raw) {
+  function doSearch(raw, opts) {
     loadTitleCache();
-    const kw = raw.trim().toLowerCase();
+    const q = raw.trim();
+    const kw = q.toLowerCase();
     lastSearchKw = kw;
     if (!kw) {
       restoreAll();
       resultHint.textContent = "";
+      renderRemote("hide");
+      remoteSlugs = null;
+      remoteItems = [];
+      remoteKw = "";
+      remotePage = 0;
+      remoteHasMore = false;
+      remoteExhausted = false;
+      remoteFailed = false;
       updateLoadedHint();
+      syncNote();
       return;
     }
 
+    /* 回车才走官方索引（输入框逐字敲不发请求）；换词立刻把旧结果收起来 */
+    if (opts && opts.remote) {
+      if (remoteKw !== kw) startRemote(kw, q);
+    } else if (remoteKw !== kw) {
+      /* 切回一个查过的词：把官方命中装回来，别整块 hide（用户会以为结果被吞了） */
+      if (reuseRemote(kw)) renderRemoteList();
+      else renderRemote("hide");
+    }
+
+    const remoteSet = remoteKw === kw ? remoteSlugs : null;
     const keywords = kw.split(/\s+/).filter((k) => k.length > 0);
     const blocks = getMonthBlocks();
     let total = 0;
+    /* 多少篇是「本地文字没命中、靠官方索引的 slug 才放出来的」。
+     * 拆出来单说是为了让「共找到 3 篇」和「官方索引 2 篇」不再打架：
+     * 3 = 本地 1 + 官方补 2，读者一眼能对账。 */
+    let byRemote = 0;
 
     blocks.forEach((block) => {
       const items = block.querySelectorAll("li.img, li.text, li.movie");
       let matched = 0;
       items.forEach((item) => {
         const text = getItemText(item);
-        const ok = keywords.some((k) => text.includes(k));
+        const hit = keywords.some((k) => text.includes(k));
+        /* 并集：本地文字命中 ∪ 官方索引命中。图片帖的卡面只有日期和热度，
+         * 本地永远搜不到，全靠官方那一侧把它放出来。 */
+        const slug = hit || !remoteSet ? null : slugOf(item);
+        const viaRemote = !hit && !!slug && remoteSet.has(slug);
+        const ok = hit || viaRemote;
         item.style.display = ok ? "" : "none";
-        if (ok) matched++;
+        if (ok) {
+          matched++;
+          if (viaRemote) byRemote++;
+        }
       });
 
       const h2 = block.querySelector("h2");
@@ -9278,9 +10334,48 @@ function bindGlobalDecListener() {
       total += matched;
     });
 
-    resultHint.textContent =
-      total > 0 ? "共找到 " + total + " 篇" : "未找到匹配文章";
+    /* 不再说「文章」——纯图片帖博客里根本没有文章，这个措辞会让用户
+     * 以为插件坏了（2026-11-18 pp030pp 真机）。 */
+    resultHint.textContent = total > 0 ? "共找到 " + total + " 篇" : "未找到匹配";
+    if (total > 0 && byRemote > 0) {
+      resultHint.textContent += " · 其中 " + byRemote + " 篇由官方索引补出";
+    } else if (remoteSet) {
+      /* 官方索引查过了、但没有「归档页还没加载到」的作品时，蓝块会整块收起
+       * （上面 renderRemote 里那条 total>0 且没有额外条目的分支）。于是
+       * 「查过了，没有更多」和「根本没查」在界面上长得完全一样 —— 作者
+       * 2026-11-23 真机搜「mbti」看到的就是一片空白，以为插件没理他。
+       * 口径放到提示行上：一句话说清官方那边到底有没有别的。 */
+      const domSlugs = remoteDomSlugs();
+      const extra = remoteItems.filter((x) => !domSlugs.has(x.slug)).length;
+      if (!extra) {
+        resultHint.textContent += remoteItems.length
+          ? " · 官方索引 " + remoteItems.length + " 篇都已加载"
+          : " · 官方索引也没有更多";
+      }
+    }
+    if (opts && opts.remote && !remoteSet) {
+      resultHint.textContent =
+        (total > 0 ? "本地 " + total + " 篇 · " : "") + "正在查询官方索引…";
+    }
+
+    /* 图片/视频卡面上只有「4月10日 3394热度」，本地永远 0 命中。这种号里
+     * 等用户按回车是不现实的——他只会看到「未找到匹配」就认为搜不到
+     * （2026-11-18 pp030pp 真机实证）。所以本地 0 命中且页面确实有图片/
+     * 视频卡时，替用户按一次回车。
+     * 不会循环：startRemote 第一行就把 remoteKw 写成当前词，回调里那次
+     * doSearch 走到这里时 remoteKw === kw，条件不成立。 */
+    if (total === 0 && !(opts && opts.remote) && remoteKw !== kw && getAllItems().length) {
+      startRemote(kw, q);
+      resultHint.textContent = "归档页没有文字匹配 · 正在查询官方索引…";
+    }
+
+    /* 查询还在飞的时候重复输入（多敲一个空格、IEM 反复触发），上面的赋值会把
+     * 「正在查询」冲成「未找到匹配」——用户以为没结果，其实还在查。 */
+    if (remoteBusy && remoteKw === kw && !/正在查询/.test(resultHint.textContent)) {
+      resultHint.textContent = "正在查询官方索引…";
+    }
     updateLoadedHint();
+    syncNote();
   }
 
   function restoreAll() {

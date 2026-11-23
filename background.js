@@ -57,7 +57,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   fetch(msg.url, { credentials: 'include', redirect: 'follow' })
     .then((r) => {
       if (!r.ok) { sendResponse({ ok: false, status: r.status }); return; }
-      r.text().then((text) => sendResponse({ ok: true, status: r.status, text }));
+      /* 回传最终 URL：服务端对「这个博客没有搜索结果」的处理是 302 到
+       * www.lofter.com/front/blog/home-page-search-empty，那边 HTML 里一个
+       * /post/ 都没有，只看 text 会把「官方搜索未开放」误判成「整站搜不到」
+       * （2026-11-18 pp030pp 真机）。content 侧靠 finalUrl 区分三种情况。 */
+      r.text().then((text) =>
+        sendResponse({ ok: true, status: r.status, text, finalUrl: r.url }),
+      );
     })
     .catch((e) => sendResponse({ ok: false, status: 0, error: String(e) }));
   return true; // 异步 sendResponse
